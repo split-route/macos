@@ -1,7 +1,9 @@
+import Design
 import SwiftUI
 
 /// Every list the user has, in config order: ready-made (release) lists, URL
-/// imports and custom lists. The + in the toolbar opens AddListSheet.
+/// imports and custom lists. Each list goes direct, is blocked, or goes through a
+/// tunnel; the tunnel is a colored chip, the same color as on the Tunnels page.
 struct ListsPage: View {
     @EnvironmentObject private var model: AppModel
     @State private var adding = false
@@ -10,33 +12,42 @@ struct ListsPage: View {
 
     private var lists: [RouteList] { model.config?.lists ?? [] }
 
+    private var summary: String {
+        if !model.ready { return "The service isn't running." }
+        if lists.isEmpty { return "No lists yet." }
+        let rest: String
+        if !model.vpnOn { rest = "The VPN is off, so lists have no effect." }
+        else if let t = model.selectedTunnel { rest = "Everything else goes through \(t.name)." }
+        else { rest = "No tunnel is selected." }
+        return "\(plural(lists.count, "list")). \(rest)"
+    }
+
     var body: some View {
-        Group {
+        PageScaffold("Lists", summary: summary) {
+            if model.ready, !lists.isEmpty {
+                Button("Add list") { adding = true }.buttonStyle(SolidButtonStyle())
+            }
+        } content: {
             if !model.ready {
-                Form { ServiceUnavailable() }
+                ServiceUnavailable()
             } else if lists.isEmpty {
-                // In a scroll view like the other pages, so the toolbar looks the same.
-                GeometryReader { g in
-                    ScrollView {
-                        EmptyLists { adding = true }.frame(maxWidth: .infinity, minHeight: g.size.height)
-                    }
+                Panel {
+                    EmptyState(title: "Choose where traffic goes",
+                               message: "A list is a set of sites or address ranges. Send each one direct, block it, or route it through a tunnel.",
+                               action: "Add a list") { adding = true }
                 }
             } else {
-                Form {
-                    Section {
-                        ForEach(lists) { row($0) }
-                    } footer: {
-                        ActionsFooter()
+                VStack(alignment: .leading, spacing: Space.m) {
+                    Panel {
+                        ForEach(Array(lists.enumerated()), id: \.element.id) { i, l in
+                            if i > 0 { Hairline() }
+                            row(l)
+                        }
                     }
+                    Text("Direct skips every tunnel. Block drops the traffic. Tunnel sends it through the selected tunnel or the one you pick. Changes apply right away, without reconnecting, unless a list is added, removed or moved to another tunnel.")
+                        .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { adding = true } label: { Image(systemName: "plus") }
-                    .help("Add List")
-                    .accessibilityLabel("Add List")
-                    .disabled(!model.ready)
             }
         }
         .sheet(isPresented: $adding) {
@@ -58,50 +69,82 @@ struct ListsPage: View {
         }
     }
 
+    private func designAction(_ a: Action) -> ListAction {
+        switch a {
+        case .direct: return .direct
+        case .block: return .block
+        case .tunnel: return .tunnel
+        }
+    }
+
+    private func appAction(_ a: ListAction) -> Action {
+        switch a {
+        case .direct: return .direct
+        case .block: return .block
+        case .tunnel: return .tunnel
+        }
+    }
+
     @ViewBuilder private func row(_ l: RouteList) -> some View {
         let st = model.status?.imports?.first { $0.name == l.name }
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: symbol(l))
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-                .help(kind(l))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.info(l.name)?.title ?? l.name)
-                Text(detail(l, st))
-                    .font(.subheadline)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let e = model.error("list:\(l.name)") { ErrorText(e) }
-                if let e = st?.error { WarningText("Last download failed: \(e)") }
-            }
-            Spacer(minLength: 12)
-            ActionPicker(action: l.action, tunnel: l.tunnel, tunnels: model.tunnels.map(\.name)) { a, t in
-                Task { await model.setAction(l.name, a, tunnel: t) }
-            }
-            if l.custom {
-                RowButton(symbol: "pencil", help: "Edit \(l.name)") { editing = CustomTarget(list: l) }
-            }
-            if l.importSource != nil {
-                RowButton(symbol: "arrow.clockwise", help: "Download \(l.name) again") {
-                    Task { await model.refreshImport(l.name) }
+        let title = model.info(l.name)?.title ?? l.name
+        VStack(alignment: .leading, spacing: Space.s) {
+            HStack(spacing: Space.l) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color).lineLimit(1).help(title)
+                    Text(detail(l, st)).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                        .monospacedDigit().lineLimit(2)
+                }
+                .layoutPriority(-1)
+                Spacer(minLength: Space.m)
+                if l.action == .tunnel { tunnelMenu(l, title: title) }
+                ActionChoice(listName: title,
+                             selection: Binding(get: { designAction(l.action) },
+                                                set: { a in
+                                                    guard a != designAction(l.action) else { return }
+                                                    Task { await model.setAction(l.name, appAction(a), tunnel: nil) }
+                                                }),
+                             tunnelLine: nil)
+                if l.custom {
+                    RowButton(symbol: "pencil", help: "Edit \(l.name)") { editing = CustomTarget(list: l) }
+                }
+                if l.importSource != nil {
+                    RowButton(symbol: "arrow.clockwise", help: "Download \(l.name) again") {
+                        Task { await model.refreshImport(l.name) }
+                    }
+                }
+                RowButton(symbol: "minus.circle", help: "Remove \(l.name)") {
+                    if l.custom && entryCount(l) > 0 { confirmRemove = l } else { Task { await model.removeList(l.name) } }
                 }
             }
-            RowButton(symbol: "minus.circle", help: "Remove \(l.name)") {
-                if l.custom && entryCount(l) > 0 { confirmRemove = l } else { Task { await model.removeList(l.name) } }
+            if l.action == .tunnel, let n = l.tunnel, model.tunnels.first(where: { $0.name == n })?.state != .connected {
+                NoteLine(.error, "\(n) isn't connected, so this list is blocked until it is.")
             }
+            if let e = model.error("list:\(l.name)") { NoteLine(.error, e) }
+            if let e = st?.error { NoteLine(.warning, "Last download failed: \(e)") }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, Space.m).padding(.horizontal, Space.l)
     }
 
-    private func symbol(_ l: RouteList) -> String {
-        if l.importSource != nil { return "link" }
-        return l.custom ? "doc.text" : "globe"
-    }
-
-    private func kind(_ l: RouteList) -> String {
-        if l.importSource != nil { return "Imported from a URL, downloaded daily" }
-        return l.custom ? "Your own list" : "Ready-made list, updated daily"
+    /// Which tunnel a Tunnel list uses: the selected one, or a named one.
+    private func tunnelMenu(_ l: RouteList, title: String) -> some View {
+        let names = model.tunnels.map(\.name)
+        let options = l.tunnel.map { n in names.contains(n) ? names : names + [n] } ?? names
+        return Menu {
+            Button("Selected tunnel") { Task { await model.setAction(l.name, .tunnel, tunnel: nil) } }
+            ForEach(options, id: \.self) { n in
+                Button(n) { Task { await model.setAction(l.name, .tunnel, tunnel: n) } }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                DestinationLabel(l.tunnel ?? "Selected tunnel", color: Palette.inkSecondary.color)
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Palette.inkSecondary.color)
+            }
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+        .accessibilityLabel("Tunnel for \(title)")
     }
 
     /// The second line: what the list is, then how many routes it applied.
@@ -114,38 +157,18 @@ struct ListsPage: View {
                     ?? "Not downloaded yet")
             }
         } else if l.custom {
-            parts.append(plural(entryCount(l), "entry", "entries"))
+            // The applied count (below) says the same; show the stored count until the service reports one.
+            if entriesLine(model, l.name) == nil { parts.append(plural(entryCount(l), "entry", "entries")) }
         } else {
             parts.append(model.info(l.name)?.description ?? "Ready-made list")
         }
-        if let r = entriesLine(model, l.name) { parts.append(r) }
-        return parts.joined(separator: " · ")
+        // An import's status line already has its count; a custom list's was handled above.
+        if !l.custom, st == nil, let r = entriesLine(model, l.name) { parts.append(r) }
+        return parts.joined(separator: ", ")
     }
 
     private func entryCount(_ l: RouteList) -> Int {
         l.entries.filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.count
-    }
-}
-
-/// Shown instead of the table when there are no lists, like Raycast's empty pages.
-private struct EmptyLists: View {
-    let add: () -> Void
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "list.bullet.rectangle")
-                .font(.system(size: 40, weight: .light))
-                .foregroundStyle(.secondary)
-            Text("No lists yet").font(.title3.weight(.semibold))
-            Text("Add a ready-made list, import one from a URL or a file, or create your own. Without lists all traffic goes through the default tunnel, the first one connected.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: 360)
-            Button("Add List", action: add)
-                .controlSize(.large)
-                .padding(.top, 4)
-        }
-        .padding(32)
     }
 }
 

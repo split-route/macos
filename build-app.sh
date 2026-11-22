@@ -16,9 +16,13 @@ BIN=$(cd app && swift build -c release --arch arm64 --arch x86_64 --show-bin-pat
 rm -rf build && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # SwiftPM records the deployment target as the SDK version, so AppKit would run
 # the app in compatibility mode (no Liquid Glass on macOS 26+). Record the real SDK.
-vtool -set-build-version macos 13.0 "$(xcrun --show-sdk-version)" -replace \
+vtool -set-build-version macos 14.0 "$(xcrun --show-sdk-version)" -replace \
   -output "$APP/Contents/MacOS/Splitroute" "$BIN/Splitroute"
 sed "s/@VERSION@/$VERSION/g" app/Info.plist > "$APP/Contents/Info.plist"
+# The app's typeface (Instrument Sans, OFL). Registered at launch from here; SwiftPM's
+# own resource bundle is not shipped (its lookup breaks in a signed app).
+mkdir -p "$APP/Contents/Resources/Fonts"
+cp app/Sources/Design/Resources/Fonts/InstrumentSans.ttf "$APP/Contents/Resources/Fonts/"
 swift app/assets/icon.swift "$APP/Contents/Resources/AppIcon.icns"
 
 # The service. CGO off keeps it a single static-ish binary per architecture.
@@ -34,6 +38,7 @@ rm build/splitroute-arm64 build/splitroute-amd64
 LIC="$APP/Contents/Resources/Licenses"
 mkdir -p "$LIC"
 cp LICENSE "$LIC/SplitRoute.txt"
+cp app/Sources/Design/Resources/Fonts/OFL.txt "$LIC/InstrumentSans-OFL.txt"
 SINGBOX=$(cd daemon && go list -m -f '{{.Dir}}' github.com/sagernet/sing-box)
 cp "$SINGBOX/LICENSE" "$LIC/sing-box.txt"
 echo "The service embeds sing-box (https://github.com/SagerNet/sing-box) and Split Route's core (https://github.com/split-route/core); module versions are in daemon/go.sum." > "$LIC/SOURCE.txt"

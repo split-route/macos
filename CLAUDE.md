@@ -15,7 +15,9 @@ settings is this app's job, not the core's. It runs as root, so correctness and 
 | `daemon/internal/config/` | `Config`, `Validate`, presets, pure list edits |
 | `daemon/internal/store/` | Settings database (SQLite): schema in `migrations/*.sql`, imports, tunnels |
 | `daemon/internal/catalog/` | Titles and descriptions of the release lists (content, not engine) |
-| `app/` | Swift app (SwiftPM, macOS 13+): AppKit status item, SwiftUI settings; socket client in `Daemon.swift` |
+| `app/Sources/Splitroute/` | Swift app (SwiftPM, macOS 14+): AppKit status item with a SwiftUI popover (`MenuPopover.swift`), the window (`SettingsView.swift`: Tunnels, Lists, Status, Settings); socket client in `Daemon.swift` |
+| `app/Sources/Design/` | The look: tokens (`Tokens.swift`), Instrument Sans, controls and rows. The app and `DesignPreview` both use it; `Screens.swift` is the preview's fake-data pages only |
+| `app/Sources/DesignPreview/` | `swift run DesignPreview [--snapshot <dir>]`: every screen and state on fake data, light and dark |
 | `build-app.sh` | Builds `Splitroute.app` and the DMG; the service binary embeds the engine, nothing else is bundled |
 
 The binary and the launchd label keep their old names (`splitroute`, `io.github.aliraghebi.splitroute`) so an
@@ -45,8 +47,27 @@ updated app finds its service. The `watch` argument starts the service.
   disk, in logs or in status.
 - Wire types in `Daemon.swift` mirror the Go JSON (`daemon/internal/api`); change both together. The app edits
   lists with the per-list commands, never `set_config` from a stale copy.
+- One switch and one selected tunnel (`vpn_on`, `selected_tunnel_id` in `settings`; `vpn.go`). The engine runs once
+  while the VPN is on; the selected tunnel is its default and carries all traffic no list names. Choosing another is
+  `Engine.Select` on the core's `selected` selector, never a restart. `reconcile` decides what the engine loads:
+  every non-OpenVPN tunnel, the selected one, and each OpenVPN tunnel a list names (a loaded OpenVPN tunnel is a real
+  session). If the selected tunnel can't be loaded (waits for credentials, failed) the engine stops and traffic goes
+  direct: never through another tunnel; the UI says so. A tunnel that failed is not reloaded until the user switches
+  the VPN or selects it. The selected tunnel can't be removed while the VPN is on. A restart (a list or tunnel
+  change) takes well under a second for proxy tunnels, so the host's settle time is 250 ms.
+- Tunnels other than OpenVPN come from `core/importers/links` (share links, base64 lists, sing-box JSON). A
+  tunnel's options hold its password or key: they are `tunnels/<id>/options.json` (0600), hash-checked before every
+  start, never in the database or an API answer. A subscription's URL carries the user's token: it is
+  `subscriptions/<id>/url` (0600). Errors from fetching one name the host only, never the path or query
+  (`TestSubscriptionErrorsDoNotLeakTheAddress`); https only; 8 MB body limit. A subscription is a group of tunnels
+  (`subscription_id`); removing it removes its tunnels, refused while a list uses one. Tunnels with no session
+  of their own report `ready`, never `connected`.
 - The core is a Go workspace sibling during development (`../go.work`); once released, `daemon/go.mod` requires a
   tagged version. Build the service with the core's tags (`core.RequiredTags`).
+- UI uses `Design` tokens and components, never raw colors; custom controls need an accessibility label and visible
+  keyboard focus. Tunnels have no colors in the app (the selected one has a tick); `Design` still has the line
+  colors for the preview's older screens. The font is registered from
+  `Contents/Resources/Fonts` (`build-app.sh` copies it); never touch `Bundle.module` inside the app.
 - Every bug fix gets a table test; parsers get a fixture copied from real output.
 - English only in code, comments, commits and logs.
 
@@ -61,5 +82,6 @@ cd app && swift build
 
 ## Release
 
-Push a `vX.Y.Z` tag; the release workflow builds `Splitroute_<version>_macos.dmg` and updates the cask. The app
-is ad-hoc signed, not notarized (no Apple Developer account).
+There is no release workflow yet: build with `VERSION=X.Y.Z GOWORK=off ./build-app.sh`, tag `vX.Y.Z`, and attach
+`build/Splitroute.dmg` (named `Splitroute_<version>_macos.dmg`) to a GitHub release. The app is ad-hoc signed,
+not notarized (no Apple Developer account).

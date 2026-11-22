@@ -8,7 +8,7 @@ cask "splitroute" do
   desc "VPN with routing lists: send traffic direct, block it, or through a chosen tunnel"
   homepage "https://github.com/split-route/macos"
 
-  depends_on macos: ">= :ventura"
+  depends_on macos: ">= :sonoma"
 
   app "Splitroute.app"
   # Not notarized: without this macOS refuses to open it.

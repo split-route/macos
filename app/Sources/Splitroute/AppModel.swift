@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Design
 import ServiceManagement
 
 @MainActor
@@ -16,6 +17,8 @@ final class AppModel: ObservableObject {
     @Published var actionError: String?
     @Published fileprivate(set) var tunnelList: TunnelList?
     fileprivate var tunnelSupplied: [String: Date] = [:]
+    /// Tunnels whose saved credentials the server refused: they are asked for again, never re-sent.
+    fileprivate var credentialsRefused: Set<String> = []
     @Published private(set) var busy = false
     /// The daemon's last error per row or sheet (keys like "list:Work",
     /// "preset", "baseURL"), shown under that row until it next succeeds.
@@ -41,20 +44,31 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// active: the VPN is on and its selected tunnel is up; idle: it isn't; problem: the last refresh or start failed.
     var health: Health {
         guard connError == nil, let s = status else { return .notRunning }
         if s.error != nil { return .problem }
-        return s.connected > 0 ? .active : .idle
+        if vpnOn, let t = selectedTunnel, t.state == .connected || t.state == .ready { return .active }
+        return .idle
     }
 
+    /// One sentence on what the VPN is doing, plain about the case where it is on but not carrying traffic.
     var summary: String {
         switch health {
         case .notRunning: return connError?.localizedDescription ?? "Connecting…"
-        case .idle: return "No tunnel connected"
-        case .active:
-            let n = status!.connected
-            return (n == 1 ? "Connected through 1 tunnel" : "Connected through \(n) tunnels") + (status!.enabled ? "" : " · lists off")
         case .problem: return "Problem: \(status?.error ?? "unknown")"
+        case .active:
+            return "On, through \(selectedTunnel?.name ?? "the selected tunnel")" + (status?.enabled == false ? ", lists off" : "")
+        case .idle:
+            guard vpnOn else { return "The VPN is off" }
+            guard let t = selectedTunnel else { return "On, but no tunnel is selected" }
+            let direct = "Traffic uses your normal connection."
+            switch t.state {
+            case .needsAuth: return "On, but \(t.name) needs your sign-in. \(direct)"
+            case .failed: return "On, but \(t.name) failed. \(direct)"
+            case .connecting, .reconnecting: return "Connecting through \(t.name)…"
+            default: return "On, but \(t.name) isn't ready. \(direct)"
+            }
         }
     }
 
@@ -399,6 +413,7 @@ extension AppModel {
     func supplyTunnelCredentials() async {
         for t in tunnels where t.state == .needsAuth {
             // Before the Keychain read: a denied access prompt must not come back on every poll.
+            if credentialsRefused.contains(t.name) { continue } // the server refused them: ask, don't re-send
             if let last = tunnelSupplied[t.name], Date().timeIntervalSince(last) < 60 { continue }
             tunnelSupplied[t.name] = Date()
             guard let s = TunnelKeychain.load(t.name) else { continue }
@@ -413,6 +428,7 @@ extension AppModel {
 
     func connectTunnel(_ t: Tunnel, secrets: TunnelSecrets? = nil, remember: Bool = false) async {
         if let secrets, remember { TunnelKeychain.save(t.name, secrets) }
+        if secrets != nil { credentialsRefused.remove(t.name) } // new credentials from the user
         errors["tunnel:\(t.name)"] = nil
         do {
             try await Daemon.tunnelConnect(t.name, secrets: secrets ?? TunnelKeychain.load(t.name))
@@ -432,15 +448,24 @@ extension AppModel {
         }
     }
 
-    func disconnectTunnel(_ name: String) async {
-        await tunnelCall(name) { try await Daemon.tunnelDisconnect(name) }
+    /// Imports share links or a subscription. `url` is kept as a subscription (named `name`, or by
+    /// its host); `text` is pasted links, a subscription body or one address. Returns the service's
+    /// result, or its error.
+    func addTunnels(text: String?, url: String?, name: String?) async -> Result<AddResult, Error> {
+        do {
+            let r = try await Daemon.tunnelsAdd(text: text, url: url, name: name)
+            await reloadTunnels()
+            return .success(r)
+        } catch {
+            return .failure(error)
+        }
     }
 
-    /// Disconnects every tunnel that is on (quitting while connected).
-    func disconnectAllTunnels() async {
-        for t in tunnels where t.isActive { await disconnectTunnel(t.name) }
+    /// Removes a subscription and its tunnels; the service refuses while a list uses one of them.
+    func removeGroup(_ name: String) async {
+        errors["group:\(name)"] = nil
+        do { try await Daemon.tunnelGroupRemove(name) } catch { errors["group:\(name)"] = error.localizedDescription }
         await reloadTunnels()
-        await refreshStatus()
     }
 
     func removeTunnel(_ name: String) async {
@@ -459,10 +484,6 @@ extension AppModel {
         } catch {
             return error.localizedDescription
         }
-    }
-
-    func setTunnelAutoConnect(_ name: String, _ on: Bool) async {
-        await tunnelCall(name) { try await Daemon.tunnelAutoConnect(name, on) }
     }
 
     func tunnelLogs(_ name: String) async -> [String] { (try? await Daemon.tunnelLogs(name)) ?? [] }
@@ -487,5 +508,78 @@ extension AppModel {
         errors["tunnel:\(name)"] = nil
         do { try await work() } catch { errors["tunnel:\(name)"] = error.localizedDescription }
         await reloadTunnels()
+    }
+}
+
+// MARK: The VPN switch and the selected tunnel
+
+extension AppModel {
+    /// Whether the user has the VPN on (the service's answer).
+    var vpnOn: Bool { tunnelList?.vpn ?? false }
+
+    /// The tunnel that carries all traffic no list names.
+    var selectedTunnel: Tunnel? {
+        guard let n = tunnelList?.selected else { return nil }
+        return tunnels.first { $0.name == n }
+    }
+
+    /// Turns the VPN on or off. The service picks the first tunnel if none is selected.
+    func setVPN(_ on: Bool) async {
+        errors["vpn"] = nil
+        do { try await Daemon.vpnSet(on) } catch { errors["vpn"] = error.localizedDescription }
+        await reloadTunnels()
+        await refreshStatus()
+    }
+
+    /// Chooses the tunnel for all traffic no list names. While the VPN is on, the engine
+    /// switches to it without restarting. Returns true when the credentials sheet should open:
+    /// the tunnel needs credentials the Keychain doesn't have, or the server refused the saved ones
+    /// (those are never sent again without asking).
+    func selectTunnel(_ t: Tunnel) async -> Bool {
+        errors["tunnel:\(t.name)"] = nil
+        let refused = t.state == .failed && Self.credentialsRefused(t.error)
+        if refused { credentialsRefused.insert(t.name) }
+        do { try await Daemon.tunnelSelect(t.name) } catch {
+            errors["tunnel:\(t.name)"] = error.localizedDescription
+            return false
+        }
+        await reloadTunnels()
+        await refreshStatus()
+        guard vpnOn else { return false }
+        return refused || (tunnels.first { $0.name == t.name }.map { $0.state == .needsAuth && needsCredentialPrompt($0) } ?? false)
+    }
+
+    static func credentialsRefused(_ error: String?) -> Bool {
+        guard let e = error else { return false }
+        return e.contains("username or password") || e.contains("key password")
+    }
+
+    /// The row's state as the design shows it.
+    func designState(_ t: Tunnel) -> Design.TunnelState {
+        switch t.state {
+        case .disconnected: return .off
+        case .connecting, .reconnecting: return .connecting
+        case .needsAuth: return .needsAuth
+        case .connected: return .connected
+        case .ready: return .ready
+        case .failed: return .failed(t.error ?? "The tunnel stopped.")
+        }
+    }
+}
+
+extension Tunnel {
+    /// "VLESS", "OpenVPN", ...: the protocol as people write it.
+    var protocolLabel: String {
+        switch protocolName {
+        case "openvpn": return "OpenVPN"
+        case "vless": return "VLESS"
+        case "vmess": return "VMess"
+        case "trojan": return "Trojan"
+        case "shadowsocks": return "Shadowsocks"
+        case "hysteria2": return "Hysteria2"
+        case "tuic": return "TUIC"
+        case "anytls": return "AnyTLS"
+        default: return protocolName
+        }
     }
 }

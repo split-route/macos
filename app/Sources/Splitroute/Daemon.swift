@@ -144,10 +144,24 @@ struct Preset: Decodable, Identifiable, Hashable {
 
 enum TunnelState: String, Codable {
     case disconnected, connecting, needsAuth = "needs_auth", connected, reconnecting, failed
+    /// A tunnel with no session of its own (VLESS, Trojan, ...): running, but nothing proves the server answers.
+    case ready
+
+    /// A state this app doesn't know (a newer service) reads as disconnected, so one new value
+    /// can't make the whole tunnel list fail to decode.
+    init(from decoder: Decoder) throws {
+        let s = try decoder.singleValueContainer().decode(String.self)
+        self = TunnelState(rawValue: s) ?? .disconnected
+    }
 }
 
 struct Tunnel: Decodable, Identifiable, Equatable {
     var name: String
+    /// The core's protocol name ("openvpn", "vless", ...). Old services send none: OpenVPN.
+    var protocolName: String = "openvpn"
+    /// The subscription the tunnel came from; nil is the default group.
+    var group: String?
+    var warning: String?
     var remotes: [String]?
     var needsAuth: Bool
     var keyEncrypted: Bool
@@ -164,7 +178,7 @@ struct Tunnel: Decodable, Identifiable, Equatable {
     var id: String { name }
 
     enum CodingKeys: String, CodingKey {
-        case name, remotes, needsAuth = "needs_auth", keyEncrypted = "key_encrypted",
+        case name, protocolName = "protocol", group, warning, remotes, needsAuth = "needs_auth", keyEncrypted = "key_encrypted",
              autoConnect = "auto_connect", state, error, need, localIP = "local_ip", remoteIP = "remote_ip",
              since, bytesIn = "bytes_in", bytesOut = "bytes_out"
     }
@@ -172,8 +186,37 @@ struct Tunnel: Decodable, Identifiable, Equatable {
     var isActive: Bool { state != .disconnected && state != .failed }
 }
 
+/// A group of tunnels that came from one URL (Go: api.Subscription). The URL itself stays in the service.
+struct Subscription: Decodable, Equatable, Identifiable {
+    var name: String
+    var tunnels: Int
+    var updatedAt: String?
+    var error: String?
+    var id: String { name }
+
+    enum CodingKeys: String, CodingKey { case name, tunnels, updatedAt = "updated_at", error }
+}
+
+/// A link or node that was not imported, and why (Go: api.Skipped).
+struct SkippedNode: Decodable, Equatable, Identifiable {
+    var label: String
+    var reason: String
+    var id: String { label + reason }
+}
+
+/// The answer to tunnels_add (Go: api.AddResult).
+struct AddResult: Decodable, Equatable {
+    var added: Int
+    var skipped: [SkippedNode]?
+    var group: String?
+}
+
 struct TunnelList: Decodable, Equatable {
     var tunnels: [Tunnel]
+    var subscriptions: [Subscription]?
+    /// Whether the VPN is on, and the name of the tunnel that carries all traffic no list names.
+    var vpn: Bool?  // nil from a service older than this app
+    var selected: String?
     /// Why tunnels can't run here (OpenVPN missing or not matching the build).
     var unavailable: String?
 }
@@ -257,6 +300,7 @@ private struct Response: Decodable {
     var tunnel: Tunnel?
     var check: TunnelCheck?
     var logs: [String]?
+    var added: AddResult?
 }
 
 enum DaemonError: LocalizedError, Equatable {
@@ -347,6 +391,23 @@ enum Daemon {
         _ = try await send(Request(cmd: "tunnel_credentials", name: name, username: secrets.username.nilIfEmpty,
                                    password: secrets.password.nilIfEmpty, keyPassword: secrets.keyPassword.nilIfEmpty))
     }
+
+    /// Imports share links or a subscription: `text` is pasted links, a subscription body or one
+    /// address; `url` is fetched by the service and kept as a subscription named `name`.
+    static func tunnelsAdd(text: String?, url: String?, name: String?) async throws -> AddResult {
+        guard let r = try await send(Request(cmd: "tunnels_add", name: name?.nilIfEmpty, url: url?.nilIfEmpty, text: text?.nilIfEmpty)).added else {
+            throw oldService
+        }
+        return r
+    }
+
+    /// Turns the VPN on or off.
+    static func vpnSet(_ on: Bool) async throws { _ = try await send(Request(cmd: "vpn_set", enabled: on)) }
+
+    /// Makes a tunnel the one that carries all traffic no list names.
+    static func tunnelSelect(_ name: String) async throws { _ = try await send(Request(cmd: "tunnel_select", name: name)) }
+
+    static func tunnelGroupRemove(_ name: String) async throws { _ = try await send(Request(cmd: "tunnel_group_remove", name: name)) }
 
     static func tunnelDisconnect(_ name: String) async throws { _ = try await send(Request(cmd: "tunnel_disconnect", name: name)) }
     static func tunnelRemove(_ name: String) async throws { _ = try await send(Request(cmd: "tunnel_remove", name: name)) }

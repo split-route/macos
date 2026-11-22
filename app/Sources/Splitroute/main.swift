@@ -1,12 +1,14 @@
 import AppKit
 import Combine
+import Design
 import SwiftUI
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let model = AppModel()
     private var item: NSStatusItem!
     private var settingsWindow: NSWindow?
+    private let popover = NSPopover()
     private var bag = Set<AnyCancellable>()
     private var launchedAtLogin = false
 
@@ -42,10 +44,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Fonts.register()
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        let menu = NSMenu()
-        menu.delegate = self
-        item.menu = menu
+        item.button?.target = self
+        item.button?.action = #selector(togglePopover)
+        let host = NSHostingController(rootView: MenuPopover(
+            openApp: { [weak self] page in self?.popover.performClose(nil); self?.show(page: page) },
+            quit: { [weak self] in self?.popover.performClose(nil); self?.quit() }
+        ).environmentObject(model))
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
+        popover.behavior = .transient
         model.$status.combineLatest(model.$connError)
             .receive(on: RunLoop.main)
             .sink { [weak self] _, _ in self?.updateIcon() }
@@ -60,10 +69,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
             openSettings()
-            Task { if let w = settingsWindow { await snapshotSettings(w, to: args[i + 1]) } }
+            let pop = AnyView(MenuPopover(openApp: { _ in }, quit: {}).environmentObject(model))
+            Task { if let w = settingsWindow { await snapshotSettings(w, model: model, popover: pop, to: args[i + 1]) } }
         }
         // `--page lists` opens the window on that page (window captures for UI review).
-        if let i = args.firstIndex(of: "--page"), i + 1 < args.count, let p = Page(rawValue: args[i + 1]) {
+        if let i = args.firstIndex(of: "--page"), i + 1 < args.count, let p = Destination(rawValue: args[i + 1]) {
             openSettings()
             UserDefaults.standard.set(p.rawValue, forKey: "settingsPage")
         }
@@ -82,33 +92,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         item.button?.toolTip = "Splitroute: \(model.summary)"
     }
 
-    // The menu is rebuilt each time it opens, from the latest status.
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems()
-        menu.addItem(disabled(model.summary))
-        menu.addItem(.separator())
-        switch model.health {
-        case .notRunning:
-            if model.serviceNeedsApproval {
-                menu.addItem(action("Allow in Login Items…", #selector(openLoginItems)))
-            } else if model.connError == .notRunning {
-                menu.addItem(action("Install Service…", #selector(installService)))
-            }
-        case .idle, .active, .problem:
-            break // tunnels are connected and disconnected on the VPN page
-        }
-        if model.serviceOutdated {
-            menu.addItem(action("Update Service", #selector(restartService)))
-        }
-        menu.addItem(action("Open App", #selector(openSettings)))
-        menu.addItem(.separator())
-        menu.addItem(action("Quit Splitroute", #selector(quit), key: "q"))
-    }
-
-    private func disabled(_ title: String) -> NSMenuItem {
-        let i = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        i.isEnabled = false
-        return i
+    @objc private func togglePopover() {
+        guard let button = item.button else { return }
+        if popover.isShown { return popover.performClose(nil) }
+        // The lists in the popover come from the config, which the window normally loads.
+        Task { await model.loadSettings() }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
     }
 
     private func action(_ title: String, _ sel: Selector, key: String = "") -> NSMenuItem {
@@ -117,9 +107,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         return i
     }
 
-    @objc private func installService() { Task { await model.installService() } }
-    @objc private func restartService() { Task { await model.restartService() } }
-    @objc private func openLoginItems() { model.openLoginItems() }
     private static let quitActionKey = "quitAction" // "turnOff" or "keep", once "Don't ask again" was checked
 
     /// Quitting only removes the icon; the service keeps its tunnels up. While one
@@ -133,9 +120,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         case "keep": turnOff = false
         default:
             let alert = NSAlert()
-            alert.messageText = "A tunnel is still connected."
-            alert.informativeText = "Tunnels stay connected after you quit. Open Splitroute again to disconnect them later."
-            alert.addButton(withTitle: "Disconnect and Quit")
+            alert.messageText = "The VPN is still on."
+            alert.informativeText = "It stays on after you quit. Open Splitroute again to turn it off later."
+            alert.addButton(withTitle: "Turn Off and Quit")
             alert.addButton(withTitle: "Quit")
             alert.addButton(withTitle: "Cancel")
             alert.showsSuppressionButton = true
@@ -148,47 +135,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         guard turnOff else { return NSApp.terminate(nil) }
         Task {
-            await model.disconnectAllTunnels()
-            if model.status?.connected == 0 { return NSApp.terminate(nil) }
-            // Never quit over a failure: the tunnels would stay connected with no icon.
+            await model.setVPN(false)
+            if !model.vpnOn { return NSApp.terminate(nil) }
+            // Never quit over a failure: the VPN would stay on with no icon.
             let alert = NSAlert()
-            alert.messageText = "Couldn't disconnect the tunnels."
+            alert.messageText = "Couldn't turn the VPN off."
             alert.informativeText = model.actionError ?? model.summary
             NSApp.activate(ignoringOtherApps: true)
             alert.runModal()
         }
     }
 
-    @objc private func openSettings() {
+    @objc private func openSettings() { show(page: nil) }
+
+    /// Opens the window, on `page` when given, else on Tunnels (the first page).
+    private func show(page: Destination?) {
         if settingsWindow == nil {
             let w = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 800, height: 580),
+                contentRect: NSRect(x: 0, y: 0, width: 920, height: 640),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                 backing: .buffered, defer: false)
             w.title = "Splitroute"
-            w.toolbarStyle = .unified
+            // The sidebar runs to the top edge, under the traffic lights.
+            w.titlebarAppearsTransparent = true
+            w.titleVisibility = .hidden
             w.isReleasedWhenClosed = false
             w.delegate = self
-            let host = NSHostingController(rootView: SettingsView().environmentObject(model))
-            if #available(macOS 14, *) {
-                // SwiftUI owns the toolbar: page title, back/forward, Liquid Glass on macOS 26.
-                host.sceneBridgingOptions = [.toolbars, .title]
-            } else {
-                // An empty unified toolbar gives the taller title bar of System Settings.
-                w.toolbar = NSToolbar(identifier: "settings")
-            }
-            w.contentViewController = host
-            w.setContentSize(NSSize(width: 800, height: 580))
+            w.contentViewController = NSHostingController(rootView: SettingsView().environmentObject(model))
+            w.setContentSize(NSSize(width: 920, height: 640))
             w.center()
-            w.setFrameAutosaveName("Settings")
-            // Fixed width (like System Settings): clamp a wider frame saved by older versions.
-            w.contentMinSize = NSSize(width: 800, height: 500)
-            w.contentMaxSize = NSSize(width: 800, height: CGFloat.greatestFiniteMagnitude)
-            w.setContentSize(NSSize(width: 800, height: w.contentRect(forFrameRect: w.frame).height))
+            w.setFrameAutosaveName("Settings2")
+            w.contentMinSize = NSSize(width: 820, height: 520)
             settingsWindow = w
         }
-        if settingsWindow?.isVisible != true {
-            UserDefaults.standard.set(Page.status.rawValue, forKey: "settingsPage")
+        if let page {
+            UserDefaults.standard.set(page.rawValue, forKey: "settingsPage")
+        } else if settingsWindow?.isVisible != true {
+            UserDefaults.standard.set(Destination.tunnels.rawValue, forKey: "settingsPage")
         }
         model.settingsVisible = true
         Task { await model.loadSettings() }

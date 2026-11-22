@@ -45,33 +45,6 @@ extension SettingRow where Control == EmptyView {
     }
 }
 
-/// A row that shows a value instead of a control (status pages).
-struct ValueRow: View {
-    let title: String
-    let value: String
-    var description: String?
-    /// SF Mono for technical values (addresses); numbers always get tabular digits.
-    var mono = false
-
-    init(_ title: String, _ value: String, description: String? = nil, mono: Bool = false) {
-        self.title = title
-        self.value = value
-        self.description = description
-        self.mono = mono
-    }
-
-    var body: some View {
-        SettingRow(title, description: description) {
-            Text(value)
-                .fontDesign(mono ? .monospaced : .default)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-                .multilineTextAlignment(.trailing)
-        }
-    }
-}
-
 struct ErrorText: View {
     let message: String
     init(_ message: String) { self.message = message }
@@ -95,29 +68,6 @@ struct WarningText: View {
             .foregroundStyle(.orange)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
-    }
-}
-
-extension Color {
-    /// Near-black page background in dark mode, like Raycast; the system color in light mode.
-    static let pageBackground = Color(nsColor: NSColor(name: nil) { a in
-        a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 0.08, alpha: 1) : .windowBackgroundColor
-    })
-}
-
-/// An SF Symbol on a colored rounded square, like System Settings' sidebar.
-/// The only place with hard-coded colors.
-struct IconTile: View {
-    let symbol: String
-    let color: Color
-    var size: CGFloat = 20
-
-    var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: size * 0.55, weight: .semibold))
-            .foregroundStyle(.white)
-            .frame(width: size, height: size)
-            .background(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous).fill(color.gradient))
     }
 }
 
@@ -239,12 +189,12 @@ struct SelectMenu<Value: Hashable>: View {
                     .textFieldStyle(.plain)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .onChange(of: query) { _ in highlighted = matches.isEmpty ? nil : 0 }
+                    .onChange(of: query) { highlighted = matches.isEmpty ? nil : 0 }
                 Divider()
                 ScrollViewReader { proxy in
                     ScrollView { rows }
                         .frame(maxHeight: 280)
-                        .onChange(of: highlighted) { i in
+                        .onChange(of: highlighted) { _, i in
                             if let i, i < matches.count { proxy.scrollTo(matches[i]) }
                         }
                 }
