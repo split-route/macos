@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The routing service, registered by the app with SMAppService (Login Items).
+     build-app.sh copies it to Contents/Library/LaunchDaemons/. Same label as a
+     CLI install (`splitroute install`), so the two can never run at once. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>io.github.aliraghebi.splitroute</string>
+  <key>BundleProgram</key><string>Contents/Resources/splitroute</string>
+  <key>ProgramArguments</key>
+  <array><string>splitroute</string><string>watch</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>/var/log/splitroute.log</string>
+  <key>AssociatedBundleIdentifiers</key>
+  <array><string>io.github.aliraghebi.splitroute.app</string></array>
+</dict>
+</plist>
