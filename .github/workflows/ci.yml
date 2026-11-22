@@ -1,0 +1,32 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  TAGS: with_gvisor,with_quic,with_utls,with_wireguard,with_openvpn
+
+jobs:
+  daemon:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: daemon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go vet -tags $TAGS ./...
+      - run: go test -race ./...
+      - run: go test -race -tags $TAGS ./...
+
+  app:
+    # The app uses macOS 26 APIs (Liquid Glass), so it needs the macOS 26 SDK.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - run: cd app && swift build
