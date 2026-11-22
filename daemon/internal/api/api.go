@@ -18,6 +18,11 @@
 //	{"cmd": "tunnels"}                                          → tunnels
 //	{"cmd": "tunnel_check", "text": "<.ovpn>"}                  → check (what the profile asks for)
 //	{"cmd": "tunnel_import", "name": "Work", "text": "<.ovpn>"}                    → tunnel
+//	{"cmd": "vpn_set", "enabled": true}                                             turns the VPN on or off
+//	{"cmd": "tunnel_select", "name": "Work"}                                        the tunnel for all traffic no list names
+//	{"cmd": "tunnels_add", "text": "<links or a subscription body>"}               → added
+//	{"cmd": "tunnels_add", "url": "https://…", "name": "Provider"}                  → added (kept as a subscription)
+//	{"cmd": "tunnel_group_remove", "name": "Provider"}                              removes a subscription and its tunnels
 //	{"cmd": "tunnel_connect", "name": "Work", "username": "…", "password": "…"}
 //	{"cmd": "tunnel_credentials", "name": "Work", "username": "…", "password": "…", "key_password": "…"}
 //	{"cmd": "tunnel_disconnect" | "tunnel_remove" | "tunnel_logs", "name": "Work"}  (logs → logs)
@@ -110,6 +115,7 @@ type Response struct {
 
 	Tunnels *TunnelList  `json:"tunnels,omitempty"` // tunnels
 	Tunnel  *Tunnel      `json:"tunnel,omitempty"`  // tunnel_import
+	Added   *AddResult   `json:"added,omitempty"`   // tunnels_add
 	Check   *TunnelCheck `json:"check,omitempty"`   // tunnel_check
 	Logs    []string     `json:"logs,omitempty"`    // tunnel_logs
 }

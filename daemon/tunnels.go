@@ -52,14 +52,24 @@ func secureDir(dir string) error {
 	return nil
 }
 
+// optionsPath is where a link's options are kept: they hold the node's
+// password or key, so like a profile they are root-only and never in the database.
+func (a *app) optionsPath(id int64) string {
+	return filepath.Join(a.tunnelsDir(), strconv.FormatInt(id, 10), "options.json")
+}
+
 func (a *app) writeProfile(id int64, text []byte) error {
+	return a.writeTunnelFile(id, a.profilePath(id), text)
+}
+
+func (a *app) writeTunnelFile(id int64, path string, data []byte) error {
 	if err := secureDir(a.tunnelsDir()); err != nil {
 		return err
 	}
-	if err := secureDir(filepath.Dir(a.profilePath(id))); err != nil {
+	if err := secureDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	return writePrivate(a.profilePath(id), text)
+	return writePrivate(path, data)
 }
 
 // engineCheck is why no tunnel can run here, or "". The core's protocols come
@@ -92,9 +102,11 @@ func (a *app) tunnelByName(s *store.Store, name string) (store.Tunnel, error) {
 	return store.Tunnel{}, fmt.Errorf("no tunnel named %q", name)
 }
 
-func (a *app) apiTunnel(t store.Tunnel) api.Tunnel {
+// apiTunnel is a tunnel for the app; groups maps a subscription's id to its name.
+func (a *app) apiTunnel(t store.Tunnel, groups map[int64]string) api.Tunnel {
 	v := a.host.snapshot(tunnelID(t.ID))
-	return api.Tunnel{Name: t.Name, Remotes: t.Remotes, NeedsAuth: t.NeedsAuth, KeyEncrypted: t.KeyEncrypted,
+	return api.Tunnel{Name: t.Name, Protocol: t.Kind, Group: groups[t.SubscriptionID], Warning: t.Warning,
+		Remotes: t.Remotes, NeedsAuth: t.NeedsAuth, KeyEncrypted: t.KeyEncrypted,
 		AutoConnect: t.AutoConnect, State: v.state, Error: v.err, Need: v.need, LocalIP: v.local, RemoteIP: v.remote, Since: v.since}
 }
 
@@ -106,12 +118,33 @@ func (a *app) Tunnels() (api.TunnelList, error) {
 	if err != nil {
 		return l, err
 	}
+	vpn, err := s.VPN()
+	if err != nil {
+		return l, err
+	}
+	l.VPN = vpn.On
 	ts, err := s.Tunnels()
 	if err != nil {
 		return l, err
 	}
+	subs, err := s.Subscriptions()
+	if err != nil {
+		return l, err
+	}
+	groups := map[int64]string{}
+	counts := map[int64]int{}
+	for _, sub := range subs {
+		groups[sub.ID] = sub.Name
+	}
 	for _, t := range ts {
-		l.Tunnels = append(l.Tunnels, a.apiTunnel(t))
+		counts[t.SubscriptionID]++
+		l.Tunnels = append(l.Tunnels, a.apiTunnel(t, groups))
+		if t.ID == vpn.Selected {
+			l.Selected = t.Name
+		}
+	}
+	for _, sub := range subs {
+		l.Subscriptions = append(l.Subscriptions, api.Subscription{Name: sub.Name, Tunnels: counts[sub.ID], UpdatedAt: sub.UpdatedAt, Error: sub.LastError})
 	}
 	return l, nil
 }
@@ -153,7 +186,10 @@ func (a *app) TunnelImport(name string, text []byte) (api.Tunnel, error) {
 		_ = os.RemoveAll(filepath.Dir(a.profilePath(t.ID)))
 		return api.Tunnel{}, err
 	}
-	return a.apiTunnel(t), nil
+	if err := a.reconcile(); err != nil { // the VPN is on: the new tunnel joins the engine
+		log.Printf("reconcile: %v", err)
+	}
+	return a.apiTunnel(t, nil), nil
 }
 
 func (a *app) TunnelRemove(name string) error {
@@ -173,12 +209,18 @@ func (a *app) TunnelRemove(name string) error {
 	} else if len(using) > 0 {
 		return store.ErrTunnelInUse(using)
 	}
+	if err := selectedGuard(s, t.ID); err != nil {
+		return err
+	}
 	a.host.forget(tunnelID(t.ID)) // stops wanting it
 	// Files first: if this fails the row stays and the removal can be retried.
 	if err := os.RemoveAll(filepath.Dir(a.profilePath(t.ID))); err != nil {
 		return err
 	}
-	return s.RemoveTunnel(t.ID)
+	if err := s.RemoveTunnel(t.ID); err != nil {
+		return err
+	}
+	return a.reconcile()
 }
 
 func (a *app) TunnelRename(name, newName string) error {
@@ -214,6 +256,9 @@ func (a *app) TunnelAutoConnect(name string, on bool) error {
 // the credentials. The profile is read once, checked against the hash stored at
 // import and translated again: a file changed on disk is refused.
 func (a *app) options(t store.Tunnel, c api.Credentials) (json.RawMessage, error) {
+	if t.Kind != store.DefaultKind {
+		return a.linkOptions(t)
+	}
 	text, err := os.ReadFile(a.profilePath(t.ID))
 	if err != nil {
 		return nil, fmt.Errorf("profile: %w", err)
@@ -244,7 +289,7 @@ func (a *app) connect(t store.Tunnel, c api.Credentials) error {
 	if err != nil {
 		return err
 	}
-	a.host.connect(id, t.Name, opts)
+	a.host.connectProtocol(id, t.Name, t.Kind, opts)
 	return nil
 }
 
@@ -301,24 +346,11 @@ func (a *app) TunnelLogs(name string) ([]string, error) {
 	return a.host.logLines(), nil
 }
 
-// startAutoConnect connects the tunnels the user marked. One that needs
-// credentials waits for the app, which has them in the Keychain.
+// startAutoConnect brings the VPN back after a restart or reboot if the user
+// left it on. A selected OpenVPN tunnel that needs credentials waits for the app,
+// which has them in the Keychain.
 func (a *app) startAutoConnect() {
-	s, err := a.settings()
-	if err != nil {
-		return
-	}
-	ts, err := s.Tunnels()
-	if err != nil {
+	if err := a.reconcile(); err != nil {
 		log.Printf("auto-connect: %v", err)
-		return
-	}
-	for _, t := range ts {
-		if !t.AutoConnect {
-			continue
-		}
-		if err := a.connect(t, api.Credentials{}); err != nil {
-			log.Printf("auto-connect %s: %v", t.Name, err)
-		}
 	}
 }

@@ -239,8 +239,9 @@ func TestTunnelConnectAndCredentials(t *testing.T) {
 	if _, err := a.TunnelImport("Office", []byte(testProfile)); err != nil {
 		t.Fatal(err)
 	}
-	// It needs credentials and has none: it waits for the app instead of starting.
-	if err := a.TunnelConnect("Office", api.Credentials{}); err != nil {
+	// The VPN goes on with the only tunnel selected. It needs credentials and has
+	// none: it waits for the app instead of starting.
+	if err := a.VPNSet(true); err != nil {
 		t.Fatal(err)
 	}
 	if l, _ := a.Tunnels(); l.Tunnels[0].State != api.NeedsAuth || l.Tunnels[0].Need != "auth" {
@@ -267,12 +268,11 @@ func TestTunnelConnectAndCredentials(t *testing.T) {
 	if strings.Contains(string(out)+string(b), "s3cr3t") {
 		t.Error("credentials in the API's answers")
 	}
-	if err := a.TunnelDisconnect("Office"); err != nil {
+	if err := a.VPNSet(false); err != nil {
 		t.Fatal(err)
 	}
-	a.host.applyNow()
 	if !f.latest().isClosed() {
-		t.Error("the engine kept running after the last tunnel was disconnected")
+		t.Error("the engine kept running after the VPN was turned off")
 	}
 }
 
@@ -281,7 +281,7 @@ func TestTunnelRenameReachesTheHost(t *testing.T) {
 	if _, err := a.TunnelImport("Office", []byte(strings.Replace(testProfile, "auth-user-pass\n", "", 1)+"<cert>\nC\n</cert>\n<key>\nK\n</key>\n")); err != nil {
 		t.Skipf("fixture profile: %v", err)
 	}
-	if err := a.TunnelConnect("Office", api.Credentials{}); err != nil {
+	if err := a.VPNSet(true); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.TunnelRename("Office", "HQ"); err != nil {
@@ -315,7 +315,10 @@ func TestRefreshWritesRuleSetsAndTellsTheHost(t *testing.T) {
 		t.Errorf("status = %+v", st)
 	}
 	// The lists reach the engine by ID and action only.
-	if err := a.TunnelConnect("Office", api.Credentials{User: "u", Pass: "p", HaveAuth: true}); err != nil {
+	if err := a.VPNSet(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.TunnelCredentials("Office", api.Credentials{User: "u", Pass: "p", HaveAuth: true}); err != nil {
 		t.Fatal(err)
 	}
 	a.host.applyNow()

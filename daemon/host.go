@@ -45,6 +45,7 @@ type hostList struct {
 // wanted: every reload rebuilds all the options and nothing else holds them.
 type wantedTunnel struct {
 	id, name string
+	protocol string // the core's protocol name
 	options  json.RawMessage
 }
 
@@ -67,7 +68,12 @@ type view struct {
 //     credentials locks accounts). The user connects again to try.
 //   - One bad tunnel (a start that names it) is failed and dropped; the others start.
 //   - Changes are applied after a short settle time, so a burst of edits is one
-//     restart, not one reconnect of every tunnel per edit.
+//     restart, not one reconnect of every tunnel per edit. A restart of proxy
+//     tunnels takes a fraction of a second, so the time is short.
+//   - The engine runs only while the VPN is on and the selected tunnel is loaded.
+//     The selected tunnel is the engine's default: it carries all traffic no list
+//     names. If it can't be loaded (it waits for credentials, or failed) the
+//     engine stops and traffic goes direct: never through another tunnel.
 //   - The API answers from the engine's Status; events only prompt a re-read.
 type host struct {
 	newEngine engineFactory
@@ -75,21 +81,23 @@ type host struct {
 	settle    time.Duration
 	inbound   core.Inbound // zero: the tun; a test runs the proxy (a tun needs root)
 
-	mu      sync.Mutex
-	wanted  []*wantedTunnel // connect order: the first is the default tunnel
-	waiting map[string]string
-	views   map[string]*view
-	lists   []hostList
-	eng     Engine
-	timer   *time.Timer
-	logs    []string
-	warns   []string
-	err     string
-	closed  bool
+	mu       sync.Mutex
+	vpnOn    bool
+	selected string          // the core ID of the default tunnel; "" for none
+	wanted   []*wantedTunnel // the tunnels the engine loads
+	waiting  map[string]string
+	views    map[string]*view
+	lists    []hostList
+	eng      Engine
+	timer    *time.Timer
+	logs     []string
+	warns    []string
+	err      string
+	closed   bool
 }
 
 const (
-	hostSettle = 3 * time.Second
+	hostSettle = 250 * time.Millisecond
 	logLines   = 500
 )
 
@@ -113,18 +121,91 @@ func (h *host) wantedIndex(id string) int {
 	return slices.IndexFunc(h.wanted, func(w *wantedTunnel) bool { return w.id == id })
 }
 
-// connect asks for a tunnel: it joins the wanted set (the first one wanted is
-// the default tunnel) and the change is applied after the settle time.
+// setVPN turns the VPN on or off. Off drops every wanted tunnel and its
+// credentials; the engine stops.
+func (h *host) setVPN(on bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.vpnOn == on {
+		return
+	}
+	h.vpnOn = on
+	if !on {
+		for _, w := range h.wanted {
+			w.options = nil
+		}
+		h.wanted = nil
+		h.waiting = map[string]string{}
+		for id, v := range h.views {
+			if v.state != api.Failed {
+				*h.views[id] = view{state: api.Disconnected}
+			}
+		}
+	}
+	h.scheduleLocked()
+}
+
+// setSelected chooses the default tunnel; "" for none.
+func (h *host) setSelected(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.selected == id {
+		return
+	}
+	h.selected = id
+	h.scheduleLocked()
+}
+
+func (h *host) isWanted(id string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.wantedIndex(id) >= 0
+}
+
+// markFailed shows a tunnel as failed with msg, outside the wanted set.
+func (h *host) markFailed(id, msg string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.failLocked(id, msg)
+}
+
+// isFailed reports whether a tunnel failed and stays out until the user acts.
+func (h *host) isFailed(id string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	v := h.views[id]
+	return v != nil && v.state == api.Failed
+}
+
+// retry forgets that a tunnel failed, so it may be loaded again: the user asked.
+// An empty id forgets every failure.
+func (h *host) retry(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for vid, v := range h.views {
+		if (id == "" || id == vid) && v.state == api.Failed {
+			*h.views[vid] = view{state: api.Disconnected}
+		}
+	}
+}
+
+// connect asks for a tunnel: it joins the wanted set and the change is applied
+// after the settle time.
 func (h *host) connect(id, name string, options json.RawMessage) {
+	h.connectProtocol(id, name, "openvpn", options)
+}
+
+// connectProtocol asks for a tunnel of any protocol the core runs.
+func (h *host) connectProtocol(id, name, protocol string, options json.RawMessage) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.waiting, id)
 	v := h.viewLocked(id)
 	*v = view{state: api.Connecting}
 	if i := h.wantedIndex(id); i >= 0 {
-		h.wanted[i].options, h.wanted[i].name = options, name
+		h.wanted[i].options, h.wanted[i].name, h.wanted[i].protocol = options, name, protocol
 	} else {
-		h.wanted = append(h.wanted, &wantedTunnel{id: id, name: name, options: options})
+		h.wanted = append(h.wanted, &wantedTunnel{id: id, name: name, protocol: protocol, options: options})
 	}
 	h.scheduleLocked()
 }
@@ -218,7 +299,7 @@ var badTunnelRE = regexp.MustCompile(`\[t-([a-z0-9_-]+)\]`)
 func (h *host) applyLocked() {
 	// Each failed pass drops one tunnel, so this ends.
 	for attempt := 0; attempt <= len(h.wanted)+1; attempt++ {
-		if len(h.wanted) == 0 {
+		if !h.vpnOn || len(h.wanted) == 0 || h.wantedIndex(h.selected) < 0 {
 			h.stopLocked()
 			h.err = ""
 			return
@@ -287,10 +368,10 @@ func (h *host) stopLocked() {
 }
 
 func (h *host) buildLocked() core.Config {
-	cfg := core.Config{WorkDir: h.workDir, Default: h.wanted[0].id, Inbound: h.inbound, Log: core.Log{Level: "info"}}
+	cfg := core.Config{WorkDir: h.workDir, Default: h.selected, Inbound: h.inbound, Log: core.Log{Level: "info"}}
 	byName := map[string]string{}
 	for _, w := range h.wanted {
-		cfg.Tunnels = append(cfg.Tunnels, core.Tunnel{ID: w.id, Name: w.name, Protocol: "openvpn", Options: w.options})
+		cfg.Tunnels = append(cfg.Tunnels, core.Tunnel{ID: w.id, Name: w.name, Protocol: w.protocol, Options: w.options})
 		byName[strings.ToLower(w.name)] = w.id
 	}
 	h.warns = nil
@@ -349,7 +430,16 @@ func (h *host) syncLocked() {
 		}
 		v := h.viewLocked(ts.ID)
 		switch ts.State {
-		case core.StateConnected, core.StateReady:
+		case core.StateReady:
+			// No session to prove the server answers: say Ready, not Connected. Only the
+			// selected tunnel is shown as in use; the others are loaded but idle.
+			v.err, v.need = "", ""
+			if ts.ID == h.selected {
+				v.state = api.Ready
+			} else {
+				v.state = api.Disconnected
+			}
+		case core.StateConnected:
 			v.state, v.err, v.need, v.wasConnected = api.Connected, "", "", true
 			if ts.Info != nil {
 				v.local = ""
@@ -390,8 +480,9 @@ func (h *host) engineStatus() (running bool, connected int, warnings []string, e
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.syncLocked()
+	// What carries traffic: OpenVPN sessions that are up, and the selected tunnel if it is ready.
 	for _, w := range h.wanted {
-		if v := h.views[w.id]; v != nil && v.state == api.Connected {
+		if v := h.views[w.id]; v != nil && (v.state == api.Connected || v.state == api.Ready) {
 			connected++
 		}
 	}

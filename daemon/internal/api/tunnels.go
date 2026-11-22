@@ -18,6 +18,10 @@ const (
 	Connecting   State = "connecting"
 	NeedsAuth    State = "needs_auth" // waiting for credentials from the app
 	Connected    State = "connected"
+	// Ready is a tunnel with no session of its own (VLESS, Trojan, ...): the
+	// engine runs it and traffic can use it, but nothing has proven the server
+	// answers. Shown as "Ready", never as "Connected".
+	Ready        State = "ready"
 	Reconnecting State = "reconnecting"
 	Failed       State = "failed" // stopped for the reason in Error (bad credentials, a start that failed)
 )
@@ -33,7 +37,13 @@ type Credentials struct {
 // Tunnel is a stored tunnel and its live state. The daemon never returns
 // credentials or profile text.
 type Tunnel struct {
-	Name         string    `json:"name"`
+	Name string `json:"name"`
+	// Protocol is the core's protocol name ("openvpn", "vless", ...).
+	Protocol string `json:"protocol"`
+	// Group is the subscription the tunnel came from; empty for the default group.
+	Group string `json:"group,omitempty"`
+	// Warning is something to show on the tunnel (certificate checks are off).
+	Warning      string    `json:"warning,omitempty"`
 	Remotes      []string  `json:"remotes,omitempty"`
 	NeedsAuth    bool      `json:"needs_auth"`
 	KeyEncrypted bool      `json:"key_encrypted"`
@@ -57,9 +67,37 @@ type TunnelCheck struct {
 	ScriptSecurity int      `json:"script_security"`
 }
 
+// Subscription is a group of tunnels that came from one URL. The URL itself
+// is never sent: it carries the user's token.
+type Subscription struct {
+	Name      string    `json:"name"`
+	Tunnels   int       `json:"tunnels"`
+	UpdatedAt time.Time `json:"updated_at,omitzero"`
+	Error     string    `json:"error,omitempty"` // why the last update failed
+}
+
+// Skipped is a link that was not imported. Label never holds credentials.
+type Skipped struct {
+	Label  string `json:"label"`
+	Reason string `json:"reason"`
+}
+
+// AddResult is the answer to "tunnels_add".
+type AddResult struct {
+	Added   int       `json:"added"`
+	Skipped []Skipped `json:"skipped,omitempty"`
+	// Group is the subscription that was created, or "".
+	Group string `json:"group,omitempty"`
+}
+
 // TunnelList is the answer to "tunnels".
 type TunnelList struct {
-	Tunnels []Tunnel `json:"tunnels"`
+	Tunnels       []Tunnel       `json:"tunnels"`
+	Subscriptions []Subscription `json:"subscriptions,omitempty"`
+	// VPN is whether the user has the VPN on; Selected is the name of the tunnel
+	// that carries all traffic no list names ("" for none).
+	VPN      bool   `json:"vpn"`
+	Selected string `json:"selected,omitempty"`
 	// Unavailable is why tunnels can't run here, or "".
 	Unavailable string `json:"unavailable,omitempty"`
 }
@@ -69,6 +107,15 @@ type TunnelList struct {
 type Tunnels interface {
 	Tunnels() (TunnelList, error)
 	TunnelImport(name string, profile []byte) (Tunnel, error)
+	// VPNSet turns the VPN on or off.
+	VPNSet(on bool) error
+	// TunnelSelect makes a tunnel the one that carries traffic no list names.
+	TunnelSelect(name string) error
+	// TunnelsAdd imports share links or a subscription: from text, or from url
+	// (kept as a subscription named name, or the URL's host).
+	TunnelsAdd(text []byte, url, name string) (AddResult, error)
+	// TunnelGroupRemove removes a subscription and its tunnels.
+	TunnelGroupRemove(name string) error
 	TunnelRemove(name string) error
 	TunnelRename(name, newName string) error
 	TunnelAutoConnect(name string, on bool) error
@@ -89,7 +136,7 @@ func credsOf(req Request) Credentials {
 
 // respondTunnel answers the tunnel_* commands and "tunnels".
 func respondTunnel(b Backend, req Request) (r Response, handled bool) {
-	if len(req.Cmd) < 7 || req.Cmd[:6] != "tunnel" {
+	if req.Cmd != "vpn_set" && (len(req.Cmd) < 7 || req.Cmd[:6] != "tunnel") {
 		return r, false
 	}
 	t, ok := b.(Tunnels)
@@ -109,6 +156,29 @@ func respondTunnel(b Backend, req Request) (r Response, handled bool) {
 		if p, err = openvpn.Parse([]byte(req.Text)); err == nil {
 			r.Check = checkOf(p)
 		}
+	case "vpn_set":
+		if req.Enabled == nil {
+			return Response{Error: "vpn_set needs enabled"}, true
+		}
+		err = t.VPNSet(*req.Enabled)
+	case "tunnel_select":
+		if !need() {
+			return Response{Error: "tunnel_select needs a name"}, true
+		}
+		err = t.TunnelSelect(req.Name)
+	case "tunnels_add":
+		if (req.Text == "") == (req.URL == "") {
+			return Response{Error: "tunnels_add needs either text or a url"}, true
+		}
+		var res AddResult
+		if res, err = t.TunnelsAdd([]byte(req.Text), req.URL, req.Name); err == nil {
+			r.Added = &res
+		}
+	case "tunnel_group_remove":
+		if !need() {
+			return Response{Error: "tunnel_group_remove needs the subscription's name"}, true
+		}
+		err = t.TunnelGroupRemove(req.Name)
 	case "tunnel_import":
 		if !need() || req.Text == "" {
 			return Response{Error: "tunnel_import needs a name and the profile text"}, true

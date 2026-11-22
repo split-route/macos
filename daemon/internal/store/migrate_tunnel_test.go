@@ -45,7 +45,7 @@ func TestMigrationTunnelAction(t *testing.T) {
 	}
 	s.Close()
 
-	migrationFS = saved // all four migrations
+	migrationFS = migrationsUpTo(t, saved, 4)
 	s2, err := Open(file)
 	if err != nil {
 		t.Fatal(err)
@@ -174,4 +174,23 @@ func TestListNamesATunnel(t *testing.T) {
 	if _, err := s.db.Exec(`UPDATE lists SET tunnel_id = 1 WHERE name = 'malware'`); err == nil {
 		t.Error("a tunnel on a block list was accepted")
 	}
+}
+
+// migrationsUpTo returns the first n migrations of fsys, to test one migration
+// against the schema just before it.
+func migrationsUpTo(t *testing.T, fsys fs.FS, n int) fs.FS {
+	t.Helper()
+	names, err := fs.Glob(fsys, "*.sql")
+	if err != nil || len(names) < n {
+		t.Fatalf("migrations: %v %v", names, err)
+	}
+	out := fstest.MapFS{}
+	for _, name := range names[:n] {
+		b, err := fs.ReadFile(fsys, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[name] = &fstest.MapFile{Data: b}
+	}
+	return out
 }

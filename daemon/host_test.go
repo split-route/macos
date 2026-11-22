@@ -114,6 +114,7 @@ func testHost(t *testing.T) (*host, *fakes) {
 	f := &fakes{}
 	h := newHost("/data/work", f.factory)
 	h.settle = time.Hour
+	h.vpnOn, h.selected = true, "t1" // the VPN is on and t1 is selected, unless a test says otherwise
 	t.Cleanup(h.close)
 	return h, f
 }
@@ -135,6 +136,7 @@ func TestHostAppliesABurstOnce(t *testing.T) {
 	f := &fakes{}
 	h := newHost("/data/work", f.factory)
 	h.settle = 40 * time.Millisecond
+	h.vpnOn, h.selected = true, "t1"
 	defer h.close()
 	h.connect("t1", "Office", opts("a", "pa"))
 	h.connect("t2", "Home", opts("b", "pb"))
@@ -156,18 +158,69 @@ func TestHostAppliesABurstOnce(t *testing.T) {
 	}
 }
 
-func TestHostDefaultTunnelIsTheFirstConnected(t *testing.T) {
+// The selected tunnel is the engine's default, whatever order tunnels were loaded in.
+func TestHostDefaultTunnelIsTheSelectedOne(t *testing.T) {
 	h, f := testHost(t)
 	h.connect("t2", "Home", opts("b", "pb"))
 	h.connect("t1", "Office", opts("a", "pa"))
 	h.applyNow()
-	if c := f.latest().last(); c.Default != "t2" {
-		t.Errorf("default = %q, want the first connected (t2)", c.Default)
+	if c := f.latest().last(); c.Default != "t1" {
+		t.Errorf("default = %q, want the selected tunnel (t1)", c.Default)
 	}
-	h.disconnect("t2")
+	// Choosing another is a reload of the one engine with a new default, not a new engine.
+	h.setSelected("t2")
 	h.applyNow()
-	if c := f.latest().last(); c.Default != "t1" || len(c.Tunnels) != 1 {
-		t.Errorf("after the first disconnects: default %q, tunnels %v", c.Default, ids(c))
+	if c := f.latest().last(); c.Default != "t2" || f.count() != 1 {
+		t.Errorf("after selecting t2: default %q, engines %d", c.Default, f.count())
+	}
+}
+
+// If the selected tunnel can't be loaded, the engine stops: traffic goes direct,
+// never through whichever other tunnel happens to be loaded.
+func TestHostStopsWhenTheSelectedTunnelIsNotLoaded(t *testing.T) {
+	h, f := testHost(t)
+	h.connect("t2", "Home", opts("b", "pb")) // t1 (selected) is waiting for credentials
+	h.waitForCredentials("t1", "Office")
+	h.applyNow()
+	if f.count() != 0 {
+		t.Fatal("an engine started with another tunnel as the default")
+	}
+	if v := h.snapshot("t1"); v.state != api.NeedsAuth {
+		t.Errorf("selected tunnel = %+v, want it to show it needs sign-in", v)
+	}
+	// Credentials arrive: now it starts, with t1 the default.
+	h.connect("t1", "Office", opts("a", "pa"))
+	h.applyNow()
+	if f.count() != 1 || f.latest().last().Default != "t1" {
+		t.Errorf("engines %d", f.count())
+	}
+	// The selected tunnel fails: the engine stops instead of re-pointing.
+	f.latest().set(core.Status{Tunnels: []core.TunnelStatus{{ID: "t1", State: core.StateFailed, Error: "auth failed"}, {ID: "t2", State: core.StateReady}}})
+	h.snapshot("t1")
+	h.applyNow()
+	if !f.latest().isClosed() {
+		t.Error("the engine kept running with a failed default tunnel")
+	}
+	if v := h.snapshot("t1"); v.state != api.Failed {
+		t.Errorf("t1 = %+v", v)
+	}
+}
+
+// Off drops every loaded tunnel and its credentials, and stops the engine.
+func TestHostVPNOffStopsAndForgetsCredentials(t *testing.T) {
+	h, f := testHost(t)
+	h.connect("t1", "Office", opts("alice", "s3cr3t"))
+	h.applyNow()
+	h.setVPN(false)
+	h.applyNow()
+	if !f.latest().isClosed() {
+		t.Error("the engine kept running with the VPN off")
+	}
+	h.mu.Lock()
+	n := len(h.wanted)
+	h.mu.Unlock()
+	if n != 0 {
+		t.Errorf("%d tunnels still wanted (their credentials with them)", n)
 	}
 }
 
@@ -175,6 +228,7 @@ func TestHostDefaultTunnelIsTheFirstConnected(t *testing.T) {
 // cleared at once, so the next reload (any edit) can't retry them.
 func TestHostAFailedTunnelIsNotRetried(t *testing.T) {
 	h, f := testHost(t)
+	h.selected = "t2" // a failed default would stop the engine (see TestHostStopsWhenTheSelectedTunnelIsNotLoaded)
 	h.connect("t1", "Office", opts("a", "wrong"))
 	h.connect("t2", "Home", opts("b", "pb"))
 	h.applyNow()
@@ -214,6 +268,7 @@ func TestHostOneBadTunnelDoesNotStopTheOthers(t *testing.T) {
 		}
 		return nil
 	}
+	h.selected = "good"
 	h.connect("good", "Good", opts("a", "pa"))
 	h.connect("bad", "Bad", opts("b", "pb"))
 	h.applyNow()

@@ -3,7 +3,7 @@ module github.com/split-route/macos/daemon
 go 1.27.1
 
 require (
-	github.com/split-route/core v0.1.0
+	github.com/split-route/core v0.2.0
 	modernc.org/sqlite v1.62.0
 )
 

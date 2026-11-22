@@ -254,6 +254,22 @@ func (b *tunnelBackend) TunnelCredentials(n string, c Credentials) error {
 	b.calls, b.creds = append(b.calls, "credentials "+n), c
 	return nil
 }
+func (b *tunnelBackend) VPNSet(on bool) error {
+	b.calls = append(b.calls, fmt.Sprintf("vpn %v", on))
+	return nil
+}
+func (b *tunnelBackend) TunnelSelect(n string) error {
+	b.calls = append(b.calls, "select "+n)
+	return nil
+}
+func (b *tunnelBackend) TunnelsAdd(text []byte, url, name string) (AddResult, error) {
+	b.calls = append(b.calls, fmt.Sprintf("add %d %q %q", len(text), url, name))
+	return AddResult{Added: 2, Skipped: []Skipped{{Label: "x", Reason: "y"}}, Group: name}, nil
+}
+func (b *tunnelBackend) TunnelGroupRemove(n string) error {
+	b.calls = append(b.calls, "group-remove "+n)
+	return nil
+}
 func (b *tunnelBackend) TunnelDisconnect(n string) error {
 	b.calls = append(b.calls, "disconnect "+n)
 	return nil
@@ -276,6 +292,16 @@ func TestTunnelCommands(t *testing.T) {
 		{req: Request{Cmd: "tunnel_auto_connect", Name: "Work"}, wantErr: "needs enabled"},
 		{req: Request{Cmd: "tunnel_connect", Name: "Work"}, call: "connect Work"},
 		{req: Request{Cmd: "tunnel_disconnect", Name: "Work"}, call: "disconnect Work"},
+		{req: Request{Cmd: "vpn_set", Enabled: &yes}, call: "vpn true"},
+		{req: Request{Cmd: "vpn_set"}, wantErr: "needs enabled"},
+		{req: Request{Cmd: "tunnel_select", Name: "Work"}, call: "select Work"},
+		{req: Request{Cmd: "tunnel_select"}, wantErr: "needs a name"},
+		{req: Request{Cmd: "tunnels_add", Text: "vless://x"}, call: `add 9 "" ""`},
+		{req: Request{Cmd: "tunnels_add", URL: "https://example.com/s", Name: "P"}, call: `add 0 "https://example.com/s" "P"`},
+		{req: Request{Cmd: "tunnels_add"}, wantErr: "either text or a url"},
+		{req: Request{Cmd: "tunnels_add", Text: "a", URL: "https://example.com"}, wantErr: "either text or a url"},
+		{req: Request{Cmd: "tunnel_group_remove", Name: "P"}, call: "group-remove P"},
+		{req: Request{Cmd: "tunnel_group_remove"}, wantErr: "needs the subscription's name"},
 		{req: Request{Cmd: "tunnel_nope", Name: "Work"}, wantErr: "unknown command"},
 	}
 	for _, tt := range tests {
@@ -290,6 +316,9 @@ func TestTunnelCommands(t *testing.T) {
 		if !r.OK || !slices.Equal(b.calls, []string{tt.call}) {
 			t.Errorf("%s: got %+v, calls %q, want %q", tt.req.Cmd, r, b.calls, tt.call)
 		}
+	}
+	if r := Respond(&tunnelBackend{}, Request{Cmd: "tunnels_add", URL: "https://example.com/s", Name: "P"}); !r.OK || r.Added == nil || r.Added.Added != 2 || r.Added.Group != "P" || len(r.Added.Skipped) != 1 {
+		t.Errorf("tunnels_add: %+v", r)
 	}
 	// Credentials reach the backend, and only as credentials.
 	b := &tunnelBackend{}

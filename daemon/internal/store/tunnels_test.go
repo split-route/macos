@@ -25,7 +25,7 @@ func TestTunnels(t *testing.T) {
 	if err != nil || len(got) != 2 || got[0].ID != a || got[1].ID != b {
 		t.Fatalf("Tunnels() = %+v, %v", got, err)
 	}
-	want := Tunnel{ID: a, Name: "Work", ProfileSHA256: sha, Remotes: []string{"vpn.example.com:443", "b:1194"}, NeedsAuth: true, Scripts: []string{"route-up", "up"}}
+	want := Tunnel{ID: a, Name: "Work", Kind: "openvpn", ProfileSHA256: sha, Remotes: []string{"vpn.example.com:443", "b:1194"}, NeedsAuth: true, Scripts: []string{"route-up", "up"}}
 	if !reflect.DeepEqual(got[0], want) {
 		t.Errorf("got %+v, want %+v", got[0], want)
 	}

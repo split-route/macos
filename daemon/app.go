@@ -262,6 +262,9 @@ func (a *app) refreshLists(ctx context.Context) error {
 	a.fetched, a.counts, a.listWarn = time.Now().UTC(), counts, warn
 	a.mu.Unlock()
 	a.host.setLists(hl)
+	if err := a.reconcile(); err != nil { // lists may name OpenVPN tunnels the engine must load
+		log.Printf("reconcile: %v", err)
+	}
 	return nil
 }
 
