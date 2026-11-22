@@ -259,3 +259,126 @@ func (s *Store) RemoveSubscription(id int64) error {
 	}
 	return tx.Commit()
 }
+
+// ErrSubscriptionExists: a subscription already has that name.
+var ErrSubscriptionExists = errors.New("a subscription with that name already exists")
+
+// RenameSubscription changes a subscription's name. Tunnels refer to it by id,
+// so nothing else changes.
+func (s *Store) RenameSubscription(id int64, name string) error {
+	res, err := s.db.Exec("UPDATE subscriptions SET name = ? WHERE id = ?", CleanName(name), id)
+	if err != nil {
+		if isUnique(err) {
+			return ErrSubscriptionExists
+		}
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		if err != nil {
+			return err
+		}
+		return ErrNoSubscription
+	}
+	return nil
+}
+
+// SetSubscriptionError records why the last update failed. The text never
+// holds the address.
+func (s *Store) SetSubscriptionError(id int64, msg string) error {
+	_, err := s.db.Exec("UPDATE subscriptions SET last_error = ? WHERE id = ?", cutBytes(msg, 300, "update failed"), id)
+	return err
+}
+
+// SubscriptionSync is the change an update makes to a subscription's tunnels.
+// Update holds tunnels with their ids; only the hash, the remotes and the
+// warning change, so lists and the selected tunnel keep pointing at them.
+type SubscriptionSync struct {
+	Add    []Tunnel
+	Update []Tunnel
+	Remove []int64
+}
+
+// SyncSubscription applies a sync in one transaction and marks the
+// subscription as updated now. Tunnels that a list uses are never removed: the
+// whole sync is refused and nothing changes. files runs before the commit with
+// the added tunnels (ids and final names set); if it fails nothing is stored.
+func (s *Store) SyncSubscription(id int64, sy SubscriptionSync, files func(added []Tunnel) error) ([]Tunnel, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var exists int
+	if err := tx.QueryRow("SELECT count(*) FROM subscriptions WHERE id = ?", id).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if exists == 0 {
+		return nil, ErrNoSubscription
+	}
+	n, err := tunnelCount(tx)
+	if err != nil {
+		return nil, err
+	}
+	if n+len(sy.Add)-len(sy.Remove) > MaxTunnels {
+		return nil, ErrTooManyTunnels
+	}
+	now := s.stamp()
+	for _, tid := range sy.Remove {
+		var using []string
+		rows, err := tx.Query("SELECT name FROM lists WHERE tunnel_id = ? ORDER BY position", tid)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			using = append(using, name)
+		}
+		if err := closeRows(rows); err != nil {
+			return nil, err
+		}
+		if len(using) > 0 {
+			return nil, ErrTunnelInUse(using)
+		}
+		res, err := tx.Exec("DELETE FROM tunnels WHERE id = ? AND subscription_id = ?", tid, id)
+		if err != nil {
+			return nil, err
+		}
+		if err := affected(res, nil); err != nil {
+			return nil, err
+		}
+	}
+	for _, t := range sy.Update {
+		res, err := tx.Exec("UPDATE tunnels SET profile_sha256 = ?, remotes = ?, warning = ?, updated_at = ? WHERE id = ? AND subscription_id = ?",
+			t.ProfileSHA256, strings.Join(t.Remotes, "\n"), t.Warning, now, t.ID, id)
+		if err := affected(res, err); err != nil {
+			return nil, err
+		}
+	}
+	added := make([]Tunnel, 0, len(sy.Add))
+	for _, t := range sy.Add {
+		if t.Name, err = uniqueName(tx, "tunnels", CleanName(t.Name)); err != nil {
+			return nil, err
+		}
+		t.SubscriptionID = id
+		if t.ID, err = insertTunnel(tx, t, now); err != nil {
+			return nil, err
+		}
+		if t.Kind == "" {
+			t.Kind = DefaultKind
+		}
+		added = append(added, t)
+	}
+	if _, err := tx.Exec("UPDATE subscriptions SET updated_at = ?, last_error = '' WHERE id = ?", now, id); err != nil {
+		return nil, err
+	}
+	if files != nil {
+		if err := files(added); err != nil {
+			return nil, err
+		}
+	}
+	return added, tx.Commit()
+}

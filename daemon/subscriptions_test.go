@@ -15,6 +15,7 @@ import (
 	"github.com/split-route/core"
 	"github.com/split-route/macos/daemon/internal/api"
 	"github.com/split-route/macos/daemon/internal/config"
+	"github.com/split-route/macos/daemon/internal/store"
 )
 
 const (
@@ -241,4 +242,238 @@ func TestLinkTunnelOptionsAreHashChecked(t *testing.T) {
 func jsonString(v any) (string, error) {
 	b, err := json.Marshal(v)
 	return string(b), err
+}
+
+func TestParseUserinfo(t *testing.T) {
+	for name, tt := range map[string]struct {
+		in   string
+		want *api.Usage
+	}{
+		"panel":        {"upload=0; download=204300000000; total=400000000000; expire=1780000000", &api.Usage{Download: 204300000000, Total: 400000000000, Expire: 1780000000}},
+		"no expire":    {"upload=5;download=7;total=9", &api.Usage{Upload: 5, Download: 7, Total: 9}},
+		"upper case":   {"Upload=1; DOWNLOAD=2", &api.Usage{Upload: 1, Download: 2}},
+		"empty":        {"", nil},
+		"junk":         {"hello; a=b; download=x", nil},
+		"negative":     {"download=-5", nil},
+		"expire alone": {"expire=1780000000", nil},
+	} {
+		got := parseUserinfo(tt.in)
+		if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
+			t.Errorf("%s: %+v, want %+v", name, got, tt.want)
+		}
+	}
+}
+
+// changingServer answers with whatever body and header the test sets last.
+func changingServer(t *testing.T, a *app) (url string, set func(status int, body, userinfo string)) {
+	t.Helper()
+	status, body, info := 200, "", ""
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if info != "" {
+			w.Header().Set("Subscription-Userinfo", info)
+		}
+		w.WriteHeader(status)
+		w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	a.httpClient = srv.Client()
+	return srv.URL + "/sub/TOKEN-s3cret", func(s int, b, i string) { status, body, info = s, b, i }
+}
+
+func TestSubscriptionUpdateKeepsWhatListsUse(t *testing.T) {
+	a, _ := testApp(t)
+	url, set := changingServer(t, a)
+	set(200, goodTrojan+"\n"+goodVLESS+"\n", "upload=1; download=2; total=10; expire=1780000000")
+	if _, err := a.TunnelsAdd(nil, url, "Provider"); err != nil {
+		t.Fatal(err)
+	}
+	l, _ := a.Tunnels()
+	if u := l.Subscriptions[0].Usage; u == nil || u.Download != 2 || u.Total != 10 || u.Expire != 1780000000 {
+		t.Fatalf("usage after add = %+v", u)
+	}
+	s, _ := a.settings()
+	before, _ := s.Subscriptions()
+	tunnelsBefore, _ := s.SubscriptionTunnels(before[0].ID)
+	alphaID := int64(0)
+	for _, x := range tunnelsBefore {
+		if x.Name == "Alpha" {
+			alphaID = x.ID
+		}
+	}
+
+	// Alpha stays but its password changes; Beta is dropped; Gamma is new.
+	changed := "trojan://newpass@a.example.com:443?sni=a.example.com#Alpha"
+	set(200, changed+"\n"+xhttpNode+"\n"+"trojan://p@g.example.com:443?sni=g.example.com#Gamma\n", "upload=5; download=6; total=10")
+	res, err := a.TunnelGroupUpdate("provider")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Added != 1 || res.Updated != 1 || res.Removed != 1 || res.Kept != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+	tunnelsAfter, _ := s.SubscriptionTunnels(before[0].ID)
+	names := map[string]int64{}
+	for _, x := range tunnelsAfter {
+		names[x.Name] = x.ID
+	}
+	if names["Alpha"] != alphaID || names["Gamma"] == 0 || names["Beta"] != 0 || len(names) != 2 {
+		t.Fatalf("tunnels after = %v (Alpha id was %d)", names, alphaID)
+	}
+	if _, err := a.linkOptions(tunnelsAfterByName(tunnelsAfter, "Alpha")); err != nil {
+		t.Errorf("the updated options fail their hash check: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(a.optionsPath(tunnelsBefore[1].ID))); !os.IsNotExist(err) && tunnelsBefore[1].Name == "Beta" {
+		t.Errorf("a removed tunnel's files are still there: %v", err)
+	}
+	l, _ = a.Tunnels()
+	if u := l.Subscriptions[0].Usage; u == nil || u.Download != 6 || u.Expire != 0 {
+		t.Errorf("usage after update = %+v (the old expiry must not stay)", u)
+	}
+
+	// A dropped tunnel that a list uses stays.
+	onlyCustomLists(t, a, config.List{Name: "social", Action: "tunnel", Tunnel: "Gamma", Custom: true})
+	set(200, changed+"\n", "")
+	res, err = a.TunnelGroupUpdate("provider")
+	if err != nil || res.Kept != 1 || res.Removed != 0 {
+		t.Fatalf("result = %+v, %v", res, err)
+	}
+	l, _ = a.Tunnels()
+	if len(l.Tunnels) != 2 || l.Subscriptions[0].Usage != nil {
+		t.Errorf("list = %+v", l)
+	}
+}
+
+func tunnelsAfterByName(ts []store.Tunnel, name string) store.Tunnel {
+	for _, t := range ts {
+		if t.Name == name {
+			return t
+		}
+	}
+	return store.Tunnel{}
+}
+
+// A bad answer must change nothing: an empty or broken download never wipes the group.
+func TestSubscriptionUpdateFailureChangesNothing(t *testing.T) {
+	a, _ := testApp(t)
+	url, set := changingServer(t, a)
+	set(200, goodTrojan+"\n"+goodVLESS+"\n", "")
+	if _, err := a.TunnelsAdd(nil, url, "Provider"); err != nil {
+		t.Fatal(err)
+	}
+	for name, tt := range map[string]struct {
+		status int
+		body   string
+	}{
+		"500":          {500, "oops"},
+		"login page":   {200, "<html>sign in</html>"},
+		"only skipped": {200, xhttpNode + "\n"},
+	} {
+		set(tt.status, tt.body, "")
+		_, err := a.TunnelGroupUpdate("Provider")
+		if err == nil || strings.Contains(err.Error(), "TOKEN-s3cret") {
+			t.Errorf("%s: %v", name, err)
+		}
+		l, _ := a.Tunnels()
+		if len(l.Tunnels) != 2 || l.Subscriptions[0].Error == "" || strings.Contains(l.Subscriptions[0].Error, "TOKEN-s3cret") {
+			t.Errorf("%s: list = %+v", name, l)
+		}
+	}
+	set(200, goodTrojan+"\n"+goodVLESS+"\n", "")
+	if _, err := a.TunnelGroupUpdate("Provider"); err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := a.Tunnels(); l.Subscriptions[0].Error != "" {
+		t.Errorf("a good update left the error: %q", l.Subscriptions[0].Error)
+	}
+	if _, err := a.TunnelGroupUpdate("nope"); err == nil {
+		t.Error("updating an unknown subscription succeeded")
+	}
+}
+
+func TestSubscriptionEdit(t *testing.T) {
+	a, _ := testApp(t)
+	url, set := changingServer(t, a)
+	set(200, goodTrojan+"\n", "")
+	if _, err := a.TunnelsAdd(nil, url, "Provider"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := a.TunnelGroupURL("provider"); err != nil || got != url {
+		t.Fatalf("url = %q, %v", got, err)
+	}
+	if err := a.TunnelGroupEdit("Provider", "Other", "http://example.com/sub/TOKEN-s3cret"); err == nil || strings.Contains(err.Error(), "TOKEN-s3cret") {
+		t.Errorf("plain http accepted or leaked: %v", err)
+	}
+	if got, _ := a.TunnelGroupURL("Provider"); got != url {
+		t.Error("a refused edit changed the address or the name")
+	}
+	newURL := url + "2"
+	if err := a.TunnelGroupEdit("Provider", "Other", newURL); err != nil {
+		t.Fatal(err)
+	}
+	l, _ := a.Tunnels()
+	if l.Subscriptions[0].Name != "Other" || l.Tunnels[0].Group != "Other" {
+		t.Errorf("list = %+v", l)
+	}
+	if got, _ := a.TunnelGroupURL("Other"); got != newURL {
+		t.Errorf("url = %q", got)
+	}
+	s, _ := a.settings()
+	subs, _ := s.Subscriptions()
+	allPerm(t, a.subscriptionURLPath(subs[0].ID))
+	// Rename only; and a taken name is refused.
+	if err := a.TunnelGroupEdit("Other", "Third", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := a.TunnelGroupURL("Third"); got != newURL {
+		t.Error("a rename lost the address")
+	}
+	if _, err := a.TunnelsAdd(nil, url, "Fourth"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.TunnelGroupEdit("Fourth", "third", ""); err == nil {
+		t.Error("renamed onto an existing name")
+	}
+	if err := a.TunnelGroupEdit("Fourth", "", ""); err != nil {
+		t.Errorf("an empty edit failed: %v", err)
+	}
+}
+
+// Names that an import suffixed, or that the user changed, must not make every update replace the tunnel.
+func TestSubscriptionUpdateKeepsSuffixedAndRenamedTunnels(t *testing.T) {
+	a, _ := testApp(t)
+	if _, err := a.TunnelsAdd([]byte(goodTrojan), "", ""); err != nil { // a manual "Alpha"
+		t.Fatal(err)
+	}
+	url, set := changingServer(t, a)
+	set(200, goodTrojan+"\n"+goodVLESS+"\n", "")
+	if _, err := a.TunnelsAdd(nil, url, "Provider"); err != nil { // stored as "Alpha 2" and "Beta"
+		t.Fatal(err)
+	}
+	if err := a.TunnelRename("Beta", "My Beta"); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := a.settings()
+	ids := func() map[string]int64 {
+		subs, _ := s.Subscriptions()
+		ts, _ := s.SubscriptionTunnels(subs[0].ID)
+		m := map[string]int64{}
+		for _, x := range ts {
+			m[x.Name] = x.ID
+		}
+		return m
+	}
+	before := ids()
+	if before["Alpha 2"] == 0 || before["My Beta"] == 0 {
+		t.Fatalf("setup: %v", before)
+	}
+	for i := 0; i < 2; i++ {
+		res, err := a.TunnelGroupUpdate("Provider")
+		if err != nil || res.Added != 0 || res.Removed != 0 || res.Updated != 0 || res.Kept != 0 {
+			t.Fatalf("update %d: %+v %v", i, res, err)
+		}
+	}
+	after := ids()
+	if len(after) != 2 || after["Alpha 2"] != before["Alpha 2"] || after["My Beta"] != before["My Beta"] {
+		t.Errorf("tunnels were replaced: %v -> %v", before, after)
+	}
 }

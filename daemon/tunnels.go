@@ -144,7 +144,7 @@ func (a *app) Tunnels() (api.TunnelList, error) {
 		}
 	}
 	for _, sub := range subs {
-		l.Subscriptions = append(l.Subscriptions, api.Subscription{Name: sub.Name, Tunnels: counts[sub.ID], UpdatedAt: sub.UpdatedAt, Error: sub.LastError})
+		l.Subscriptions = append(l.Subscriptions, api.Subscription{Name: sub.Name, Tunnels: counts[sub.ID], UpdatedAt: sub.UpdatedAt, Error: sub.LastError, Usage: a.loadUsage(sub.ID)})
 	}
 	return l, nil
 }

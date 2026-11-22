@@ -192,9 +192,29 @@ struct Subscription: Decodable, Equatable, Identifiable {
     var tunnels: Int
     var updatedAt: String?
     var error: String?
+    /// What the provider reported with the last download; nil if it sent nothing.
+    var usage: SubscriptionUsage?
     var id: String { name }
 
-    enum CodingKeys: String, CodingKey { case name, tunnels, updatedAt = "updated_at", error }
+    enum CodingKeys: String, CodingKey { case name, tunnels, updatedAt = "updated_at", error, usage }
+}
+
+/// The provider's Subscription-Userinfo (Go: api.Usage). Zero `total` or `expire` means none was given.
+struct SubscriptionUsage: Decodable, Equatable {
+    var upload: Int64
+    var download: Int64
+    var total: Int64?
+    var expire: Int64?  // unix seconds
+}
+
+/// The answer to tunnel_group_update (Go: api.UpdateResult).
+struct UpdateResult: Decodable, Equatable {
+    var added: Int
+    var updated: Int
+    var removed: Int
+    /// Tunnels the provider dropped that stay because a list uses them or they are selected.
+    var kept: Int?
+    var skipped: [SkippedNode]?
 }
 
 /// A link or node that was not imported, and why (Go: api.Skipped).
@@ -301,6 +321,13 @@ private struct Response: Decodable {
     var check: TunnelCheck?
     var logs: [String]?
     var added: AddResult?
+    var updated: UpdateResult?
+    var groupURL: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, error, status, config, lists, catalog, presets, edit, tunnels, tunnel, check, logs, added, updated
+        case groupURL = "group_url"
+    }
 }
 
 enum DaemonError: LocalizedError, Equatable {
@@ -408,6 +435,23 @@ enum Daemon {
     static func tunnelSelect(_ name: String) async throws { _ = try await send(Request(cmd: "tunnel_select", name: name)) }
 
     static func tunnelGroupRemove(_ name: String) async throws { _ = try await send(Request(cmd: "tunnel_group_remove", name: name)) }
+
+    /// Downloads the subscription again; the service keeps the tunnels that lists and the selection use.
+    static func tunnelGroupUpdate(_ name: String) async throws -> UpdateResult {
+        guard let r = try await send(Request(cmd: "tunnel_group_update", name: name)).updated else { throw oldService }
+        return r
+    }
+
+    /// The saved address (it carries the user's token).
+    static func tunnelGroupURL(_ name: String) async throws -> String {
+        guard let u = try await send(Request(cmd: "tunnel_group_url", name: name)).groupURL else { throw oldService }
+        return u
+    }
+
+    /// Renames a subscription and/or replaces its address; nil leaves it as it is.
+    static func tunnelGroupEdit(_ name: String, newName: String?, url: String?) async throws {
+        _ = try await send(Request(cmd: "tunnel_group_edit", name: name, newName: newName?.nilIfEmpty, url: url?.nilIfEmpty))
+    }
 
     static func tunnelDisconnect(_ name: String) async throws { _ = try await send(Request(cmd: "tunnel_disconnect", name: name)) }
     static func tunnelRemove(_ name: String) async throws { _ = try await send(Request(cmd: "tunnel_remove", name: name)) }

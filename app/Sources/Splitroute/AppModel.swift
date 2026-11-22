@@ -16,6 +16,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var catalog: [ListInfo] = []
     @Published var actionError: String?
     @Published fileprivate(set) var tunnelList: TunnelList?
+    /// Subscriptions being downloaded, the outcome of the last update, and the ones the user folded.
+    @Published private(set) var updatingGroups: Set<String> = []
+    @Published private(set) var groupResults: [String: String] = [:]
+    @Published private(set) var collapsedGroups: Set<String> = AppModel.loadCollapsed()
     fileprivate var tunnelSupplied: [String: Date] = [:]
     /// Tunnels whose saved credentials the server refused: they are asked for again, never re-sent.
     fileprivate var credentialsRefused: Set<String> = []
@@ -462,10 +466,81 @@ extension AppModel {
     }
 
     /// Removes a subscription and its tunnels; the service refuses while a list uses one of them.
-    func removeGroup(_ name: String) async {
+    /// Returns the service's reason when it refuses.
+    func removeGroup(_ name: String) async -> String? {
+        defer { Task { await reloadTunnels() } }
+        do {
+            try await Daemon.tunnelGroupRemove(name)
+            forgetCollapsed(name)
+            return nil
+        } catch { return error.localizedDescription }
+    }
+
+    /// Downloads a subscription again. The outcome shows under its name until the next update.
+    func updateGroup(_ name: String) async {
+        guard !updatingGroups.contains(name) else { return }
+        updatingGroups.insert(name)
         errors["group:\(name)"] = nil
-        do { try await Daemon.tunnelGroupRemove(name) } catch { errors["group:\(name)"] = error.localizedDescription }
+        groupResults[name] = nil
+        do {
+            groupResults[name] = Self.describe(try await Daemon.tunnelGroupUpdate(name))
+        } catch {
+            errors["group:\(name)"] = error.localizedDescription
+        }
+        updatingGroups.remove(name)
         await reloadTunnels()
+    }
+
+    private static func describe(_ r: UpdateResult) -> String {
+        var p: [String] = []
+        if r.added > 0 { p.append("\(r.added) added") }
+        if r.updated > 0 { p.append("\(r.updated) changed") }
+        if r.removed > 0 { p.append("\(r.removed) removed") }
+        if let k = r.kept, k > 0 { p.append("\(k) kept, still in use") }
+        if let s = r.skipped, !s.isEmpty { p.append("\(s.count) skipped") }
+        return p.isEmpty ? "Already up to date" : "Updated: " + p.joined(separator: ", ")
+    }
+
+    func groupURL(_ name: String) async -> Result<String, Error> {
+        do { return .success(try await Daemon.tunnelGroupURL(name)) } catch { return .failure(error) }
+    }
+
+    /// Renames a subscription and/or replaces its address. Returns the service's reason when it refuses.
+    func editGroup(_ name: String, newName: String?, url: String?) async -> String? {
+        do {
+            try await Daemon.tunnelGroupEdit(name, newName: newName, url: url)
+            if let n = newName, !n.isEmpty, n != name { renameCollapsed(name, to: n) }
+            await reloadTunnels()
+            return nil
+        } catch { return error.localizedDescription }
+    }
+
+    // MARK: Folded groups
+
+    private static let collapsedKey = "collapsedGroups"
+
+    /// A subscription is open until the user folds it; the choice is kept for the next launch.
+    func isCollapsed(_ name: String) -> Bool { collapsedGroups.contains(name) }
+
+    func toggleCollapsed(_ name: String) {
+        if collapsedGroups.contains(name) { collapsedGroups.remove(name) } else { collapsedGroups.insert(name) }
+        saveCollapsed()
+    }
+
+    private func forgetCollapsed(_ name: String) {
+        if collapsedGroups.remove(name) != nil { saveCollapsed() }
+    }
+
+    private func renameCollapsed(_ old: String, to new: String) {
+        if collapsedGroups.remove(old) != nil { collapsedGroups.insert(new); saveCollapsed() }
+    }
+
+    private func saveCollapsed() {
+        UserDefaults.standard.set(collapsedGroups.sorted(), forKey: Self.collapsedKey)
+    }
+
+    static func loadCollapsed() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: collapsedKey) ?? [])
     }
 
     func removeTunnel(_ name: String) async {

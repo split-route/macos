@@ -270,6 +270,18 @@ func (b *tunnelBackend) TunnelGroupRemove(n string) error {
 	b.calls = append(b.calls, "group-remove "+n)
 	return nil
 }
+func (b *tunnelBackend) TunnelGroupUpdate(n string) (UpdateResult, error) {
+	b.calls = append(b.calls, "group-update "+n)
+	return UpdateResult{Added: 1, Updated: 2, Removed: 3}, nil
+}
+func (b *tunnelBackend) TunnelGroupURL(n string) (string, error) {
+	b.calls = append(b.calls, "group-url "+n)
+	return "https://example.com/sub/TOKEN", nil
+}
+func (b *tunnelBackend) TunnelGroupEdit(n, newName, url string) error {
+	b.calls = append(b.calls, "group-edit "+n+" "+newName+" "+url)
+	return nil
+}
 func (b *tunnelBackend) TunnelDisconnect(n string) error {
 	b.calls = append(b.calls, "disconnect "+n)
 	return nil
@@ -302,6 +314,11 @@ func TestTunnelCommands(t *testing.T) {
 		{req: Request{Cmd: "tunnels_add", Text: "a", URL: "https://example.com"}, wantErr: "either text or a url"},
 		{req: Request{Cmd: "tunnel_group_remove", Name: "P"}, call: "group-remove P"},
 		{req: Request{Cmd: "tunnel_group_remove"}, wantErr: "needs the subscription's name"},
+		{req: Request{Cmd: "tunnel_group_update", Name: "P"}, call: "group-update P"},
+		{req: Request{Cmd: "tunnel_group_update"}, wantErr: "needs the subscription's name"},
+		{req: Request{Cmd: "tunnel_group_url", Name: "P"}, call: "group-url P"},
+		{req: Request{Cmd: "tunnel_group_edit", Name: "P", NewName: "Q", URL: "https://x"}, call: "group-edit P Q https://x"},
+		{req: Request{Cmd: "tunnel_group_edit"}, wantErr: "needs the subscription's name"},
 		{req: Request{Cmd: "tunnel_nope", Name: "Work"}, wantErr: "unknown command"},
 	}
 	for _, tt := range tests {

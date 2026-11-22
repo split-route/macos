@@ -74,6 +74,28 @@ type Subscription struct {
 	Tunnels   int       `json:"tunnels"`
 	UpdatedAt time.Time `json:"updated_at,omitzero"`
 	Error     string    `json:"error,omitempty"` // why the last update failed
+	// Usage is what the provider reported with the last download; nil if it sent nothing.
+	Usage *Usage `json:"usage,omitempty"`
+}
+
+// Usage is the provider's Subscription-Userinfo: bytes used and allowed, and
+// when the plan ends. Zero Total or Expire means the provider gave none.
+type Usage struct {
+	Upload   int64 `json:"upload"`
+	Download int64 `json:"download"`
+	Total    int64 `json:"total,omitempty"`
+	Expire   int64 `json:"expire,omitempty"` // unix seconds
+}
+
+// UpdateResult is the answer to "tunnel_group_update".
+type UpdateResult struct {
+	Added   int `json:"added"`
+	Updated int `json:"updated"`
+	Removed int `json:"removed"`
+	// Kept is the tunnels the provider dropped that stay because a list uses
+	// them or they are the selected tunnel while the VPN is on.
+	Kept    int       `json:"kept,omitempty"`
+	Skipped []Skipped `json:"skipped,omitempty"`
 }
 
 // Skipped is a link that was not imported. Label never holds credentials.
@@ -116,6 +138,14 @@ type Tunnels interface {
 	TunnelsAdd(text []byte, url, name string) (AddResult, error)
 	// TunnelGroupRemove removes a subscription and its tunnels.
 	TunnelGroupRemove(name string) error
+	// TunnelGroupUpdate downloads the subscription again and changes its tunnels
+	// to match; tunnels that stay keep their identity (lists, selection).
+	TunnelGroupUpdate(name string) (UpdateResult, error)
+	// TunnelGroupURL returns the subscription's saved address (it carries a token).
+	TunnelGroupURL(name string) (string, error)
+	// TunnelGroupEdit renames a subscription and/or replaces its address; empty
+	// newName or url leaves that as it is.
+	TunnelGroupEdit(name, newName, url string) error
 	TunnelRemove(name string) error
 	TunnelRename(name, newName string) error
 	TunnelAutoConnect(name string, on bool) error
@@ -179,6 +209,24 @@ func respondTunnel(b Backend, req Request) (r Response, handled bool) {
 			return Response{Error: "tunnel_group_remove needs the subscription's name"}, true
 		}
 		err = t.TunnelGroupRemove(req.Name)
+	case "tunnel_group_update":
+		if !need() {
+			return Response{Error: "tunnel_group_update needs the subscription's name"}, true
+		}
+		var res UpdateResult
+		if res, err = t.TunnelGroupUpdate(req.Name); err == nil {
+			r.Updated = &res
+		}
+	case "tunnel_group_url":
+		if !need() {
+			return Response{Error: "tunnel_group_url needs the subscription's name"}, true
+		}
+		r.GroupURL, err = t.TunnelGroupURL(req.Name)
+	case "tunnel_group_edit":
+		if !need() {
+			return Response{Error: "tunnel_group_edit needs the subscription's name"}, true
+		}
+		err = t.TunnelGroupEdit(req.Name, req.NewName, req.URL)
 	case "tunnel_import":
 		if !need() || req.Text == "" {
 			return Response{Error: "tunnel_import needs a name and the profile text"}, true

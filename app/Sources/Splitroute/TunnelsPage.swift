@@ -12,12 +12,7 @@ struct TunnelsPage: View {
     @State private var renaming: Tunnel?
     @State private var logsFor: Tunnel?
     @State private var confirmRemove: Tunnel?
-    @State private var confirmRemoveGroup: Subscription?
-    /// Groups the user opened in full; a long group shows only its active tunnels until then.
-    @State private var expanded: Set<String> = []
-
-    /// A group longer than this shows only the tunnels that are on until it is opened.
-    private static let collapseAbove = 8
+    @State private var editingGroup: Subscription?
 
     private var unavailable: Bool { model.connError != nil || model.tunnelList?.unavailable != nil }
     private var selectedName: String? { model.tunnelList?.selected }
@@ -82,19 +77,13 @@ struct TunnelsPage: View {
         .sheet(item: $promptFor) { t in CredentialsSheet(tunnel: t).environmentObject(model) }
         .sheet(item: $renaming) { t in RenameTunnelSheet(tunnel: t).environmentObject(model) }
         .sheet(item: $logsFor) { t in TunnelLogSheet(tunnel: t).environmentObject(model) }
+        .sheet(item: $editingGroup) { g in SubscriptionEditSheet(subscription: g).environmentObject(model) }
         .confirmationDialog("Remove \(confirmRemove?.name ?? "")?", isPresented: Binding(
             get: { confirmRemove != nil }, set: { if !$0 { confirmRemove = nil } }
         ), presenting: confirmRemove) { t in
             Button("Remove", role: .destructive) { Task { await model.removeTunnel(t.name) } }
         } message: { _ in
             Text("The tunnel and its saved credentials are deleted. Keep the profile or link if you want to add it again.")
-        }
-        .confirmationDialog("Remove \(confirmRemoveGroup?.name ?? "")?", isPresented: Binding(
-            get: { confirmRemoveGroup != nil }, set: { if !$0 { confirmRemoveGroup = nil } }
-        ), presenting: confirmRemoveGroup) { g in
-            Button("Remove group", role: .destructive) { Task { await model.removeGroup(g.name) } }
-        } message: { g in
-            Text("Its \(plural(g.tunnels, "tunnel")) and the saved subscription address are deleted. A list that uses one of them must be moved to another tunnel first.")
         }
     }
 
@@ -127,50 +116,101 @@ struct TunnelsPage: View {
 
     @ViewBuilder private func groupView(_ group: Group, titled: Bool) -> some View {
         let all = group.tunnels
-        let long = all.count > Self.collapseAbove
-        let open = expanded.contains(group.id)
-        // A long group shows the selected tunnel and any that is in use, not hundreds of idle ones.
-        let shown = long && !open ? all.filter { $0.state != .disconnected || $0.name == selectedName } : all
+        // Subscriptions are open until the user folds them; the default group has no header to fold.
+        let open = !titled || !model.isCollapsed(group.id)
         VStack(alignment: .leading, spacing: Space.s) {
-            if titled {
-                HStack(alignment: .firstTextBaseline, spacing: Space.m) {
-                    SectionTitle(group.name ?? "")
-                    Text(group.subscription.map { subscriptionLine($0) } ?? plural(all.count, "tunnel"))
-                        .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
-                    Spacer()
-                    if let sub = group.subscription {
-                        Button("Remove group") { confirmRemoveGroup = sub }
-                            .buttonStyle(OutlineButtonStyle())
-                            .accessibilityLabel("Remove group \(sub.name)")
-                    }
+            if titled { groupHeader(group, open: open) }
+            if let name = group.name {
+                if let e = model.error("group:\(name)") { NoteLine(.error, e) }
+                if let r = model.groupResults[name] {
+                    Text(r).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                 }
             }
-            if let name = group.name, let e = model.error("group:\(name)") { NoteLine(.error, e) }
             if let e = group.subscription?.error, !e.isEmpty { NoteLine(.warning, "Last update failed: \(e)") }
-            Panel {
-                if all.isEmpty {
-                    Text("This group has no tunnels.").font(TypeScale.body).foregroundStyle(Palette.inkSecondary.color)
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(Space.l)
-                }
-                LazyVStack(spacing: 0) {
-                    ForEach(Array(shown.enumerated()), id: \.element.id) { i, t in
-                        if i > 0 { Hairline() }
-                        row(t)
+            if open {
+                Panel {
+                    if all.isEmpty {
+                        Text("This group has no tunnels.").font(TypeScale.body).foregroundStyle(Palette.inkSecondary.color)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(Space.l)
                     }
-                }
-                if long {
-                    if !shown.isEmpty { Hairline() }
-                    Button {
-                        if open { expanded.remove(group.id) } else { expanded.insert(group.id) }
-                    } label: {
-                        Text(open ? "Show only the selected tunnel and those in use" : "Show all \(all.count) tunnels")
-                            .font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color)
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(Space.l).contentShape(Rectangle())
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(all.enumerated()), id: \.element.id) { i, t in
+                            if i > 0 { Hairline() }
+                            row(t)
+                        }
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
+    }
+
+    /// The group's name and what the provider reported, a button to fold it, and the update and info buttons.
+    @ViewBuilder private func groupHeader(_ group: Group, open: Bool) -> some View {
+        let name = group.name ?? ""
+        let updating = model.updatingGroups.contains(name)
+        HStack(alignment: .center, spacing: Space.m) {
+            Button { withAnimation(.easeInOut(duration: 0.15)) { model.toggleCollapsed(name) } } label: {
+                HStack(alignment: .center, spacing: Space.s) {
+                    Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
+                        .rotationEffect(.degrees(open ? 90 : 0)).frame(width: 14)
+                        .foregroundStyle(Palette.inkSecondary.color)
+                    VStack(alignment: .leading, spacing: 2) {
+                        SectionTitle(name).lineLimit(1).padding(.top, 0)
+                        if let line = headerLine(group) {
+                            Text(line).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                                .monospacedDigit().lineLimit(2)
+                        }
+                    }
+                    Spacer(minLength: Space.m)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(name)
+            .accessibilityValue(open ? "Expanded" : "Collapsed")
+            .accessibilityHint("Shows or hides the tunnels of this subscription")
+            if let sub = group.subscription {
+                Button { Task { await model.updateGroup(sub.name) } } label: {
+                    ZStack {
+                        if updating { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.clockwise") }
+                    }
+                    .font(.system(size: 14, weight: .regular)).frame(width: 24, height: 24).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(updating || unavailable)
+                .help("Update this subscription")
+                .accessibilityLabel("Update \(sub.name)")
+                Button { editingGroup = sub } label: {
+                    Image(systemName: "info.circle").font(.system(size: 14, weight: .regular))
+                        .frame(width: 24, height: 24).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Edit or remove this subscription")
+                .accessibilityLabel("Edit \(sub.name)")
+            }
+        }
+    }
+
+    /// What the provider reported (used, total, expiry), or the count and the last update.
+    private func headerLine(_ group: Group) -> String? {
+        guard let sub = group.subscription else { return plural(group.tunnels.count, "tunnel") }
+        var parts: [String] = []
+        if let u = sub.usage {
+            parts.append("↑ \(Self.bytes(u.upload))")
+            parts.append("↓ \(Self.bytes(u.download))")
+            if let t = u.total, t > 0 { parts.append("Total \(Self.bytes(t))") }
+            if let e = u.expire, e > 0 { parts.append("Expires \(Self.day(Date(timeIntervalSince1970: TimeInterval(e))))") }
+        }
+        let base = subscriptionLine(sub)
+        return parts.isEmpty ? base : parts.joined(separator: " · ") + "\n" + base
+    }
+
+    private static func bytes(_ n: Int64) -> String { ByteCountFormatter.string(fromByteCount: n, countStyle: .decimal) }
+
+    private static func day(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: d)
     }
 
     private func subscriptionLine(_ sub: Subscription) -> String {
@@ -384,5 +424,81 @@ struct TunnelLogSheet: View {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
+    }
+}
+
+/// Edits a subscription: its name and address, and removing it with its tunnels.
+struct SubscriptionEditSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let subscription: Subscription
+    @State private var name = ""
+    @State private var url = ""
+    @State private var savedURL: String?  // nil while it is being read
+    @State private var error: String?
+    @State private var working = false
+    @State private var confirmRemove = false
+
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespaces) }
+    private var trimmedURL: String { url.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var changed: Bool {
+        guard let savedURL else { return false }
+        return trimmedName != subscription.name || trimmedURL != savedURL
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                TextField("Name", text: $name)
+                TextField("Address", text: $url, prompt: Text(savedURL == nil ? "Reading…" : "https://"), axis: .vertical)
+                    .lineLimit(1...4).disabled(savedURL == nil)
+                    .accessibilityLabel("Subscription address")
+                if trimmedURL.hasPrefix("http://") {
+                    NoteLine(.error, "Subscriptions must use https://, because the address carries your token.")
+                }
+                Text("The address stays on this Mac. Saving it does not download anything: use the update button.")
+                    .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                Section {
+                    Button("Remove subscription…", role: .destructive) { confirmRemove = true }
+                        .disabled(working)
+                }
+            }
+            .formStyle(.grouped)
+            SheetButtons(error: error) {
+                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Save") { Task { await save() } }
+                    .keyboardShortcut(.defaultAction).prominent()
+                    .disabled(!changed || trimmedName.isEmpty || trimmedURL.isEmpty || working)
+            }
+        }
+        .frame(width: 480)
+        .task {
+            name = subscription.name
+            switch await model.groupURL(subscription.name) {
+            case .success(let u): url = u; savedURL = u
+            case .failure(let e): error = e.localizedDescription
+            }
+        }
+        .confirmationDialog("Remove \(subscription.name)?", isPresented: $confirmRemove) {
+            Button("Remove subscription", role: .destructive) { Task { await remove() } }
+        } message: {
+            Text("Its \(plural(subscription.tunnels, "tunnel")) and the saved address are deleted. A list that uses one of them must be moved to another tunnel first.")
+        }
+    }
+
+    private func save() async {
+        working = true
+        defer { working = false }
+        error = await model.editGroup(subscription.name,
+                                      newName: trimmedName != subscription.name ? trimmedName : nil,
+                                      url: trimmedURL != savedURL ? trimmedURL : nil)
+        if error == nil { dismiss() }
+    }
+
+    private func remove() async {
+        working = true
+        defer { working = false }
+        error = await model.removeGroup(subscription.name)
+        if error == nil { dismiss() }
     }
 }
