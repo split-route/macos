@@ -11,12 +11,12 @@ struct SettingsPage: View {
     @State private var confirmUninstall = false
     @AppStorage("quitAction") private var quitAction = "" // read by AppDelegate.quit
 
-    static let defaultBaseURL = "https://github.com/aliraghebi/routing-rules/releases/latest/download" // config.DefaultBaseURL
+    static let defaultBaseURL = "https://github.com/split-route/routing-rules/releases/latest/download" // config.DefaultBaseURL
     static let logPath = "/var/log/splitroute.log"
     static let databasePath = "/var/db/splitroute/splitroute.db"
     private static let repo = URL(string: "https://github.com/split-route/macos")!
     private static let releases = URL(string: "https://github.com/split-route/macos/releases")!
-    private static let rules = URL(string: "https://github.com/aliraghebi/routing-rules")!
+    private static let rules = URL(string: "https://github.com/split-route/routing-rules")!
     private static let quitLabels = ["": "Ask", "turnOff": "Turn the VPN off", "keep": "Keep it on"]
 
     private var saved: String { model.config?.baseURL ?? "" }
@@ -225,7 +225,7 @@ struct SettingsPage: View {
                 Link("Open", destination: Self.repo).font(TypeScale.bodyStrong)
             }
             Hairline()
-            FormRow("Lists", detail: "github.com/aliraghebi/routing-rules") {
+            FormRow("Lists", detail: "github.com/split-route/routing-rules") {
                 Link("Open", destination: Self.rules).font(TypeScale.bodyStrong)
             }
             Hairline()

@@ -350,7 +350,7 @@ public struct SettingsScreen: View {
                 row("Apply lists", "Turn off to send everything through the default route.") { Toggle("", isOn: $apply).labelsHidden().toggleStyle(.switch) }
                 Hairline()
                 row("List source", "Where ready-made lists are downloaded from.") {
-                    Text("github.com/aliraghebi/routing-rules").font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                    Text("github.com/split-route/routing-rules").font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                 }
             }
             Panel {

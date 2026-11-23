@@ -5,7 +5,7 @@ import Foundation
 // refuses it), so the edits here never parse entry syntax themselves.
 
 extension Config {
-    static let defaultBaseURL = "https://github.com/aliraghebi/routing-rules/releases/latest/download"
+    static let defaultBaseURL = "https://github.com/split-route/routing-rules/releases/latest/download"
     static let defaultRefreshHours = 24
     static let maxRefreshHours = 7 * 24
     static let maxEntries = 100_000

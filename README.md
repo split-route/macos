@@ -9,7 +9,7 @@ work today, more protocols follow.
 - `daemon/`: the service (Go). It runs as root because the tunnel device needs it, runs the network layer only (it keeps no
   settings) and talks to the app over a unix socket. Credentials stay in the Keychain and in the service's memory.
 
-Lists come from [routing-rules](https://github.com/aliraghebi/routing-rules), from a URL you import, or are your
+Lists come from [routing-rules](https://github.com/split-route/routing-rules), from a URL you import, or are your
 own. An imported or release list is only ever applied after it parses and passes its size and checksum checks.
 
 ## Build
