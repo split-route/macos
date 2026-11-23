@@ -159,6 +159,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // The sidebar runs to the top edge, under the traffic lights.
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
+            // The window is dark glass: it keeps the dark look whatever the system uses.
+            w.appearance = NSAppearance(named: .darkAqua)
+            w.backgroundColor = .clear
+            w.isOpaque = false
             w.isReleasedWhenClosed = false
             w.delegate = self
             w.contentViewController = NSHostingController(rootView: SettingsView().environmentObject(model))

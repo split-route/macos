@@ -74,7 +74,7 @@ struct MenuPopover: View {
                         if on, let t = model.selectedTunnel, t.state == .needsAuth, model.needsCredentialPrompt(t) { openApp(.tunnels) }
                     }
                 }))
-                .labelsHidden().toggleStyle(.switch).tint(Palette.ink.color)
+                .labelsHidden().toggleStyle(.switch).tint(Accent.color)
                 .accessibilityLabel("VPN")
             }
             if let e = model.error("vpn") { NoteLine(.error, e) }

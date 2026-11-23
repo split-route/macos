@@ -23,7 +23,7 @@ struct ListsPage: View {
     }
 
     var body: some View {
-        PageScaffold("Lists", summary: summary) {
+        PageScaffold("Routing", summary: summary) {
             if model.ready, !lists.isEmpty {
                 Button("Add list") { adding = true }.buttonStyle(SolidButtonStyle())
             }

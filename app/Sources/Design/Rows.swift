@@ -100,7 +100,6 @@ public struct PageScaffold<Trailing: View, Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .scrollIndicators(.never)
-        .background(Palette.ground.color)
     }
 }
 

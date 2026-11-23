@@ -1,4 +1,5 @@
 import AppKit
+import Design
 import SwiftUI
 
 /// The row on every settings page: a title with a gray description on the left,
@@ -223,7 +224,7 @@ private struct MenuRow: View {
             HStack {
                 Text(text)
                 Spacer(minLength: 8)
-                if checked { Image(systemName: "checkmark").font(.caption.weight(.semibold)) }
+                if checked { Image(systemName: "checkmark").font(.caption.weight(.semibold)).foregroundStyle(Accent.color) }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)

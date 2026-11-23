@@ -16,7 +16,10 @@ struct StatusPage: View {
                     Hairline()
                     ValueRow("Tunnel", model.selectedTunnel?.name ?? "None selected", detail: model.vpnOn ? model.summary : nil)
                     Hairline()
-                    ValueRow("Lists", s.enabled ? "Applied" : "Off", detail: s.enabled ? nil : "Connected tunnels carry all traffic.")
+                    ValueRow("Kill switch", model.killSwitchOn ? (model.killSwitchArmed ? "Blocking leaks" : "Not active") : "Off",
+                             detail: model.killSwitchOn && !model.killSwitchArmed ? (model.vpnOn ? "The service hasn't loaded the rules; see Problems." : "Active while the VPN is on.") : nil)
+                    Hairline()
+                    ValueRow("Routing", s.enabled ? "Applied" : "Off", detail: s.enabled ? nil : "Connected tunnels carry all traffic.")
                     Hairline()
                     ValueRow("Release lists downloaded", parseGoTime(s.fetched).map(relative) ?? "Never")
                     Hairline()

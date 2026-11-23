@@ -26,6 +26,7 @@ struct SettingsPage: View {
             EmptyView()
         } content: {
             if model.status == nil { ServiceUnavailable() } else { routing }
+            if model.status != nil { killSwitch }
             app
             if model.ready { source }
             files
@@ -42,7 +43,7 @@ struct SettingsPage: View {
     }
 
     private func toggle(_ title: String, isOn: Binding<Bool>) -> some View {
-        Toggle(title, isOn: isOn).labelsHidden().toggleStyle(.switch).tint(Palette.ink.color)
+        Toggle(title, isOn: isOn).labelsHidden().toggleStyle(.switch).tint(Accent.color)
     }
 
     // MARK: Lists and presets
@@ -99,6 +100,28 @@ struct SettingsPage: View {
     }
 
     // MARK: App
+
+    @ViewBuilder private var killSwitch: some View {
+        SectionTitle("Kill switch")
+        Panel {
+            FormRow("Block traffic if the VPN drops",
+                    detail: "While the VPN is on, only the VPN's own connections can leave this Mac. If the tunnel fails, the network stops instead of using your normal connection.",
+                    error: model.error("killswitch")) {
+                toggle("Block traffic if the VPN drops", isOn: Binding(get: { model.killSwitchOn }, set: { on in Task { await model.setKillSwitch(on: on) } }))
+                    .disabled(model.busy)
+            }
+            Hairline()
+            FormRow("Allow the local network", detail: "Printers, file shares and your router stay reachable while traffic is blocked.") {
+                toggle("Allow the local network", isOn: Binding(get: { model.killSwitchLAN }, set: { on in Task { await model.setKillSwitch(lan: on) } }))
+                    .disabled(model.busy || !model.killSwitchOn)
+            }
+            Hairline()
+            VStack(alignment: .leading, spacing: Space.s) {
+                NoteLine(.warning, "The rules stay in force if the service or this app stops. To remove them, turn this off or the VPN off; if the app can't open, run: sudo splitroute killswitch off")
+                NoteLine(.warning, "Programs running as root can still reach the network. It also stays on after a restart: the network is blocked until the VPN connects, so keep the app at login. Uninstalling the service turns it off.")
+            }
+        }
+    }
 
     @ViewBuilder private var app: some View {
         SectionTitle("App")

@@ -3,9 +3,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"net"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -25,6 +29,7 @@ type Engine interface {
 	Status() core.Status
 	Events() <-chan core.Event
 	AnswerChallenge(tunnelID string, r core.ChallengeResponse) error
+	Test(ctx context.Context, tunnelID, link string) (time.Duration, error)
 	Close() error // stops the engine too
 }
 
@@ -47,6 +52,7 @@ type wantedTunnel struct {
 	id, name string
 	protocol string // the core's protocol name
 	options  json.RawMessage
+	sig      string // fingerprint of what the options were built from; Apply skips a tunnel that still matches
 }
 
 // view is what the API shows for a tunnel.
@@ -76,10 +82,11 @@ type view struct {
 //     engine stops and traffic goes direct: never through another tunnel.
 //   - The API answers from the engine's Status; events only prompt a re-read.
 type host struct {
-	newEngine engineFactory
-	workDir   string
-	settle    time.Duration
-	inbound   core.Inbound // zero: the tun; a test runs the proxy (a tun needs root)
+	newEngine   engineFactory
+	workDir     string
+	settle      time.Duration
+	testTimeout time.Duration
+	inbound     core.Inbound // zero: the tun; a test runs the proxy (a tun needs root)
 
 	mu       sync.Mutex
 	vpnOn    bool
@@ -102,7 +109,7 @@ const (
 )
 
 func newHost(workDir string, f engineFactory) *host {
-	return &host{newEngine: f, workDir: workDir, settle: hostSettle, waiting: map[string]string{}, views: map[string]*view{}}
+	return &host{newEngine: f, workDir: workDir, settle: hostSettle, testTimeout: hostTestTimeout, waiting: map[string]string{}, views: map[string]*view{}}
 }
 
 // tunnelID is the core ID for a stored tunnel.
@@ -197,17 +204,61 @@ func (h *host) connect(id, name string, options json.RawMessage) {
 
 // connectProtocol asks for a tunnel of any protocol the core runs.
 func (h *host) connectProtocol(id, name, protocol string, options json.RawMessage) {
+	h.connectSig(id, name, protocol, options, "")
+}
+
+// connectSig is connectProtocol for a tunnel Apply built from a fingerprinted source.
+func (h *host) connectSig(id, name, protocol string, options json.RawMessage, sig string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.waiting, id)
 	v := h.viewLocked(id)
 	*v = view{state: api.Connecting}
 	if i := h.wantedIndex(id); i >= 0 {
-		h.wanted[i].options, h.wanted[i].name, h.wanted[i].protocol = options, name, protocol
+		h.wanted[i].options, h.wanted[i].name, h.wanted[i].protocol, h.wanted[i].sig = options, name, protocol, sig
 	} else {
-		h.wanted = append(h.wanted, &wantedTunnel{id: id, name: name, protocol: protocol, options: options})
+		h.wanted = append(h.wanted, &wantedTunnel{id: id, name: name, protocol: protocol, options: options, sig: sig})
 	}
 	h.scheduleLocked()
+}
+
+// loaded reports whether a tunnel is wanted, with the fingerprint and name it was loaded with.
+func (h *host) loaded(id string) (sig, name string, ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if i := h.wantedIndex(id); i >= 0 {
+		return h.wanted[i].sig, h.wanted[i].name, true
+	}
+	return "", "", false
+}
+
+// known is every tunnel the host holds anything for.
+func (h *host) known() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	seen := map[string]bool{}
+	for _, w := range h.wanted {
+		seen[w.id] = true
+	}
+	for id := range h.waiting {
+		seen[id] = true
+	}
+	for id := range h.views {
+		seen[id] = true
+	}
+	return slices.Collect(maps.Keys(seen))
+}
+
+// tunnelStatuses is every tunnel's state for the API, read from the engine first.
+func (h *host) tunnelStatuses() map[string]api.TunnelStatus {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.syncLocked()
+	out := make(map[string]api.TunnelStatus, len(h.views))
+	for id, v := range h.views {
+		out[id] = api.TunnelStatus{State: v.state, Error: v.err, Need: v.need, LocalIP: v.local, RemoteIP: v.remote, Since: v.since}
+	}
+	return out
 }
 
 // waitForCredentials marks a tunnel as needing credentials from the app.
@@ -511,4 +562,76 @@ func (h *host) close() {
 		h.timer.Stop()
 	}
 	h.discardLocked()
+}
+
+const (
+	testURL = "http://cp.cloudflare.com/generate_204"
+	// An OpenVPN endpoint resolves a hostname with the engine's own DNS, which goes through the selected tunnel: a test
+	// by name would depend on which tunnel is selected. An address needs no lookup.
+	testURLOpenVPN  = "http://1.1.1.1/generate_204"
+	hostTestTimeout = 5 * time.Second
+	testParallelism = 8
+)
+
+// test measures the tunnels the engine has loaded, a few at a time, OpenVPN included
+// (its endpoint dials like an outbound). A tunnel that isn't loaded says so: an OpenVPN
+// tunnel no list names is never started just to be tested, it would open a session.
+func (h *host) test(ids []string) map[string]api.TestResult {
+	h.mu.Lock()
+	eng := h.eng
+	loaded := map[string]string{} // tunnel ID → the address to request
+	for _, w := range h.wanted {
+		loaded[w.id] = testURL
+		if w.protocol == "openvpn" {
+			loaded[w.id] = testURLOpenVPN
+		}
+	}
+	h.mu.Unlock()
+	out := make(map[string]api.TestResult, len(ids))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, testParallelism)
+	for _, id := range ids {
+		link, ok := loaded[id]
+		if eng == nil || !ok {
+			why := "Not loaded"
+			if eng == nil {
+				why = "The VPN is off"
+			}
+			mu.Lock()
+			out[id] = api.TestResult{Error: why}
+			mu.Unlock()
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			ctx, cancel := context.WithTimeout(context.Background(), h.testTimeout)
+			defer cancel()
+			d, err := eng.Test(ctx, id, link)
+			r := api.TestResult{MS: int(d.Milliseconds())}
+			if err != nil {
+				r = testFailure(ctx, err)
+			}
+			mu.Lock()
+			out[id] = r
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return out
+}
+
+// testFailure is "Timeout" for a request that ran out of time, and "Failed" with the engine's own message
+// (refused, reset, a TLS error...) for anything else.
+func testFailure(ctx context.Context, err error) api.TestResult {
+	var ne net.Error
+	msg := strings.ToLower(err.Error())
+	// sing-box wraps its errors in ways that don't always unwrap, so the text is the last resort.
+	if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) ||
+		(errors.As(err, &ne) && ne.Timeout()) || strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded") {
+		return api.TestResult{Error: "Timeout"}
+	}
+	return api.TestResult{Error: "Failed", Detail: err.Error()}
 }

@@ -1,7 +1,26 @@
 import SwiftUI
 
 public enum Destination: String, CaseIterable, Sendable {
+    // The raw values are stored in the user's defaults: keep them when a title changes.
     case tunnels = "Tunnels", lists = "Lists", status = "Status", settings = "Settings"
+
+    public var title: String {
+        switch self {
+        case .tunnels: return "VPN"
+        case .lists: return "Routing"
+        case .status: return "Status"
+        case .settings: return "Settings"
+        }
+    }
+
+    public var symbol: String {
+        switch self {
+        case .tunnels: return "dot.radiowaves.left.and.right"
+        case .lists: return "arrow.triangle.branch"
+        case .status: return "waveform.path.ecg"
+        case .settings: return "gearshape"
+        }
+    }
 }
 
 // MARK: Sidebar
@@ -12,42 +31,60 @@ public struct Sidebar: View {
     /// Space above the title for the window's traffic lights.
     let topInset: CGFloat
     let title: String
+    let subtitle: String?
+    let icon: Image?
     /// Tunnels that exist but aren't listed (the list shows only those that are on).
     let moreCount: Int
     /// One line about the VPN at the foot of the sidebar (a dot, filled when it is on), or nil.
     let status: String?
     let statusOn: Bool
-    public init(selection: Binding<Destination>, tunnels: [TunnelItem], title: String = "Split Route", topInset: CGFloat = 0,
-                moreCount: Int = 0, status: String? = nil, statusOn: Bool = false) {
-        self._selection = selection; self.tunnels = tunnels; self.title = title; self.topInset = topInset; self.moreCount = moreCount
+    public init(selection: Binding<Destination>, tunnels: [TunnelItem], title: String = "Split Route", subtitle: String? = nil,
+                icon: Image? = nil, topInset: CGFloat = 0, moreCount: Int = 0, status: String? = nil, statusOn: Bool = false) {
+        self._selection = selection; self.tunnels = tunnels; self.title = title; self.subtitle = subtitle; self.icon = icon
+        self.topInset = topInset; self.moreCount = moreCount
         self.status = status; self.statusOn = statusOn
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(TypeScale.heading).foregroundStyle(Palette.ink.color)
-                .padding(.horizontal, Space.m).padding(.top, topInset).padding(.bottom, Space.xl)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: Space.m) {
+                if let icon {
+                    icon.resizable().frame(width: 44, height: 44).accessibilityHidden(true)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(TypeScale.heading).foregroundStyle(Palette.ink.color)
+                    if let subtitle { Text(subtitle).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color).lineLimit(1) }
+                }
+            }
+            .padding(.horizontal, Space.s).padding(.top, topInset).padding(.bottom, Space.xl)
             ForEach(Destination.allCases, id: \.self) { d in
+                let on = selection == d
                 Button { selection = d } label: {
-                    HStack(spacing: Space.s) {
-                        RoundedRectangle(cornerRadius: 1.5).fill(selection == d ? Palette.ink.color : .clear).frame(width: 3, height: 18)
-                        Text(d.rawValue).font(selection == d ? TypeScale.sidebarStrong : TypeScale.sidebar)
+                    HStack(spacing: Space.m) {
+                        Image(systemName: d.symbol).font(.system(size: 18, weight: .regular)).frame(width: 26)
+                            .foregroundStyle(on ? Color.white : Palette.inkSecondary.color)
+                            .shadow(color: on ? Accent.lightTone.color.opacity(0.7) : .clear, radius: 4)
+                        Text(d.title).font(on ? TypeScale.sidebarStrong : TypeScale.sidebar)
                         Spacer()
                     }
-                    .foregroundStyle(selection == d ? Palette.ink.color : Palette.inkSecondary.color)
-                    .padding(.vertical, 11).padding(.horizontal, Space.s)
-                    .background(selection == d ? Palette.surface.color : .clear, in: RoundedRectangle(cornerRadius: Radius.control))
+                    .foregroundStyle(on ? Color.white : Palette.inkSecondary.color)
+                    .padding(.vertical, 15).padding(.horizontal, Space.m)
+                    .background {
+                        if on {
+                            LiquidSelection(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
+                        }
+                    }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityAddTraits(selection == d ? .isSelected : [])
+                .accessibilityAddTraits(on ? .isSelected : [])
             }
             Spacer()
             if let status {
                 HStack(alignment: .firstTextBaseline, spacing: Space.s) {
-                    Circle().fill(statusOn ? Palette.ink.color : .clear)
+                    Circle().fill(statusOn ? Palette.success.color : .clear)
                         .overlay(Circle().stroke(Palette.inkSecondary.color, lineWidth: statusOn ? 0 : 1.5))
-                        .frame(width: 8, height: 8)
+                        .frame(width: 9, height: 9)
                     Text(status).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -72,9 +109,10 @@ public struct Sidebar: View {
             }
         }
         .padding(Space.m).padding(.top, Space.s)
-        .frame(width: 200)
+        .frame(width: 232)
         .frame(maxHeight: .infinity, alignment: .topLeading)
-        .background(Palette.ground.color)
+        .background(Backdrop(material: .sidebar, darkness: 0.38).overlay(Glass.sidebar))
+        .overlay(alignment: .trailing) { Rectangle().fill(Glass.stroke).frame(width: 1) }
     }
 
     static func summary(_ t: [TunnelItem]) -> String {
@@ -224,7 +262,7 @@ public struct ListsScreen: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: Space.xl) {
-            PageHeader("Lists", summary: summary) {
+            PageHeader("Routing", summary: summary) {
                 if !lists.isEmpty { Button("Add list") {}.buttonStyle(SolidButtonStyle()) }
             }
             if lists.isEmpty {

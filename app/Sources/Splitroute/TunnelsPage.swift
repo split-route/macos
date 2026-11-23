@@ -17,6 +17,9 @@ struct TunnelsPage: View {
     private var unavailable: Bool { model.connError != nil || model.tunnelList?.unavailable != nil }
     private var selectedName: String? { model.tunnelList?.selected }
 
+    /// Subscriptions that just finished updating: true if it worked. Cleared after a few seconds.
+    @State private var updated: [String: Bool] = [:]
+
     private var summary: String {
         if model.connError != nil { return "The service isn't running." }
         if model.tunnels.isEmpty { return "No tunnels yet." }
@@ -33,18 +36,32 @@ struct TunnelsPage: View {
 
     private var groups: [Group] {
         var out: [Group] = []
-        let def = model.tunnels.filter { $0.group == nil }
+        let def = ordered(model.tunnels.filter { $0.group == nil })
         if !def.isEmpty { out.append(Group(name: nil, tunnels: def)) }
         for sub in model.tunnelList?.subscriptions ?? [] {
-            out.append(Group(name: sub.name, subscription: sub, tunnels: model.tunnels.filter { $0.group == sub.name }))
+            out.append(Group(name: sub.name, subscription: sub, tunnels: ordered(model.tunnels.filter { $0.group == sub.name })))
         }
         return out
     }
 
+    /// After a connectivity test: the fastest first, the ones that didn't answer last, the rest of the order kept. Only
+    /// the display changes; the stored order doesn't. The order goes back when the next test starts or the VPN stops.
+    private func ordered(_ ts: [Tunnel]) -> [Tunnel] {
+        guard !model.testing, !model.testResults.isEmpty else { return ts }
+        func rank(_ t: Tunnel) -> Int {
+            if case .ms(let ms)? = model.testResults[t.name] { return ms }
+            return Int.max
+        }
+        return ts.enumerated().sorted { a, b in
+            let (x, y) = (rank(a.element), rank(b.element))
+            return x != y ? x < y : a.offset < b.offset
+        }.map(\.element)
+    }
+
     var body: some View {
-        PageScaffold("Tunnels", summary: summary) {
+        PageScaffold("VPN", summary: summary) {
             if !model.tunnels.isEmpty, model.connError == nil {
-                Button("Add tunnels") { importing = true }.buttonStyle(SolidButtonStyle()).disabled(unavailable)
+                Button { importing = true } label: { Label("Add tunnels", systemImage: "plus") }.buttonStyle(SolidButtonStyle()).disabled(unavailable)
             }
         } content: {
             if model.connError != nil {
@@ -95,21 +112,65 @@ struct TunnelsPage: View {
         Panel {
             VStack(alignment: .leading, spacing: Space.s) {
                 HStack(spacing: Space.l) {
+                    Image(systemName: "checkmark.shield.fill")
+                        .font(.system(size: 40, weight: .regular))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(Color.white, Accent.gradient) // this symbol: the check is the first layer, the shield body the second
+                        .shadow(color: Accent.glow, radius: 6)
+                        .overlay(alignment: .top) {
+                            // A gloss on the upper half, like a lit glass shield.
+                            Image(systemName: "shield").font(.system(size: 40))
+                                .foregroundStyle(LinearGradient(colors: [Color.white.opacity(0.45), Color.white.opacity(0.05)], startPoint: .top, endPoint: .bottom))
+                                .allowsHitTesting(false)
+                        }
+                        .frame(width: 52)
+                        .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("VPN").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
-                        Text(model.summary).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                        Text(model.vpnOn ? "VPN is on" : "VPN is off").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
+                        Text(vpnSubtitle).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: Space.m)
                     Toggle("VPN", isOn: Binding(get: { model.vpnOn }, set: { on in Task { await model.setVPN(on) } }))
-                        .labelsHidden().toggleStyle(.switch).tint(Palette.ink.color)
+                        .labelsHidden().toggleStyle(.switch).tint(Accent.color)
                         .disabled(model.tunnels.isEmpty)
                         .accessibilityLabel("VPN")
                 }
                 if let e = model.error("vpn") { NoteLine(.error, e) }
             }
             .padding(Space.l)
+            Hairline()
+            connectivityRow
         }
+    }
+
+    /// What the VPN is doing; with it off, the tunnel that will carry the traffic once it is on.
+    private var vpnSubtitle: String {
+        if !model.vpnOn { return model.selectedTunnel?.name ?? "Select a tunnel, then turn the VPN on." }
+        return model.summary
+    }
+
+    /// Like Shadowrocket's "Connectivity Test": one button, then a time or "Timeout" on each tunnel's row.
+    private var connectivityRow: some View {
+        VStack(alignment: .leading, spacing: Space.s) {
+            Button { Task { await model.testConnectivity() } } label: {
+                HStack(spacing: Space.m) {
+                    Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 14)).frame(width: 18)
+                    Text("Connectivity Test").font(TypeScale.body).foregroundStyle(Palette.ink.color)
+                    Spacer(minLength: Space.m)
+                    if model.testing { ProgressView().controlSize(.small) } else {
+                        Image(systemName: "play.circle").font(.system(size: 16))
+                    }
+                }
+                .foregroundStyle(Palette.inkSecondary.color)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).disabled(model.testing || unavailable || model.tunnels.isEmpty)
+            .accessibilityLabel("Connectivity Test")
+            .accessibilityHint("Turns the VPN on if needed, then measures a request through each running tunnel.")
+            if let e = model.error("test") { NoteLine(.warning, e) }
+        }
+        .padding(.vertical, Space.m).padding(.horizontal, Space.l)
     }
 
     // MARK: Groups and rows
@@ -119,23 +180,23 @@ struct TunnelsPage: View {
         // Subscriptions are open until the user folds them; the default group has no header to fold.
         let open = !titled || !model.isCollapsed(group.id)
         VStack(alignment: .leading, spacing: Space.s) {
-            if titled { groupHeader(group, open: open) }
-            if let name = group.name {
-                if let e = model.error("group:\(name)") { NoteLine(.error, e) }
-                if let r = model.groupResults[name] {
-                    Text(r).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
-                }
-            }
+            if let name = group.name, let e = model.error("group:\(name)") { NoteLine(.error, e) }
             if let e = group.subscription?.error, !e.isEmpty { NoteLine(.warning, "Last update failed: \(e)") }
-            if open {
-                Panel {
+            Panel {
+                // The title row is the first row of the group, on a tinted ground.
+                if titled {
+                    groupHeader(group, open: open)
+                        .padding(.vertical, Space.m).padding(.horizontal, Space.l)
+                        .background(Glass.header)
+                }
+                if open {
                     if all.isEmpty {
                         Text("This group has no tunnels.").font(TypeScale.body).foregroundStyle(Palette.inkSecondary.color)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(Space.l)
                     }
                     LazyVStack(spacing: 0) {
                         ForEach(Array(all.enumerated()), id: \.element.id) { i, t in
-                            if i > 0 { Hairline() }
+                            if i > 0 || titled { Hairline() }
                             row(t)
                         }
                     }
@@ -144,7 +205,7 @@ struct TunnelsPage: View {
         }
     }
 
-    /// The group's name and what the provider reported, a button to fold it, and the update and info buttons.
+    /// The group's name and what the provider reported, a button to fold it, the tunnel count, and the update and info buttons.
     @ViewBuilder private func groupHeader(_ group: Group, open: Bool) -> some View {
         let name = group.name ?? ""
         let updating = model.updatingGroups.contains(name)
@@ -154,12 +215,10 @@ struct TunnelsPage: View {
                     Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
                         .rotationEffect(.degrees(open ? 90 : 0)).frame(width: 14)
                         .foregroundStyle(Palette.inkSecondary.color)
-                    VStack(alignment: .leading, spacing: 2) {
-                        SectionTitle(name).lineLimit(1).padding(.top, 0)
-                        if let line = headerLine(group) {
-                            Text(line).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
-                                .monospacedDigit().lineLimit(2)
-                        }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(name).font(TypeScale.heading).foregroundStyle(Palette.ink.color).lineLimit(1)
+                            .accessibilityAddTraits(.isHeader)
+                        if let u = group.subscription?.usage { usageLine(u) }
                     }
                     Spacer(minLength: Space.m)
                 }
@@ -170,18 +229,31 @@ struct TunnelsPage: View {
             .accessibilityValue(open ? "Expanded" : "Collapsed")
             .accessibilityHint("Shows or hides the tunnels of this subscription")
             if let sub = group.subscription {
-                Button { Task { await model.updateGroup(sub.name) } } label: {
+                Text("\(group.tunnels.count)").font(TypeScale.secondary).monospacedDigit()
+                    .foregroundStyle(Palette.inkSecondary.color)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Capsule().fill(Glass.control))
+                    .accessibilityLabel(plural(group.tunnels.count, "tunnel"))
+                Button { update(sub.name) } label: {
                     ZStack {
-                        if updating { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.clockwise") }
+                        if updating {
+                            ProgressView().controlSize(.small)
+                        } else if let ok = updated[sub.name] {
+                            // The outcome for a moment, then the refresh icon again; a failure's reason stays under the header.
+                            Image(systemName: ok ? "checkmark" : "exclamationmark.triangle")
+                                .foregroundStyle(ok ? Palette.ink.color : Palette.danger.color)
+                                .transition(.opacity)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
                     }
-                    .font(.system(size: 14, weight: .regular)).frame(width: 24, height: 24).contentShape(Rectangle())
+                    .font(.system(size: 14, weight: .regular)).roundGlass(30)
                 }
                 .buttonStyle(.plain).disabled(updating || unavailable)
                 .help("Update this subscription")
                 .accessibilityLabel("Update \(sub.name)")
                 Button { editingGroup = sub } label: {
-                    Image(systemName: "info.circle").font(.system(size: 14, weight: .regular))
-                        .frame(width: 24, height: 24).contentShape(Rectangle())
+                    Image(systemName: "info.circle").font(.system(size: 14, weight: .regular)).roundGlass(30)
                 }
                 .buttonStyle(.plain)
                 .help("Edit or remove this subscription")
@@ -190,18 +262,42 @@ struct TunnelsPage: View {
         }
     }
 
-    /// What the provider reported (used, total, expiry), or the count and the last update.
-    private func headerLine(_ group: Group) -> String? {
-        guard let sub = group.subscription else { return plural(group.tunnels.count, "tunnel") }
-        var parts: [String] = []
-        if let u = sub.usage {
-            parts.append("↑ \(Self.bytes(u.upload))")
-            parts.append("↓ \(Self.bytes(u.download))")
-            if let t = u.total, t > 0 { parts.append("Total \(Self.bytes(t))") }
-            if let e = u.expire, e > 0 { parts.append("Expires \(Self.day(Date(timeIntervalSince1970: TimeInterval(e))))") }
+    /// What the provider reported, as icons: up, down, the plan's size and its end. Within 10 days the end is yellow with
+    /// the days left; past it is red with (Expired).
+    @ViewBuilder private func usageLine(_ u: SubscriptionUsage) -> some View {
+        let expires = (u.expire ?? 0) > 0 ? Date(timeIntervalSince1970: TimeInterval(u.expire ?? 0)) : nil
+        HStack(spacing: Space.m) {
+            usageItem("arrow.up", Self.bytes(u.upload), "Uploaded")
+            usageItem("arrow.down", Self.bytes(u.download), "Downloaded")
+            if let t = u.total, t > 0 { usageItem("chart.pie", Self.bytes(t), "Plan size") }
+            if let e = expires {
+                let days = Self.daysLeft(e)
+                if days < 0 {
+                    usageItem("calendar", "\(Self.day(e)) (Expired)", "Expired", tone: Palette.danger.color)
+                } else if days < 10 {
+                    usageItem("calendar", "\(Self.day(e)) (\(days == 1 ? "1 day" : "\(days) days"))", "Expires in \(days) days", tone: Palette.warning.color)
+                } else {
+                    usageItem("calendar", Self.day(e), "Expires")
+                }
+            }
         }
-        let base = subscriptionLine(sub)
-        return parts.isEmpty ? base : parts.joined(separator: " · ") + "\n" + base
+        .font(TypeScale.secondary).monospacedDigit().lineLimit(1)
+    }
+
+    /// Whole days from now to the end of the plan's last day; negative once it has passed.
+    static func daysLeft(_ end: Date, now: Date = Date()) -> Int {
+        let cal = Calendar.current
+        return cal.dateComponents([.day], from: cal.startOfDay(for: now), to: cal.startOfDay(for: end)).day ?? 0
+    }
+
+    private func usageItem(_ icon: String, _ text: String, _ label: String, tone: Color? = nil) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: icon).font(.system(size: 10, weight: .semibold))
+            Text(text)
+        }
+        .foregroundStyle(tone ?? Palette.inkSecondary.color)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label) \(text)")
     }
 
     private static func bytes(_ n: Int64) -> String { ByteCountFormatter.string(fromByteCount: n, countStyle: .decimal) }
@@ -213,10 +309,17 @@ struct TunnelsPage: View {
         return f.string(from: d)
     }
 
-    private func subscriptionLine(_ sub: Subscription) -> String {
-        var s = plural(sub.tunnels, "tunnel")
-        if let d = parseGoTime(sub.updatedAt) { s += ", updated \(relative(d))" }
-        return s
+    /// Updates a subscription and shows how it went on the button for a few seconds.
+    private func update(_ name: String) {
+        Task {
+            await model.updateGroup(name)
+            let ok = model.error("group:\(name)") == nil
+            withAnimation { updated[name] = ok }
+            NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                                 userInfo: [.announcement: ok ? "Updated \(name)" : "Update of \(name) failed", .priority: NSAccessibilityPriorityLevel.high.rawValue])
+            try? await Task.sleep(nanoseconds: ok ? 2_000_000_000 : 4_000_000_000)
+            withAnimation { updated[name] = nil }
+        }
     }
 
     private func select(_ t: Tunnel) {
@@ -230,10 +333,16 @@ struct TunnelsPage: View {
                 Button { select(t) } label: {
                     HStack(spacing: Space.m) {
                         // A tick for the tunnel that carries the traffic; an empty ring for the rest.
-                        Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 18))
-                            .foregroundStyle(selected ? Palette.ink.color : Palette.hairline.color)
-                            .frame(width: 24)
+                        ZStack {
+                            if selected {
+                                AccentSurface(Circle())
+                                Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.white)
+                            } else {
+                                Circle().strokeBorder(Palette.inkSecondary.color.opacity(0.6), lineWidth: 1.5)
+                            }
+                        }
+                        .frame(width: 22, height: 22)
+                        .frame(width: 26)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(t.name).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color).lineLimit(1).help(t.name)
                             Text(detail(t)).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
@@ -241,7 +350,12 @@ struct TunnelsPage: View {
                         }
                         .layoutPriority(-1)
                         Spacer(minLength: Space.m)
-                        if let l = label(t, selected: selected) {
+                        if let r = model.testResults[t.name] {
+                            switch r {
+                            case .ms(let ms): Text("\(ms) ms").font(TypeScale.secondary).monospacedDigit().foregroundStyle(Palette.success.color)
+                            case .failed(let why, _): Text(why).font(TypeScale.secondary).foregroundStyle(Palette.danger.color).help(r.explanation)
+                            }
+                        } else if let l = label(t, selected: selected) {
                             Text(l).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                         }
                     }
@@ -249,7 +363,7 @@ struct TunnelsPage: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(t.name)
-                .accessibilityValue(label(t, selected: selected) ?? "")
+                .accessibilityValue(testWords(t) ?? label(t, selected: selected) ?? "")
                 .accessibilityHint("Use this tunnel for all traffic that no list names")
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
                 Menu {
@@ -260,8 +374,7 @@ struct TunnelsPage: View {
                     Divider()
                     Button("Remove…", role: .destructive) { confirmRemove = t }
                 } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold))
-                        .frame(width: 24, height: 24).contentShape(Rectangle())
+                    Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold)).roundGlass(28)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -270,10 +383,15 @@ struct TunnelsPage: View {
             }
             if t.state == .failed, let e = t.error { NoteLine(.error, e) }
             if t.state == .reconnecting, let e = t.error { NoteLine(.warning, e) }
-            if let w = t.warning, !w.isEmpty { NoteLine(.warning, w) }
             if let e = model.error("tunnel:\(t.name)") { NoteLine(.error, e) }
         }
         .padding(.vertical, Space.m).padding(.horizontal, Space.l)
+    }
+
+    private func testWords(_ t: Tunnel) -> String? {
+        guard let r = model.testResults[t.name] else { return nil }
+        if case .failed(let why, _) = r { return "\(why): \(r.explanation)" }
+        return r.explanation
     }
 
     /// The state, shown only where it means something: on the selected tunnel while the VPN is on,
@@ -292,7 +410,10 @@ struct TunnelsPage: View {
 
     /// The protocol and the server, then what the state adds.
     private func detail(_ t: Tunnel) -> String {
-        let base = [t.protocolLabel, t.remotes?.first].compactMap { $0 }.joined(separator: ", ")
+        // Like Shadowrocket: the protocol and its transport, not the server's address. OpenVPN keeps its remote.
+        let base = t.protocolName == "openvpn"
+            ? [t.protocolLabel, t.remotes?.first].compactMap { $0 }.joined(separator: ", ")
+            : [t.protocolLabel, t.transport].compactMap { $0 }.joined(separator: " / ")
         switch t.state {
         case .needsAuth: return t.need == "key" ? "Needs the private key password" : "Needs a username and password"
         case .connected:
@@ -344,8 +465,7 @@ struct CredentialsSheet: View {
                     let r = remember
                     Task {
                         if tunnel.isActive {
-                            if r { TunnelKeychain.save(tunnel.name, s) }
-                            try? await Daemon.tunnelCredentials(tunnel.name, secrets: s)
+                            await model.answerCredentials(tunnel, secrets: s, remember: r)
                         } else {
                             await model.connectTunnel(tunnel, secrets: s, remember: r)
                         }

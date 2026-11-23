@@ -1,3 +1,4 @@
+import AppKit
 import Design
 import SwiftUI
 
@@ -11,7 +12,8 @@ struct SettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             // The traffic lights sit over the sidebar's top: the title bar is transparent.
-            Sidebar(selection: $page, tunnels: [], title: "Splitroute", topInset: 30,
+            Sidebar(selection: $page, tunnels: [], title: "Splitroute", subtitle: "Smart VPN & Routing",
+                    icon: NSApp.applicationIconImage.map { Image(nsImage: $0) }, topInset: 30,
                     status: model.connError == nil ? model.summary : nil, statusOn: model.health == .active)
             Group {
                 switch page {
@@ -22,10 +24,12 @@ struct SettingsView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // The content is the darker, blurrier layer, so focus stays on it; the sidebar is lighter and clearer.
+            .background(Backdrop(material: .hudWindow, darkness: 0.82))
         }
         .font(TypeScale.body)
         .foregroundStyle(Palette.ink.color)
-        .background(Palette.ground.color)
+        .preferredColorScheme(.dark)
         .ignoresSafeArea()
         .frame(minWidth: 820, minHeight: 520)
     }

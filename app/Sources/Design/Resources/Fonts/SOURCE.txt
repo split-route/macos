@@ -1,4 +1,4 @@
-Instrument Sans (variable: wdth, wght), SIL Open Font License 1.1 (OFL.txt).
-Source: https://github.com/google/fonts/tree/0b58fb370093f9a9f4ff785d94405710b79de67c/ofl/instrumentsans
-File:   InstrumentSans[wdth,wght].ttf, saved here as InstrumentSans.ttf
-SHA-256: b24f1812584816958afcf22e22d08e44318c5e51651e25d2438efdde389b33b1
+Inter (variable: opsz, wght), SIL Open Font License 1.1 (OFL.txt).
+Source: https://github.com/google/fonts/tree/06bfe0d62a98375cb09c942fa18e68bd32cff057/ofl/inter
+File:   Inter[opsz,wght].ttf, saved here as Inter.ttf
+SHA-256: 29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031

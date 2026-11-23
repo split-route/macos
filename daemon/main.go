@@ -1,9 +1,9 @@
 //go:build darwin || linux
 
 // Command splitroute is the Split Route service: it runs as root (the tun needs
-// it), holds the settings, runs the core engine for the tunnels the menu bar app
-// connects, and answers the app on a control socket. The binary and the launchd
-// label keep their old names so an updated app finds its service.
+// it), runs the core engine for what the menu bar app asks (the app owns the
+// settings; this keeps none), and answers the app on a control socket. The binary
+// and the launchd label keep their old names so an updated app finds its service.
 package main
 
 import (
@@ -24,6 +24,7 @@ const usage = `splitroute is the Split Route service. The app starts it (launchd
 
 usage:
   splitroute watch      run the service (root)
+  splitroute killswitch off   remove the kill switch's firewall rules (root)
   splitroute version
 `
 
@@ -59,6 +60,15 @@ func main() {
 		if err := serve(); err != nil {
 			log.Fatalf("splitroute: %v", err)
 		}
+	case "killswitch":
+		if len(os.Args) != 3 || os.Args[2] != "off" || os.Geteuid() != 0 {
+			fmt.Fprint(os.Stderr, usage)
+			os.Exit(2)
+		}
+		if err := killSwitchOff(); err != nil {
+			log.Fatalf("splitroute: %v", err)
+		}
+		fmt.Println("kill switch rules removed; turn it off in the app too, or the next change puts them back")
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -72,7 +82,6 @@ func serve() error {
 	}
 	defer l.Close()
 	a := newApp(defaultState, coreEngine)
-	defer a.closeSettings()
 	if ln, err := api.Listen(runtime.GOOS); err != nil {
 		log.Printf("warning: control socket: %v (the menu bar app can't connect)", err)
 	} else {

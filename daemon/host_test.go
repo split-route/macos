@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -26,6 +27,9 @@ type fakeEngine struct {
 	events    chan core.Event
 	closed    bool
 	answered  []string
+	testLinks map[string]string        // tunnel ID → the address its test requested
+	testErrs  map[string]error         // tunnel ID → the error its request fails with
+	tests     map[string]time.Duration // tunnel ID → how long its request takes; absent: no answer
 }
 
 func (e *fakeEngine) Start() error {
@@ -44,6 +48,23 @@ func (e *fakeEngine) Status() core.Status {
 	defer e.mu.Unlock()
 	return e.status
 }
+func (e *fakeEngine) Test(ctx context.Context, id, link string) (time.Duration, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.testLinks == nil {
+		e.testLinks = map[string]string{}
+	}
+	e.testLinks[id] = link
+	if err, ok := e.testErrs[id]; ok {
+		return 0, err
+	}
+	if d, ok := e.tests[id]; ok {
+		return d, nil
+	}
+	<-ctx.Done() // no answer: the host's timeout ends it
+	return 0, ctx.Err()
+}
+
 func (e *fakeEngine) Events() <-chan core.Event { return e.events }
 func (e *fakeEngine) AnswerChallenge(id string, r core.ChallengeResponse) error {
 	e.mu.Lock()

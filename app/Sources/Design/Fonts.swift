@@ -1,17 +1,17 @@
 import CoreText
 import SwiftUI
 
-/// Instrument Sans (OFL), a variable font with width and weight axes.
+/// Inter (OFL), a variable font with optical-size and weight axes, drawn for text on screens.
 public enum Fonts {
-    public static let family = "Instrument Sans"
+    public static let family = "Inter"
 
     /// Registers the font for this process. The shipped app has it at
     /// Contents/Resources/Fonts (build-app.sh); only the preview, which has no app
     /// bundle, falls back to SwiftPM's resource bundle. `Bundle.module` is never
     /// touched inside the app: its lookup fails in a signed bundle.
     public static func register() {
-        let url = Bundle.main.url(forResource: "InstrumentSans", withExtension: "ttf", subdirectory: "Fonts")
-            ?? Bundle.module.url(forResource: "InstrumentSans", withExtension: "ttf", subdirectory: "Fonts")
+        let url = Bundle.main.url(forResource: "Inter", withExtension: "ttf", subdirectory: "Fonts")
+            ?? Bundle.module.url(forResource: "Inter", withExtension: "ttf", subdirectory: "Fonts")
         guard let url else { return }
         CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
     }

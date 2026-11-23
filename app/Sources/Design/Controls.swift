@@ -7,10 +7,9 @@ public struct SolidButtonStyle: ButtonStyle {
     public func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(TypeScale.bodyStrong)
-            .foregroundStyle(Palette.surface.color)
-            .padding(.horizontal, 14).padding(.vertical, 7)
-            .background(Palette.ink.color.opacity(configuration.isPressed ? 0.8 : 1),
-                        in: RoundedRectangle(cornerRadius: Radius.control))
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 18).padding(.vertical, 11)
+            .background(AccentSurface(RoundedRectangle(cornerRadius: Radius.row + 4, style: .continuous)).opacity(configuration.isPressed ? 0.8 : 1))
     }
 }
 
@@ -20,11 +19,23 @@ public struct OutlineButtonStyle: ButtonStyle {
         configuration.label
             .font(TypeScale.bodyStrong)
             .foregroundStyle(Palette.ink.color)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Palette.ink.color.opacity(configuration.isPressed ? 0.08 : 0),
-                        in: RoundedRectangle(cornerRadius: Radius.control))
-            .overlay(RoundedRectangle(cornerRadius: Radius.control).stroke(Palette.hairline.color, lineWidth: 1))
+            .padding(.horizontal, 16).padding(.vertical, 9)
+            .background(Glass.control.opacity(configuration.isPressed ? 0.6 : 1), in: RoundedRectangle(cornerRadius: Radius.row + 2, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.row + 2, style: .continuous).stroke(Glass.stroke, lineWidth: 1))
     }
+}
+
+/// A small round glass button's look (the "..." menu, update, info).
+public struct RoundGlass: ViewModifier {
+    let size: CGFloat
+    public init(size: CGFloat = 30) { self.size = size }
+    public func body(content: Content) -> some View {
+        content.frame(width: size, height: size).background(Circle().fill(Glass.control)).contentShape(Circle())
+    }
+}
+
+extension View {
+    public func roundGlass(_ size: CGFloat = 30) -> some View { modifier(RoundGlass(size: size)) }
 }
 
 // MARK: The tunnel line
@@ -179,7 +190,7 @@ public struct ActionChoice: View {
 
 public struct Hairline: View {
     public init() {}
-    public var body: some View { Palette.hairline.color.frame(height: 1) }
+    public var body: some View { Glass.divider.frame(height: 1) }
 }
 
 /// One panel holds a page's rows; rules between rows mean "next item".
@@ -188,9 +199,9 @@ public struct Panel<Content: View>: View {
     public init(@ViewBuilder _ content: () -> Content) { self.content = content() }
     public var body: some View {
         VStack(spacing: 0) { content }
-            .background(Palette.surface.color)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.panel))
-            .overlay(RoundedRectangle(cornerRadius: Radius.panel).stroke(Palette.hairline.color, lineWidth: 1))
+            .background(Glass.fill)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.panel + 4))
+            .overlay(RoundedRectangle(cornerRadius: Radius.panel + 4).stroke(Glass.stroke, lineWidth: 1))
     }
 }
 

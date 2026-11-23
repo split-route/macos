@@ -1,56 +1,28 @@
 //go:build darwin || linux
 
-// Package api is the control socket. It speaks one JSON request and one JSON
-// response per connection. The menu bar app uses it; the daemon is the only
-// writer of the config, so the app never needs root.
+// Package api is the control socket: the app's way to the network layer. The
+// daemon keeps no settings. The app owns them and sends the desired state; the
+// daemon runs it. One JSON request and one JSON response per connection.
 //
-//	{"cmd": "status"}                          → status
-//	{"cmd": "get_config"}                      → config
-//	{"cmd": "set_config", "config": {...}}     → config (validated, saved, applied)
-//	{"cmd": "set_enabled", "enabled": false}   → config
-//	{"cmd": "apply_preset", "preset": "iran"}  → config
-//	{"cmd": "lists"}                           → lists available in the latest release
-//	{"cmd": "presets"}                         → presets
+//	{"cmd": "status"}                                       → status
+//	{"cmd": "apply", "apply": {...}}                        the desired state (see Snapshot)
+//	{"cmd": "answer", "id": "t3", "username": "…", "password": "…"}   answers a running tunnel's challenge
+//	{"cmd": "test", "ids": ["t1"]}                          → tests (one request through each loaded tunnel)
+//	{"cmd": "logs"}                                         → logs (the engine's last lines)
+//	{"cmd": "restart"}                                      the service exits; launchd starts the updated binary
 //
-// Tunnels (addressed by name; see tunnels.go). Credentials in a
-// request are used for that connection only:
+// Stateless helpers (the parsers live in the core, so the app asks):
 //
-//	{"cmd": "tunnels"}                                          → tunnels
-//	{"cmd": "tunnel_check", "text": "<.ovpn>"}                  → check (what the profile asks for)
-//	{"cmd": "tunnel_import", "name": "Work", "text": "<.ovpn>"}                    → tunnel
-//	{"cmd": "vpn_set", "enabled": true}                                             turns the VPN on or off
-//	{"cmd": "tunnel_select", "name": "Work"}                                        the tunnel for all traffic no list names
-//	{"cmd": "tunnels_add", "text": "<links or a subscription body>"}               → added
-//	{"cmd": "tunnels_add", "url": "https://…", "name": "Provider"}                  → added (kept as a subscription)
-//	{"cmd": "tunnel_group_remove", "name": "Provider"}                              removes a subscription and its tunnels
-//	{"cmd": "tunnel_group_update", "name": "Provider"}                              → updated (downloads it again)
-//	{"cmd": "tunnel_group_url", "name": "Provider"}                                 → group_url (carries the user's token)
-//	{"cmd": "tunnel_group_edit", "name": "Provider", "new_name": "…", "url": "https://…"}  renames and/or replaces the address
-//	{"cmd": "tunnel_connect", "name": "Work", "username": "…", "password": "…"}
-//	{"cmd": "tunnel_credentials", "name": "Work", "username": "…", "password": "…", "key_password": "…"}
-//	{"cmd": "tunnel_disconnect" | "tunnel_remove" | "tunnel_logs", "name": "Work"}  (logs → logs)
-//	{"cmd": "tunnel_rename", "name": "Work", "new_name": "Office"}
-//	{"cmd": "tunnel_auto_connect", "name": "Work", "enabled": true}
-//
-// List edits (each → config; entry edits also → edit counts):
-//
-//	{"cmd": "list_create", "name": "Work", "action": "direct"}       new custom list
-//	{"cmd": "list_enable", "name": "telegram", "action": "tunnel"}   add a release list
-//	{"cmd": "list_remove", "name": "Work"}
-//	{"cmd": "list_rename", "name": "Work", "new_name": "Office"}     custom lists only
-//	{"cmd": "list_set_action", "name": "Work", "action": "block"}
-//	{"cmd": "list_move", "name": "Work", "position": 0}              0-based
-//	{"cmd": "entries_add", "name": "Work", "entries": ["example.com"]}
-//	{"cmd": "entries_remove", "name": "Work", "entries": ["example.com"]}
-//	{"cmd": "entries_set", "name": "Work", "entries": ["example.com"]}           replaces all entries
-//	{"cmd": "list_import", "name": "Ads", "action": "block", "url": "https://…"}   downloaded by the service
-//	{"cmd": "list_refresh", "name": "Ads"}                                         download now → no config
+//	{"cmd": "check_profile", "text": "<.ovpn>"}             → check
+//	{"cmd": "parse_links", "text": "<links or a body>"}     → nodes
+//	{"cmd": "parse_entries", "text": "…", "format": "custom|import|release", "want_lines": true}  → entries
+//	{"cmd": "canon_entries", "lines": ["Example.COM"]}      → canon
+//	{"cmd": "legacy_export"}                                → legacy (root-only files of versions before 0.3)
 package api
 
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -58,77 +30,58 @@ import (
 	"os/user"
 	"strconv"
 	"time"
-
-	"github.com/split-route/core/lists"
-	"github.com/split-route/core/rules"
-	"github.com/split-route/macos/daemon/internal/catalog"
-	"github.com/split-route/macos/daemon/internal/config"
 )
 
 // Backend is what the socket needs from the daemon.
 type Backend interface {
-	Status() (Status, error)
-	LoadConfig() (config.Config, error)
-	// UpdateConfig loads the config, changes it with f, validates, saves and
-	// applies it.
-	UpdateConfig(f func(config.Config) (config.Config, error)) (config.Config, error)
-	AvailableLists() ([]string, error)
-	// RefreshImport marks an import to be downloaded on the next pass.
-	RefreshImport(name string) error
-	// Restart makes the service stop its tunnels and exit; its service manager
-	// starts the updated binary.
+	Status() Status
+	Apply(Snapshot) error
+	Answer(id string, c Credentials) error
+	Logs() []string
 	Restart() error
+	// Test measures each tunnel (by ID) with one request through it. The address is the daemon's, not the socket's.
+	Test(ids []string) map[string]TestResult
+	CheckProfile(text string) (TunnelCheck, error)
+	ParseLinks(text string) (Nodes, error)
+	ParseEntries(text, format string, wantLines bool) (Entries, error)
+	CanonEntries(lines []string) []Canon
+	LegacyExport() (LegacyState, error)
 }
 
 type Request struct {
-	Cmd     string         `json:"cmd"`
-	Config  *config.Config `json:"config,omitempty"`
-	Enabled *bool          `json:"enabled,omitempty"`
-	Preset  string         `json:"preset,omitempty"`
+	Cmd   string    `json:"cmd"`
+	Apply *Snapshot `json:"apply,omitempty"`
 
-	// List edits.
-	Name     string       `json:"name,omitempty"`
-	NewName  string       `json:"new_name,omitempty"`
-	Action   rules.Action `json:"action,omitempty"`
-	Tunnel   string       `json:"tunnel,omitempty"` // list_set_action: the tunnel for the tunnel action (empty: the default)
-	Position *int         `json:"position,omitempty"`
-	Entries  []string     `json:"entries,omitempty"`
-	URL      string       `json:"url,omitempty"`
-	// Text is a list file's contents for list_create (plain entries, hosts
-	// file or domain set, read like an import). The app reads the file; the
-	// daemon never opens a path from the socket.
-	Text string `json:"text,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
 
-	// Tunnel commands. Credentials are used and dropped; they are never
-	// stored, logged or returned.
-	Username    string `json:"username,omitempty"`
-	Password    string `json:"password,omitempty"`
-	KeyPassword string `json:"key_password,omitempty"`
+	Text      string   `json:"text,omitempty"`
+	Format    string   `json:"format,omitempty"`
+	WantLines bool     `json:"want_lines,omitempty"`
+	Lines     []string `json:"lines,omitempty"`
+	IDs       []string `json:"ids,omitempty"`
 }
 
 type Response struct {
-	OK      bool              `json:"ok"`
-	Error   string            `json:"error,omitempty"`
-	Status  *Status           `json:"status,omitempty"`
-	Config  *config.Config    `json:"config,omitempty"`
-	Lists   []string          `json:"lists,omitempty"`
-	Catalog []catalog.Info    `json:"catalog,omitempty"` // "lists": titles of the release lists
-	Presets []config.Preset   `json:"presets,omitempty"`
-	Edit    *config.EntryEdit `json:"edit,omitempty"` // entries_add, entries_remove, entries_set
-
-	Tunnels *TunnelList  `json:"tunnels,omitempty"` // tunnels
-	Tunnel  *Tunnel      `json:"tunnel,omitempty"`  // tunnel_import
-	Added   *AddResult   `json:"added,omitempty"`   // tunnels_add
-	Check   *TunnelCheck `json:"check,omitempty"`   // tunnel_check
-	Logs    []string     `json:"logs,omitempty"`    // tunnel_logs
-
-	Updated  *UpdateResult `json:"updated,omitempty"`   // tunnel_group_update
-	GroupURL string        `json:"group_url,omitempty"` // tunnel_group_url
+	OK     bool         `json:"ok"`
+	Error  string       `json:"error,omitempty"`
+	Status *Status      `json:"status,omitempty"`
+	Logs   []string     `json:"logs,omitempty"`
+	Check  *TunnelCheck `json:"check,omitempty"`
+	Nodes  *Nodes       `json:"nodes,omitempty"`
+	// Entries and Canon answer the entry parsers.
+	Entries *Entries              `json:"entries,omitempty"`
+	Canon   []Canon               `json:"canon,omitempty"`
+	Legacy  *LegacyState          `json:"legacy,omitempty"`
+	Tests   map[string]TestResult `json:"tests,omitempty"`
 }
 
 const (
-	maxRequest  = 8 << 20          // list_create text: 100k hosts lines are about 3 MB
-	connTimeout = 90 * time.Second // "lists" downloads SHA256SUMS
+	// maxRequest bounds one request: a snapshot carries every list's entries
+	// (release lists run to a few MB of text each).
+	maxRequest  = 64 << 20
+	connTimeout = 60 * time.Second
 )
 
 // SockPath is the socket's path on goos.
@@ -183,7 +136,11 @@ func Handle(c net.Conn, b Backend) {
 	_ = c.SetDeadline(time.Now().Add(connTimeout))
 	var req Request
 	var resp Response
-	if err := json.NewDecoder(io.LimitReader(c, maxRequest)).Decode(&req); err != nil {
+	lr := &io.LimitedReader{R: c, N: maxRequest + 1}
+	if err := json.NewDecoder(lr).Decode(&req); err != nil {
+		if lr.N <= 0 {
+			err = errors.New("request too large")
+		}
 		resp = Response{Error: "bad request: " + err.Error()}
 	} else {
 		resp = Respond(b, req)
@@ -193,50 +150,49 @@ func Handle(c net.Conn, b Backend) {
 
 // Respond answers one request.
 func Respond(b Backend, req Request) Response {
-	if r, ok := respondTunnel(b, req); ok {
-		return r
-	}
 	var r Response
 	var err error
 	switch req.Cmd {
 	case "status":
-		var s Status
-		s, err = b.Status()
+		s := b.Status()
 		r.Status = &s
-	case "get_config":
-		var cfg config.Config
-		cfg, err = b.LoadConfig()
-		r.Config = &cfg
-	case "set_config":
-		if req.Config == nil {
-			return Response{Error: "set_config needs a config"}
+	case "apply":
+		if req.Apply == nil {
+			return Response{Error: errNeedSnapshot.Error()}
 		}
-		r.Config, err = update(b, func(config.Config) (config.Config, error) { return *req.Config, nil })
-	case "set_enabled":
-		if req.Enabled == nil {
-			return Response{Error: "set_enabled needs enabled"}
+		err = b.Apply(*req.Apply)
+	case "answer":
+		if req.ID == "" {
+			return Response{Error: "answer needs a tunnel id"}
 		}
-		r.Config, err = update(b, func(c config.Config) (config.Config, error) { c.Disabled = !*req.Enabled; return c, nil })
-	case "apply_preset":
-		r.Config, err = update(b, func(c config.Config) (config.Config, error) { return config.WithPreset(c, req.Preset) })
-	case "lists":
-		r.Lists, err = b.AvailableLists()
-		for _, n := range r.Lists {
-			r.Catalog = append(r.Catalog, catalog.Describe(n))
-		}
-	case "presets":
-		r.Presets = config.Presets
+		err = b.Answer(req.ID, Credentials{User: req.Username, Pass: req.Password, HaveAuth: req.Username != "" || req.Password != ""})
+	case "test":
+		r.Tests = b.Test(req.IDs)
+	case "logs":
+		r.Logs = b.Logs()
 	case "restart":
 		err = b.Restart()
-	case "list_refresh":
-		if req.Name == "" {
-			return Response{Error: "list_refresh needs a name"}
+	case "check_profile":
+		var c TunnelCheck
+		if c, err = b.CheckProfile(req.Text); err == nil {
+			r.Check = &c
 		}
-		err = b.RefreshImport(req.Name)
-	case "list_import", "list_create", "list_enable", "list_remove", "list_rename", "list_set_action", "list_move", "entries_add", "entries_remove", "entries_set":
-		var edit func(config.Config) (config.Config, error)
-		if edit, err = listEdit(req, &r); err == nil {
-			r.Config, err = update(b, edit)
+	case "parse_links":
+		var n Nodes
+		if n, err = b.ParseLinks(req.Text); err == nil {
+			r.Nodes = &n
+		}
+	case "parse_entries":
+		var e Entries
+		if e, err = b.ParseEntries(req.Text, req.Format, req.WantLines); err == nil {
+			r.Entries = &e
+		}
+	case "canon_entries":
+		r.Canon = b.CanonEntries(req.Lines)
+	case "legacy_export":
+		var l LegacyState
+		if l, err = b.LegacyExport(); err == nil {
+			r.Legacy = &l
 		}
 	default:
 		err = errors.New("unknown command " + strconv.Quote(req.Cmd))
@@ -246,87 +202,4 @@ func Respond(b Backend, req Request) Response {
 	}
 	r.OK = true
 	return r
-}
-
-func update(b Backend, f func(config.Config) (config.Config, error)) (*config.Config, error) {
-	cfg, err := b.UpdateConfig(f)
-	if err != nil {
-		return nil, err
-	}
-	return &cfg, nil
-}
-
-// listEdit turns a list edit request into a config change. Entry counts land
-// in r.Edit when the change runs.
-func listEdit(req Request, r *Response) (func(config.Config) (config.Config, error), error) {
-	if req.Name == "" {
-		return nil, fmt.Errorf("%s needs a name", req.Cmd)
-	}
-	switch req.Cmd {
-	case "list_create":
-		if req.Text != "" {
-			return createFromText(req, r)
-		}
-		return func(c config.Config) (config.Config, error) { return config.CreateList(c, req.Name, req.Action) }, nil
-	case "list_enable":
-		return func(c config.Config) (config.Config, error) { return config.EnableRelease(c, req.Name, req.Action) }, nil
-	case "list_import":
-		return func(c config.Config) (config.Config, error) {
-			return config.ImportList(c, req.Name, req.Action, req.URL)
-		}, nil
-	case "list_remove":
-		return func(c config.Config) (config.Config, error) { return config.RemoveList(c, req.Name) }, nil
-	case "list_rename":
-		return func(c config.Config) (config.Config, error) { return config.RenameList(c, req.Name, req.NewName) }, nil
-	case "list_set_action":
-		return func(c config.Config) (config.Config, error) {
-			return config.SetAction(c, req.Name, req.Action, req.Tunnel)
-		}, nil
-	case "list_move":
-		if req.Position == nil {
-			return nil, errors.New("list_move needs a position")
-		}
-		return func(c config.Config) (config.Config, error) { return config.MoveList(c, req.Name, *req.Position) }, nil
-	case "entries_add", "entries_remove", "entries_set":
-		op := config.AddEntries
-		switch req.Cmd {
-		case "entries_remove":
-			op = config.RemoveEntries
-		case "entries_set":
-			op = config.SetEntries
-		}
-		return func(c config.Config) (config.Config, error) {
-			c, ed, err := op(c, req.Name, req.Entries)
-			r.Edit = &ed
-			return c, err
-		}, nil
-	}
-	return nil, errors.New("unknown command " + strconv.Quote(req.Cmd))
-}
-
-// createFromText parses req.Text like an import and creates a custom list
-// with its entries in one change, so a refused text leaves no empty list.
-func createFromText(req Request, r *Response) (func(config.Config) (config.Config, error), error) {
-	es, st, err := lists.ParseText([]byte(req.Text))
-	if err != nil {
-		return nil, err
-	}
-	all := es.All()
-	if len(all) == 0 {
-		return nil, errors.New("the file has no addresses, ranges, domains or AS numbers")
-	}
-	lines := make([]string, len(all))
-	for i, e := range all {
-		lines[i] = e.String()
-	}
-	return func(c config.Config) (config.Config, error) {
-		c, err := config.CreateList(c, req.Name, req.Action)
-		if err != nil {
-			return c, err
-		}
-		c, ed, err := config.SetEntries(c, req.Name, lines)
-		ed.Skipped = st.Invalid + st.Other + st.Reserved
-		r.Edit = &ed
-		return c, err
-	}, nil
 }
