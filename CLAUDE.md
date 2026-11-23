@@ -60,8 +60,8 @@ updated app finds its service. The `watch` argument starts the service.
   query (`testErrorsDoNotLeakTheSubscriptionAddress`); https only; 8 MB body limit. The app does all downloads
   (release lists with SHA256SUMS, imports, subscriptions); the service never fetches.
 - `test` measures the loaded tunnels, OpenVPN included but never started just for it (one request to a fixed URL through each, 8 at a time, 5 s each) via the core's
-  `Engine.Test`; the URL is the daemon's, never the socket's. The app turns the VPN on first if it is off; it asks for 64 tunnels per call
-  (the socket allows 60 s) and shows the time or "Timeout" per row.
+  `Engine.Test`; the URL is the daemon's, never the socket's. The app turns the VPN on first if it is off; it asks for one tunnel per call, 8 calls at a time, and shows the time or "Timeout" on
+  each row as its result arrives.
 - The parsers stay in the core, so the app asks the service (`check_profile`, `parse_links`, `parse_entries`,
   `canon_entries`). The app never parses entry syntax itself: it canonicalizes through the service, then edits
   canonical lines (`ConfigRules.swift`).
@@ -71,7 +71,7 @@ updated app finds its service. The `watch` argument starts the service.
 - Wire types in `Daemon.swift` mirror the Go JSON (`daemon/internal/api/types.go`); change both together. The
   snapshot's shape is pinned by one golden JSON in `ServiceLinkTests` and `TestSnapshotFromTheApp`.
 - Kill switch (`kill_switch`, `kill_switch_lan` in `settings`; `Snapshot.KillSwitch`, `KillSwitchLAN`; `killswitch.go`). While
-  the VPN is on and the setting is on, a pf anchor blocks every outbound packet except loopback, the `utun` group,
+  the VPN is on and the setting is on, a pf anchor blocks every outbound packet except loopback, the engine's tun (matched by its source subnet `ksTunNet`, because Apple's pf doesn't match `on utun` against `utunN`),
   root's TCP/UDP (the engine: tunnel servers and direct lists), IPv6 neighbor discovery and, if asked, the LAN. The
   rules live in the kernel, so a dropped tunnel, a stopped engine, a dead service or a quit app **block** instead of
   leaking: this overrides "traffic goes direct" below. `Apply` is the only owner, it arms *before* the engine starts (an
@@ -85,6 +85,10 @@ updated app finds its service. The `watch` argument starts the service.
   arms without the LAN) and removes the marker only after the flush succeeds. So after a reboot the network is blocked until
   the app connects the VPN. The app turns the setting off before it uninstalls the service. Root-owned sockets bypass it (pf matches users, not programs). A Network Extension
   (`includeAllNetworks`) replaces `killswitch.go`.
+- `bootstrap` (`settings.bootstrap`, `Snapshot.Bootstrap`, API rev 5) is how proxy tunnels' server names are found: empty is DoH to
+  8.8.8.8 (`defaultBootstrap` in `host.go`; the core's own default is 1.1.1.1), a DoH server's IP, or `system`. It is a setting because a network can reset DoH to one provider
+  (every tunnel then fails with "connection reset by peer" from the engine's own lookup). The service validates it; a change
+  restarts the engine, and the app adds `retry` so tunnels that failed on the lookup are tried again.
 - One switch and one selected tunnel (`vpn_on`, `selected_tunnel_id` in `settings`; `desiredTunnels` in `apply.go`). The engine runs once
   while the VPN is on; the selected tunnel is its default and carries all traffic no list names. Choosing another is
   `Engine.Select` on the core's `selected` selector, never a restart. `reconcile` (in `apply.go`) decides what the engine loads:

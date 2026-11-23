@@ -83,6 +83,7 @@ func (a *app) Apply(s api.Snapshot) error {
 		}
 		a.host.retry(id)
 	}
+	a.host.setBootstrap(s.Bootstrap)
 	a.host.setSelected(s.Selected)
 	a.host.setVPN(s.VPN)
 	a.reconcile(s)

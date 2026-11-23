@@ -71,6 +71,16 @@ final class ServiceLinkTests: XCTestCase {
         XCTAssertNil(snap.killSwitchLAN, "a stale LAN flag is never sent while the kill switch is off")
     }
 
+    func testBootstrapIsSentOnlyWhenChosen() throws {
+        let (s, _, link) = try make()
+        XCTAssertEqual(try s.bootstrap(), "")
+        XCTAssertNil(try link.snapshot().bootstrap)
+        try s.setBootstrap("8.8.8.8")
+        XCTAssertEqual(try link.snapshot().bootstrap, "8.8.8.8")
+        try s.setBootstrap("")
+        XCTAssertNil(try link.snapshot().bootstrap)
+    }
+
     func testATunnelWhoseFileIsGoneIsReportedNotSent() throws {
         let (s, files, link) = try make()
         let a = try add(s, files, "A", kind: "vless", source: #"{"type":"vless"}"#)

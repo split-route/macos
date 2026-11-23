@@ -32,13 +32,14 @@ struct Snapshot: Encodable {
     var selected: String?
     var retry: [String]?
     var loadAll: Bool?
+    var bootstrap: String?
     var killSwitch: Bool?
     var killSwitchLAN: Bool?
     var tunnels: [WireTunnel]
     var lists: [WireList]
 
     enum CodingKeys: String, CodingKey {
-        case vpn, listsOn = "lists_on", selected, retry, loadAll = "load_all", killSwitch = "kill_switch", killSwitchLAN = "kill_switch_lan", tunnels, lists
+        case vpn, listsOn = "lists_on", selected, retry, loadAll = "load_all", bootstrap, killSwitch = "kill_switch", killSwitchLAN = "kill_switch_lan", tunnels, lists
     }
 }
 
@@ -208,7 +209,7 @@ enum DaemonError: LocalizedError, Equatable {
 /// Client for the service's control socket: one JSON request, one JSON response per connection.
 enum Daemon {
     /// The service revision this app needs (Go: api.APIRevision).
-    static let requiredAPIRev = 4
+    static let requiredAPIRev = 5
 
     #if DEBUG
     /// Debug builds: SPLITROUTE_SOCKET points the app at a fake service.
@@ -230,7 +231,7 @@ enum Daemon {
     }
 
     /// One request through each named tunnel, measured by the service: milliseconds, or why it failed.
-    /// The service allows 60 s per call, so ask for a few dozen at a time.
+    /// The service allows 60 s per call. The app asks for one tunnel per call so results show as they arrive.
     static func test(_ ids: [String]) async throws -> [String: WireTest] {
         guard let t = try await send(Request(cmd: "test", ids: ids)).tests else { throw outdated }
         return t

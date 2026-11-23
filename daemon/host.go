@@ -88,20 +88,25 @@ type host struct {
 	testTimeout time.Duration
 	inbound     core.Inbound // zero: the tun; a test runs the proxy (a tun needs root)
 
-	mu       sync.Mutex
-	vpnOn    bool
-	selected string          // the core ID of the default tunnel; "" for none
-	wanted   []*wantedTunnel // the tunnels the engine loads
-	waiting  map[string]string
-	views    map[string]*view
-	lists    []hostList
-	eng      Engine
-	timer    *time.Timer
-	logs     []string
-	warns    []string
-	err      string
-	closed   bool
+	mu        sync.Mutex
+	vpnOn     bool
+	selected  string          // the core ID of the default tunnel; "" for none
+	bootstrap string          // core.DNS.Bootstrap: how proxy tunnels' servers are found by name
+	wanted    []*wantedTunnel // the tunnels the engine loads
+	waiting   map[string]string
+	views     map[string]*view
+	lists     []hostList
+	eng       Engine
+	timer     *time.Timer
+	logs      []string
+	warns     []string
+	err       string
+	closed    bool
 }
+
+// defaultBootstrap is the DoH server that finds proxy tunnels' servers when the app chose none. The core's own
+// default is 1.1.1.1; this app's users have it reset on some networks.
+const defaultBootstrap = "8.8.8.8"
 
 const (
 	hostSettle = 250 * time.Millisecond
@@ -149,6 +154,17 @@ func (h *host) setVPN(on bool) {
 			}
 		}
 	}
+	h.scheduleLocked()
+}
+
+// setBootstrap chooses how proxy tunnels' server names are resolved; a change restarts the engine.
+func (h *host) setBootstrap(b string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.bootstrap == b {
+		return
+	}
+	h.bootstrap = b
 	h.scheduleLocked()
 }
 
@@ -419,7 +435,11 @@ func (h *host) stopLocked() {
 }
 
 func (h *host) buildLocked() core.Config {
-	cfg := core.Config{WorkDir: h.workDir, Default: h.selected, Inbound: h.inbound, Log: core.Log{Level: "info"}}
+	bootstrap := h.bootstrap
+	if bootstrap == "" {
+		bootstrap = defaultBootstrap
+	}
+	cfg := core.Config{WorkDir: h.workDir, Default: h.selected, Inbound: h.inbound, DNS: core.DNS{Bootstrap: bootstrap}, Log: core.Log{Level: "info"}}
 	byName := map[string]string{}
 	for _, w := range h.wanted {
 		cfg.Tunnels = append(cfg.Tunnels, core.Tunnel{ID: w.id, Name: w.name, Protocol: w.protocol, Options: w.options})

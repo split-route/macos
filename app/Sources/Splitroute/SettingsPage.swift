@@ -26,7 +26,7 @@ struct SettingsPage: View {
             EmptyView()
         } content: {
             if model.status == nil { ServiceUnavailable() } else { routing }
-            if model.status != nil { killSwitch }
+            if model.status != nil { lookup; killSwitch }
             app
             if model.ready { source }
             files
@@ -100,6 +100,21 @@ struct SettingsPage: View {
     }
 
     // MARK: App
+
+    private static let bootstrapLabels = ["": "Google (8.8.8.8)", "1.1.1.1": "Cloudflare (1.1.1.1)", "9.9.9.9": "Quad9 (9.9.9.9)", "system": "System resolver"]
+
+    @ViewBuilder private var lookup: some View {
+        SectionTitle("Server lookup")
+        Panel {
+            FormRow("Find tunnel servers with",
+                    detail: "If every tunnel fails with \"connection reset by peer\", your network blocks this DNS provider: pick another. The system resolver can return a blocked network's fake address.",
+                    error: model.error("bootstrap")) {
+                SelectMenu(title: Self.bootstrapLabels[model.bootstrap] ?? model.bootstrap, options: ["", "1.1.1.1", "9.9.9.9", "system"],
+                           label: { Self.bootstrapLabels[$0] ?? $0 }, selected: model.bootstrap) { v in Task { await model.setBootstrap(v) } }
+                    .disabled(model.busy)
+            }
+        }
+    }
 
     @ViewBuilder private var killSwitch: some View {
         SectionTitle("Kill switch")

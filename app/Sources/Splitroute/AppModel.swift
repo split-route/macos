@@ -114,6 +114,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The sidebar's one short line: the tunnel's name while it carries traffic, "Connecting…" while it comes up,
+    /// the full sentence for everything else (off, failed, needs sign-in).
+    var sidebarStatus: String {
+        if health == .active, let t = selectedTunnel { return t.name }
+        if vpnOn, let t = selectedTunnel, t.state == .connecting || t.state == .reconnecting { return "Connecting…" }
+        return summary
+    }
+
     static let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
 
     /// The running service is a different build than this app (after an upgrade the old daemon keeps running until it is restarted).
@@ -219,6 +227,7 @@ final class AppModel: ObservableObject {
         guard let store, let link else { return TunnelList(tunnels: []) }
         let vpn = try store.vpn()
         let ks = try store.killSwitch()
+        let bootstrap = try store.bootstrap()
         let stored = try store.tunnels()
         let subs = try store.subscriptions()
         let groups = Dictionary(uniqueKeysWithValues: subs.map { ($0.id, $0.name) })
@@ -237,7 +246,7 @@ final class AppModel: ObservableObject {
             out.append(tn)
         }
         let usages = subs.map { s in Subscription(name: s.name, tunnels: counts[s.id] ?? 0, updatedAt: s.updatedAt.nilIfEmpty, error: s.lastError.nilIfEmpty, usage: files.loadUsage(s.id)) }
-        return TunnelList(tunnels: out, subscriptions: usages.isEmpty ? nil : usages, vpn: vpn.on, selected: selected,
+        return TunnelList(tunnels: out, subscriptions: usages.isEmpty ? nil : usages, vpn: vpn.on, selected: selected, bootstrap: bootstrap,
                           killSwitch: ks.on, killSwitchLAN: ks.lan, killSwitchArmed: service?.killSwitch?.armed, unavailable: service?.unavailable?.nilIfEmpty)
     }
 

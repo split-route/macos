@@ -180,8 +180,6 @@ struct TunnelsPage: View {
         // Subscriptions are open until the user folds them; the default group has no header to fold.
         let open = !titled || !model.isCollapsed(group.id)
         VStack(alignment: .leading, spacing: Space.s) {
-            if let name = group.name, let e = model.error("group:\(name)") { NoteLine(.error, e) }
-            if let e = group.subscription?.error, !e.isEmpty { NoteLine(.warning, "Last update failed: \(e)") }
             Panel {
                 // The title row is the first row of the group, on a tinted ground.
                 if titled {
@@ -239,7 +237,7 @@ struct TunnelsPage: View {
                         if updating {
                             ProgressView().controlSize(.small)
                         } else if let ok = updated[sub.name] {
-                            // The outcome for a moment, then the refresh icon again; a failure's reason stays under the header.
+                            // The outcome for a moment, then the refresh icon again; a failure's reason is the button's tooltip.
                             Image(systemName: ok ? "checkmark" : "exclamationmark.triangle")
                                 .foregroundStyle(ok ? Palette.ink.color : Palette.danger.color)
                                 .transition(.opacity)
@@ -250,7 +248,7 @@ struct TunnelsPage: View {
                     .font(.system(size: 14, weight: .regular)).roundGlass(30)
                 }
                 .buttonStyle(.plain).disabled(updating || unavailable)
-                .help("Update this subscription")
+                .help(model.error("group:\(sub.name)") ?? sub.error?.nilIfEmpty.map { "Last update failed: \($0)" } ?? "Update this subscription")
                 .accessibilityLabel("Update \(sub.name)")
                 Button { editingGroup = sub } label: {
                     Image(systemName: "info.circle").font(.system(size: 14, weight: .regular)).roundGlass(30)

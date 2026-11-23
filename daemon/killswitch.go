@@ -47,13 +47,21 @@ func realPF(args []string, stdin string) (string, error) {
 	return string(out), err
 }
 
+// ksTunNet is the engine's tun subnet, hardcoded in core/build.go (the tun inbound's "address").
+// Keep the two in step. ponytail: matching the source address instead of the interface, because
+// Apple's pf does not match `on utun` (the group name) against utunN: every packet into the tun
+// was dropped. A process that pins itself to another interface with this source could leak;
+// root already bypasses the rules, so that is accepted.
+const ksTunNet = "172.19.0.0/30"
+
 // killSwitchRules is the anchor's ruleset. It is fixed text: nothing from the
-// socket reaches it but the LAN flag. utun is the interface group, so the rules
-// hold when the engine's tun is recreated under another number.
+// socket reaches it but the LAN flag. The pass rules for lo0 and the tun are stateless:
+// a `flags S/SA keep state` rule only matches a SYN, so a flow that began before the
+// rules loaded (or whose state was dropped) would fall through to the block.
 func killSwitchRules(lan bool) string {
 	r := []string{
-		"pass quick on lo0 all",
-		"pass out quick on utun all",
+		"pass quick on lo0 all no state",
+		"pass out quick inet from " + ksTunNet + " to any no state",
 		"pass out quick proto { tcp, udp } from any to any user 0",
 		"pass out quick inet6 proto icmp6 from any to any icmp6-type { routersol, routeradv, neighbrsol, neighbradv }",
 	}

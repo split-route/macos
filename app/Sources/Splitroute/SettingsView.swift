@@ -14,7 +14,7 @@ struct SettingsView: View {
             // The traffic lights sit over the sidebar's top: the title bar is transparent.
             Sidebar(selection: $page, tunnels: [], title: "Splitroute", subtitle: "Smart VPN & Routing",
                     icon: NSApp.applicationIconImage.map { Image(nsImage: $0) }, topInset: 30,
-                    status: model.connError == nil ? model.summary : nil, statusOn: model.health == .active)
+                    status: model.connError == nil ? model.sidebarStatus : nil, statusOn: model.health == .active)
             Group {
                 switch page {
                 case .tunnels: TunnelsPage()

@@ -482,3 +482,29 @@ func applied2(t *testing.T, a *app, f *fakes) *fakeEngine {
 	a.host.applyNow()
 	return f.latest()
 }
+
+func TestApplyBootstrapReachesTheEngineAndIsValidated(t *testing.T) {
+	a, f := testApp(t)
+	s := api.Snapshot{VPN: true, Selected: "t1", Tunnels: []api.TunnelSpec{proxy("t1", "Alpha")}}
+	if err := a.Apply(s); err != nil {
+		t.Fatal(err)
+	}
+	if got := applied(t, a, f).DNS.Bootstrap; got != "8.8.8.8" {
+		t.Fatalf("default bootstrap = %q", got)
+	}
+	for _, b := range []string{"1.1.1.1", "system"} {
+		s.Bootstrap = b
+		if err := a.Apply(s); err != nil {
+			t.Fatal(err)
+		}
+		if got := applied(t, a, f).DNS.Bootstrap; got != b {
+			t.Fatalf("bootstrap = %q, want %q", got, b)
+		}
+	}
+	for _, bad := range []string{"dns.example.com", "1.1.1.1/32", "https://1.1.1.1"} {
+		s.Bootstrap = bad
+		if err := a.Apply(s); err == nil {
+			t.Fatalf("bootstrap %q was accepted", bad)
+		}
+	}
+}

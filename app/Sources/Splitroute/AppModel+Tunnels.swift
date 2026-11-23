@@ -108,6 +108,20 @@ extension AppModel {
         await changed()
     }
 
+    /// How proxy tunnels' server names are found: "" (the service's default, Google DoH), a DoH server's address, or
+    /// "system". 8.8.8.8 is the default, so it is shown as "".
+    var bootstrap: String { tunnelList?.bootstrap == "8.8.8.8" ? "" : tunnelList?.bootstrap ?? "" }
+
+    func setBootstrap(_ value: String) async {
+        errors["bootstrap"] = nil
+        do {
+            guard let store else { throw StoreError("The settings database isn't open.") }
+            try store.setBootstrap(value)
+            link?.retry("*") // the tunnels that failed to find their server may be tried again
+        } catch { errors["bootstrap"] = error.localizedDescription }
+        await changed()
+    }
+
     var killSwitchOn: Bool { tunnelList?.killSwitch ?? false }
     var killSwitchLAN: Bool { tunnelList?.killSwitchLAN ?? true }
     /// The firewall rules are loaded: traffic that isn't the VPN's is blocked, so a dropped tunnel means no network.
@@ -187,20 +201,28 @@ extension AppModel {
             await refreshStatus()
         }
         let byID = Dictionary(uniqueKeysWithValues: all.map { ($0.coreID, $0.name) })
-        let ids = all.map(\.coreID)
-        for start in stride(from: 0, to: ids.count, by: 64) { // the service answers a call within 60 s
-            do {
-                for (id, r) in try await Daemon.test(Array(ids[start..<min(start + 64, ids.count)])) {
-                    guard let name = byID[id] else { continue }
+        // One call per tunnel, a few at a time (the service's own width), so each result shows when it is in
+        // instead of when the slowest one is.
+        var ids = all.map(\.coreID).makeIterator()
+        let one: @Sendable (String) async -> (String, WireTest?, Error?) = { id in
+            do { return (id, try await Daemon.test([id])[id], nil) } catch { return (id, nil, error) }
+        }
+        await withTaskGroup(of: (String, WireTest?, Error?).self) { group in
+            for _ in 0..<8 { if let id = ids.next() { group.addTask { await one(id) } } }
+            for await (id, r, err) in group {
+                if let err {
+                    errors["test"] = err.localizedDescription
+                    group.cancelAll()
+                    break
+                }
+                if let r, let name = byID[id] {
                     switch service?.tunnels[id]?.state {
                     case .failed?: testResults[name] = .failed("Failed", detail: service?.tunnels[id]?.error?.nilIfEmpty)
                     case .needsAuth?: testResults[name] = .failed("Needs sign-in", detail: nil)
                     default: testResults[name] = r.error.map { .failed($0, detail: r.detail?.nilIfEmpty) } ?? .ms(r.ms ?? 0)
                     }
                 }
-            } catch {
-                errors["test"] = error.localizedDescription
-                return
+                if let next = ids.next() { group.addTask { await one(next) } }
             }
         }
     }

@@ -240,6 +240,7 @@ struct TunnelList: Decodable, Equatable {
     var vpn: Bool?  // nil from a service older than this app
     var selected: String?
     /// The kill switch setting, and whether the service has the rules loaded.
+    var bootstrap: String?
     var killSwitch: Bool?
     var killSwitchLAN: Bool?
     var killSwitchArmed: Bool?

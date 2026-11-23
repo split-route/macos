@@ -86,8 +86,9 @@ public struct Sidebar: View {
                         .overlay(Circle().stroke(Palette.inkSecondary.color, lineWidth: statusOn ? 0 : 1.5))
                         .frame(width: 9, height: 9)
                     Text(status).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(1).truncationMode(.tail)
                 }
+                .help(status)
                 .padding(.horizontal, Space.m)
                 .accessibilityElement(children: .combine)
             }

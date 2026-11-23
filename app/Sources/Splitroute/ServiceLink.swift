@@ -45,6 +45,7 @@ final class ServiceLink {
     func snapshot() throws -> Snapshot {
         let vpn = try store.vpn()
         let ks = try store.killSwitch()
+        let bootstrap = try store.bootstrap()
         let cfg = try store.config()
         let stored = try store.tunnels()
         var problems: [String: String] = [:]
@@ -90,7 +91,7 @@ final class ServiceLink {
         self.problems = problems
         self.sentCredentials = sent
         return Snapshot(vpn: vpn.on, listsOn: !cfg.disabled, selected: selected, retry: retry.isEmpty ? nil : retry.sorted(),
-                        loadAll: loadAll ? true : nil, killSwitch: ks.on ? true : nil, killSwitchLAN: ks.on && ks.lan ? true : nil,
+                        loadAll: loadAll ? true : nil, bootstrap: bootstrap.nilIfEmpty, killSwitch: ks.on ? true : nil, killSwitchLAN: ks.on && ks.lan ? true : nil,
                         tunnels: tunnels, lists: lists)
     }
 

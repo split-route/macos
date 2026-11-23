@@ -187,5 +187,10 @@ ALTER TABLE settings ADD COLUMN selected_tunnel_id INTEGER REFERENCES tunnels (i
 ALTER TABLE settings ADD COLUMN kill_switch INTEGER NOT NULL DEFAULT 0 CHECK (kill_switch IN (0, 1));
 ALTER TABLE settings ADD COLUMN kill_switch_lan INTEGER NOT NULL DEFAULT 1 CHECK (kill_switch_lan IN (0, 1));
 """#,
+#"""
+-- How proxy tunnels' server names are found: '' (DNS over HTTPS to 1.1.1.1), a DoH server's
+-- IP address, or 'system'. Some networks reset DoH to one provider, so it is a setting.
+ALTER TABLE settings ADD COLUMN bootstrap TEXT NOT NULL DEFAULT '' CHECK (length(bootstrap) <= 45);
+"""#,
     ]
 }

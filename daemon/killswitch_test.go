@@ -45,10 +45,18 @@ func TestKillSwitchRules(t *testing.T) {
 		if got := strings.Contains(r, "192.168.0.0/16"); got != lan {
 			t.Errorf("lan=%v: LAN rule present = %v", lan, got)
 		}
-		for _, want := range []string{"on lo0", "on utun", "user 0"} {
+		for _, want := range []string{
+			"pass quick on lo0 all no state\n",
+			"pass out quick inet from 172.19.0.0/30 to any no state\n", // the engine's tun (core/build.go)
+			"user 0",
+		} {
 			if !strings.Contains(r, want) {
 				t.Errorf("lan=%v: missing %q", lan, want)
 			}
+		}
+		// Apple's pf never matches `on utun` against utunN: that rule dropped all tun traffic.
+		if strings.Contains(r, "on utun") {
+			t.Errorf("lan=%v: interface-group match on utun:\n%s", lan, r)
 		}
 	}
 }

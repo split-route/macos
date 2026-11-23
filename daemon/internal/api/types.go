@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"regexp"
 	"strings"
 	"time"
@@ -60,6 +61,9 @@ type Snapshot struct {
 	LoadAll bool `json:"load_all,omitempty"`
 	// KillSwitch blocks all traffic that isn't the engine's while the VPN is on, so a dropped tunnel
 	// can't leak; KillSwitchLAN keeps the local network reachable meanwhile.
+	// Bootstrap is how proxy tunnels' server names are found: "" (DoH to 8.8.8.8, the service's default), a DoH server's IP address, or
+	// "system" (the system resolver, for a network that resets DoH).
+	Bootstrap     string       `json:"bootstrap,omitempty"`
 	KillSwitch    bool         `json:"kill_switch,omitempty"`
 	KillSwitchLAN bool         `json:"kill_switch_lan,omitempty"`
 	Tunnels       []TunnelSpec `json:"tunnels"`
@@ -110,6 +114,11 @@ var idRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 // Validate refuses what the engine must never be asked: odd IDs (they become
 // tags and file names), duplicates, and shapes that don't belong together.
 func (s Snapshot) Validate() error {
+	if b := s.Bootstrap; b != "" && b != "system" {
+		if _, err := netip.ParseAddr(b); err != nil {
+			return fmt.Errorf("bootstrap %q must be an IP address or \"system\"", b)
+		}
+	}
 	if len(s.Tunnels) > MaxTunnels {
 		return fmt.Errorf("%d tunnels; the limit is %d", len(s.Tunnels), MaxTunnels)
 	}
@@ -178,7 +187,7 @@ type ListCount struct {
 
 // APIRevision is bumped when the app needs something of the service that an older one would silently ignore (a new
 // snapshot field, say). The app compares it with the one it needs and says the service must be restarted.
-const APIRevision = 4 // 4: kill switch (3: OpenVPN tunnels are tested by address)
+const APIRevision = 5 // 5: bootstrap resolver; 4: kill switch (3: OpenVPN tunnels are tested by address)
 
 // Status is what the control socket returns for `status`.
 type Status struct {

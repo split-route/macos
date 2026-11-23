@@ -367,6 +367,14 @@ final class Store {
         }
     }
 
+    func bootstrap() throws -> String {
+        try queue.read { try String.fetchOne($0, sql: "SELECT bootstrap FROM settings WHERE id = 1") ?? "" }
+    }
+
+    func setBootstrap(_ value: String) throws {
+        try queue.write { try $0.execute(sql: "UPDATE settings SET bootstrap = ? WHERE id = 1", arguments: [value]) }
+    }
+
     func setSelected(_ id: Int64?) throws {
         try queue.write { try $0.execute(sql: "UPDATE settings SET selected_tunnel_id = ? WHERE id = 1", arguments: [id]) }
     }
