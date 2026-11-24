@@ -78,7 +78,7 @@ public struct Sidebar: View {
                     .background {
                         if on {
                             // One highlight that moves, not one that disappears and another that appears.
-                            LiquidSelection(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
+                            LiquidSelection(RoundedRectangle(cornerRadius: Radius.row + 2, style: .continuous))
                                 .matchedGeometryEffect(id: "selection", in: selectionNamespace)
                         }
                     }

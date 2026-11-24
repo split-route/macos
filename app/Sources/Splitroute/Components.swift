@@ -261,7 +261,7 @@ private struct MenuRow: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(highlighted ? 0.1 : 0)))
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(highlighted ? 0.1 : 0)))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
