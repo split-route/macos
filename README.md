@@ -12,6 +12,15 @@ work today, more protocols follow.
 Lists come from [routing-rules](https://github.com/split-route/routing-rules), from a URL you import, or are your
 own. An imported or release list is only ever applied after it parses and passes its size and checksum checks.
 
+## Install
+
+```sh
+brew install --cask split-route/tap/splitroute
+```
+
+Or download `Splitroute_<version>_macos.dmg` from the [releases](https://github.com/split-route/macos/releases) and drag the app to
+Applications. Needs macOS 14 or later. The app is not notarized, so macOS asks you to allow it once (see Build).
+
 ## Build
 
 ```sh

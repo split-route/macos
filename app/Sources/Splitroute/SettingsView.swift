@@ -6,7 +6,7 @@ import SwiftUI
 /// when it is made; there is no Apply.
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
-    @AppStorage("settingsPage") private var page: Destination = .tunnels
+    @AppStorage("settingsPage") private var page: Destination = .home
 
 
     var body: some View {
@@ -14,15 +14,17 @@ struct SettingsView: View {
             // The traffic lights sit over the sidebar's top: the title bar is transparent.
             Sidebar(selection: $page, tunnels: [], title: "Splitroute", subtitle: "Smart VPN & Routing",
                     icon: NSApp.applicationIconImage.map { Image(nsImage: $0) }, topInset: 30,
-                    status: model.connError == nil ? model.sidebarStatus : nil, statusOn: model.health == .active)
-            Group {
+                    // Home and Servers already show the connection; the other pages get it here.
+                    status: model.connError == nil && page != .home && page != .tunnels ? model.sidebarStatus : nil, statusOn: model.health == .active)
+            ZStack {
                 switch page {
-                case .tunnels: TunnelsPage()
-                case .lists: ListsPage()
-                case .status: StatusPage()
-                case .settings: SettingsPage()
+                case .home: HomePage(traffic: model.traffic, go: { page = $0 }).transition(.opacity)
+                case .tunnels: TunnelsPage().transition(.opacity)
+                case .lists: ListsPage().transition(.opacity)
+                case .settings: SettingsPage().transition(.opacity)
                 }
             }
+            .animation(.easeOut(duration: 0.18), value: page) // the page you leave fades out as the new one fades in
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // The content is the darker, blurrier layer, so focus stays on it; the sidebar is lighter and clearer.
             .background(Backdrop(material: .hudWindow, darkness: 0.82))
@@ -32,6 +34,8 @@ struct SettingsView: View {
         .preferredColorScheme(.dark)
         .ignoresSafeArea()
         .frame(minWidth: 820, minHeight: 520)
+        .onAppear { if model.settingsVisible { model.traffic.start() } }
+        .onChange(of: model.settingsVisible) { _, open in if open { model.traffic.start() } else { model.traffic.stop() } }
     }
 }
 

@@ -48,7 +48,7 @@ struct ImportTunnelsSheet: View {
     private var inputView: some View {
         VStack(alignment: .leading, spacing: Space.l) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Add tunnels").font(TypeScale.title)
+                Text("Add servers").font(TypeScale.title)
                 Text("Paste share links (vless://, vmess://, trojan://, ss://, hysteria2://, tuic://, anytls://), a subscription address, or the contents of a subscription.")
                     .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                     .fixedSize(horizontal: false, vertical: true)
@@ -101,7 +101,7 @@ struct ImportTunnelsSheet: View {
             if trimmed.hasPrefix("http://") {
                 NoteLine(.error, "Subscriptions must use https://, because the address carries your token.")
             } else {
-                Text("This is a subscription. Its tunnels are kept in their own group, and the address stays on this Mac where only the service can read it.")
+                Text("This is a subscription. Its servers are kept in their own group, and the address stays on this Mac where only the service can read it.")
                     .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: Space.s) {
@@ -117,7 +117,7 @@ struct ImportTunnelsSheet: View {
     private var workingView: some View {
         HStack(spacing: Space.m) {
             ProgressView().controlSize(.small)
-            Text(isAddress ? "Downloading the subscription…" : "Adding tunnels…").font(TypeScale.body)
+            Text(isAddress ? "Downloading the subscription…" : "Adding servers…").font(TypeScale.body)
         }
         .frame(maxWidth: .infinity, minHeight: 120)
     }
@@ -127,7 +127,7 @@ struct ImportTunnelsSheet: View {
     @ViewBuilder private func resultView(_ r: AddResult) -> some View {
         let skipped = r.skipped ?? []
         VStack(alignment: .leading, spacing: 4) {
-            Text(r.added == 0 ? "Nothing was added" : "Added \(plural(r.added, "tunnel"))").font(TypeScale.title)
+            Text(r.added == 0 ? "Nothing was added" : "Added \(plural(r.added, "server"))").font(TypeScale.title)
             Text(summary(r, skipped: skipped.count)).font(TypeScale.secondary)
                 .foregroundStyle(Palette.inkSecondary.color).fixedSize(horizontal: false, vertical: true)
         }

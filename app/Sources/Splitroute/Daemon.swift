@@ -13,8 +13,9 @@ struct WireTunnel: Encodable {
     var needsAuth: Bool
     var username: String?
     var password: String?
+    var keyPassword: String?
 
-    enum CodingKeys: String, CodingKey { case id, name, `protocol`, profile, options, needsAuth = "needs_auth", username, password }
+    enum CodingKeys: String, CodingKey { case id, name, `protocol`, profile, options, needsAuth = "needs_auth", username, password, keyPassword = "key_password" }
 }
 
 struct WireList: Encodable {
@@ -26,10 +27,18 @@ struct WireList: Encodable {
     var text: String?
 }
 
+struct WireFinal: Encodable {
+    var action: Action
+    var tunnel: String?
+}
+
 struct Snapshot: Encodable {
     var vpn: Bool
     var listsOn: Bool
     var selected: String?
+    /// Where traffic no list matches goes; nil is the selected tunnel.
+    var final: WireFinal?
+    var blockQuic: Bool?
     var retry: [String]?
     var loadAll: Bool?
     var bootstrap: String?
@@ -39,7 +48,7 @@ struct Snapshot: Encodable {
     var lists: [WireList]
 
     enum CodingKeys: String, CodingKey {
-        case vpn, listsOn = "lists_on", selected, retry, loadAll = "load_all", bootstrap, killSwitch = "kill_switch", killSwitchLAN = "kill_switch_lan", tunnels, lists
+        case vpn, listsOn = "lists_on", selected, final, blockQuic = "block_quic", retry, loadAll = "load_all", bootstrap, killSwitch = "kill_switch", killSwitchLAN = "kill_switch_lan", tunnels, lists
     }
 }
 
@@ -168,12 +177,13 @@ private struct Request: Encodable {
     var username: String?
     var password: String?
     var text: String?
+    var data: Data? // a binary list (.srs), base64 in the JSON
     var format: String?
     var wantLines: Bool?
     var lines: [String]?
     var ids: [String]?
 
-    enum CodingKeys: String, CodingKey { case cmd, apply, id, username, password, text, format, wantLines = "want_lines", lines, ids }
+    enum CodingKeys: String, CodingKey { case cmd, apply, id, username, password, text, data, format, wantLines = "want_lines", lines, ids }
 }
 
 private struct Response: Decodable {
@@ -209,7 +219,7 @@ enum DaemonError: LocalizedError, Equatable {
 /// Client for the service's control socket: one JSON request, one JSON response per connection.
 enum Daemon {
     /// The service revision this app needs (Go: api.APIRevision).
-    static let requiredAPIRev = 5
+    static let requiredAPIRev = 9
 
     #if DEBUG
     /// Debug builds: SPLITROUTE_SOCKET points the app at a fake service.
@@ -258,6 +268,19 @@ enum Daemon {
         return e
     }
 
+    /// A sing-box rule-set (.srs): the service reads the binary, as it reads text.
+    static func parseEntries(data: Data, format: String, wantLines: Bool = false) async throws -> WireEntries {
+        guard data.count <= maxBinaryList else { throw DaemonError.failed("This rule-set is larger than \(maxBinaryList >> 20) MB.") }
+        guard let e = try await send(Request(cmd: "parse_entries", data: data, format: format, wantLines: wantLines ? true : nil)).entries else { throw outdated }
+        return e
+    }
+
+    /// The service takes requests up to 8 MiB and base64 adds a third.
+    static let maxBinaryList = 5 << 20
+
+    /// A sing-box binary rule-set starts with "SRS".
+    static func isRuleSet(_ d: Data) -> Bool { d.starts(with: [0x53, 0x52, 0x53]) }
+
     static func canonEntries(_ lines: [String]) async throws -> [WireCanon] {
         guard let c = try await send(Request(cmd: "canon_entries", lines: lines)).canon else { throw outdated }
         return c
@@ -271,15 +294,17 @@ enum Daemon {
     private static let outdated = DaemonError.failed("The service is older than this app. Restart it from Settings (Advanced → Restart service).")
 
     private static func send(_ req: Request) async throws -> Response {
-        let payload = try JSONEncoder().encode(req) + Data("\n".utf8)
-        let data = try await Task.detached { try roundTrip(payload) }.value
-        let resp: Response
-        do {
-            resp = try JSONDecoder().decode(Response.self, from: data)
-        } catch {
-            if req.cmd == "status" { throw DaemonError.outdated }
-            throw DaemonError.failed("Unexpected reply from the service: \(error.localizedDescription)")
-        }
+        // Encoding a big snapshot and decoding a big answer (a list's lines) both happen off the main actor.
+        let resp: Response = try await Task.detached(priority: .userInitiated) {
+            let payload = try JSONEncoder().encode(req) + Data("\n".utf8)
+            let data = try roundTrip(payload)
+            do {
+                return try JSONDecoder().decode(Response.self, from: data)
+            } catch {
+                if req.cmd == "status" { throw DaemonError.outdated }
+                throw DaemonError.failed("Unexpected reply from the service: \(error.localizedDescription)")
+            }
+        }.value
         guard resp.ok else {
             let msg = resp.error ?? "unknown error"
             throw msg.hasPrefix("unknown command") ? outdated : DaemonError.failed(msg)

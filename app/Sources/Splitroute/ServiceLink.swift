@@ -42,7 +42,42 @@ final class ServiceLink {
         }
     }
 
+    /// What the snapshot needs from the main actor: the retry and load-all asks and the credentials in use.
+    private func inputs() throws -> (retry: Set<String>, loadAll: Bool, credentials: [String: TunnelSecrets]) {
+        var creds: [String: TunnelSecrets] = [:]
+        for t in try store.tunnels() where t.isOpenVPN { if let c = credentials(t.name) { creds[t.name] = c } }
+        return (retry, loadAll, creds)
+    }
+
+    /// The snapshot, built here (tests, and anything that must be synchronous).
     func snapshot() throws -> Snapshot {
+        let i = try inputs()
+        let built = try Self.build(store: store, files: files, retry: i.retry, loadAll: i.loadAll, credentials: i.credentials)
+        problems = built.problems
+        sentCredentials = built.sent
+        return built.snapshot
+    }
+
+    /// The snapshot, built off the main actor: it reads the database, every tunnel's saved file and every list (megabytes),
+    /// and that must not stall the window.
+    private func snapshotAsync() async throws -> Snapshot {
+        let i = try inputs()
+        let (store, files) = (self.store, self.files)
+        let built = try await Task.detached(priority: .userInitiated) {
+            try ServiceLink.build(store: store, files: files, retry: i.retry, loadAll: i.loadAll, credentials: i.credentials)
+        }.value
+        problems = built.problems
+        sentCredentials = built.sent
+        return built.snapshot
+    }
+
+    struct Built {
+        var snapshot: Snapshot
+        var problems: [String: String]
+        var sent: Set<String>
+    }
+
+    nonisolated static func build(store: Store, files: AppFiles, retry: Set<String>, loadAll: Bool, credentials: [String: TunnelSecrets]) throws -> Built {
         let vpn = try store.vpn()
         let ks = try store.killSwitch()
         let bootstrap = try store.bootstrap()
@@ -60,14 +95,20 @@ final class ServiceLink {
             var w = WireTunnel(id: t.coreID, name: t.name, protocol: t.kind, needsAuth: t.needsAuth)
             if t.isOpenVPN {
                 w.profile = String(decoding: data, as: UTF8.self)
-                if t.needsAuth, let c = credentials(t.name), !(c.username.isEmpty && c.password.isEmpty) {
-                    w.username = c.username.nilIfEmpty
-                    w.password = c.password.nilIfEmpty
-                    sent.insert(t.name)
+                if let c = credentials[t.name] {
+                    if t.needsAuth, !(c.username.isEmpty && c.password.isEmpty) {
+                        w.username = c.username.nilIfEmpty
+                        w.password = c.password.nilIfEmpty
+                        sent.insert(t.name)
+                    }
+                    if t.keyEncrypted, !c.keyPassword.isEmpty {
+                        w.keyPassword = c.keyPassword
+                        sent.insert(t.name)
+                    }
                 }
             } else {
                 guard let o = try? JSONDecoder().decode(JSONValue.self, from: data) else {
-                    problems[t.coreID] = "The saved options of this tunnel are not valid. Import it again."
+                    problems[t.coreID] = "The saved options of this server are not valid. Import it again."
                     continue
                 }
                 w.options = o
@@ -76,7 +117,7 @@ final class ServiceLink {
         }
         let selected = stored.first { $0.id == vpn.selected }.map(\.coreID).flatMap { id in tunnels.contains { $0.id == id } ? id : nil }
         var lists: [WireList] = []
-        for l in cfg.lists {
+        for l in cfg.lists where l.action != .none { // a list with no action isn't sent: the service never sees it
             var w = WireList(name: l.name, action: l.action, tunnel: l.action == .tunnel ? l.tunnel : nil)
             if l.custom {
                 w.entries = l.entries
@@ -88,11 +129,12 @@ final class ServiceLink {
             } // a release list not downloaded yet is sent empty: the lists that are downloaded still apply
             lists.append(w)
         }
-        self.problems = problems
-        self.sentCredentials = sent
-        return Snapshot(vpn: vpn.on, listsOn: !cfg.disabled, selected: selected, retry: retry.isEmpty ? nil : retry.sorted(),
+        // Nothing is sent for the default (the selected tunnel): an older snapshot shape stays valid.
+        let final = cfg.finalAction == .tunnel && cfg.finalTunnel == nil ? nil : WireFinal(action: cfg.finalAction, tunnel: cfg.finalTunnel)
+        let snap = Snapshot(vpn: vpn.on, listsOn: !cfg.disabled, selected: selected, final: final, blockQuic: cfg.blockQUIC ? true : nil, retry: retry.isEmpty ? nil : retry.sorted(),
                         loadAll: loadAll ? true : nil, bootstrap: bootstrap.nilIfEmpty, killSwitch: ks.on ? true : nil, killSwitchLAN: ks.on && ks.lan ? true : nil,
                         tunnels: tunnels, lists: lists)
+        return Built(snapshot: snap, problems: problems, sent: sent)
     }
 
     /// Sends the snapshot if something changed or the service restarted.
@@ -111,7 +153,7 @@ final class ServiceLink {
         defer { pushing = false }
         repeat {
             let sentRetry = retry
-            let s = try snapshot()
+            let s = try await snapshotAsync()
             dirty = false
             do {
                 try await Daemon.apply(s)

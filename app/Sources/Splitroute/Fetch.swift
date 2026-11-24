@@ -28,8 +28,13 @@ enum Fetch {
 
     struct Response { var status: Int; var body: Data; var headers: [String: String] }
 
+    /// Where one list's download is: a fraction (nil when the server didn't say the size) or the reason it failed.
+    enum DownloadState: Equatable, Sendable { case running(Double?), failed(String) }
+    /// Reports a list's state; nil means it finished.
+    typealias DownloadReport = @Sendable (String, DownloadState?) -> Void
+
     /// One GET. `host` names the server in errors instead of the address: a subscription's address carries a token.
-    static func get(_ url: URL, headers: [String: String] = [:], limit: Int) async throws -> Response {
+    static func get(_ url: URL, headers: [String: String] = [:], limit: Int, progress: (@Sendable (Double?) -> Void)? = nil) async throws -> Response {
         var req = URLRequest(url: url)
         req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
@@ -43,9 +48,15 @@ enum Fetch {
         for (k, v) in http.allHeaderFields { if let k = k as? String, let v = v as? String { h[k.lowercased()] = v } }
         guard http.statusCode == 200 else { return Response(status: http.statusCode, body: Data(), headers: h) }
         var body = Data()
+        let total = http.expectedContentLength // -1 when unknown
+        var reported = 0
         do {
             for try await b in bytes {
                 body.append(b)
+                if let progress, body.count - reported >= 16 << 10 {
+                    reported = body.count
+                    progress(total > 0 ? min(Double(body.count) / Double(total), 1) : nil)
+                }
                 if body.count > limit { throw StoreError("The answer from \(host) is larger than \(limit >> 20) MB.") }
             }
         } catch let e as StoreError { throw e } catch {
@@ -102,11 +113,11 @@ enum Fetch {
     struct Imported { var body: Data; var etag: String; var lastModified: String; var notModified: Bool }
 
     /// Downloads an import, conditionally on the validators of the last good copy.
-    static func importList(_ url: URL, etag: String, lastModified: String) async throws -> Imported {
+    static func importList(_ url: URL, etag: String, lastModified: String, progress: (@Sendable (Double?) -> Void)? = nil) async throws -> Imported {
         var h: [String: String] = [:]
         if !etag.isEmpty { h["If-None-Match"] = etag }
         if !lastModified.isEmpty { h["If-Modified-Since"] = lastModified }
-        let r = try await get(url, headers: h, limit: maxList)
+        let r = try await get(url, headers: h, limit: maxList, progress: progress)
         let tag = r.headers["etag"] ?? "", mod = r.headers["last-modified"] ?? ""
         switch r.status {
         case 304: return Imported(body: Data(), etag: tag, lastModified: mod, notModified: true)
@@ -142,7 +153,7 @@ enum Fetch {
     /// Downloads each named list and checks it against the release's SHA256SUMS. A list that can't be downloaded or
     /// verified keeps the last verified copy in `files`, so a network hiccup never drops routes. Returns the lists that
     /// were replaced and a warning for each that wasn't.
-    static func releaseLists(_ base: String, names: [String], files: AppFiles) async -> (replaced: Set<String>, warnings: [String]) {
+    static func releaseLists(_ base: String, names: [String], files: AppFiles, report: DownloadReport? = nil) async -> (replaced: Set<String>, warnings: [String]) {
         guard !names.isEmpty else { return ([], []) }
         var warnings: [String] = []
         var sums: [String: String]?
@@ -157,17 +168,19 @@ enum Fetch {
             if let sums {
                 if let want = sums[file] {
                     do {
-                        let r = try await get(try releaseURL(base, file), limit: maxList)
+                        let r = try await get(try releaseURL(base, file), limit: maxList) { report?(n, .running($0)) }
                         if r.status != 200 { why = "HTTP \(r.status)" }
                         else if AppFiles.sha256(r.body) != want { why = "checksum mismatch" }
                         else {
                             try files.writeRelease(n, r.body)
                             replaced.insert(n)
+                            report?(n, nil)
                             continue
                         }
                     } catch { why = error.localizedDescription }
                 } else { why = "not in this release" }
             } else { why = "no checksums" }
+            report?(n, .failed(why))
             warnings.append("\(file): \(why)" + (files.releaseText(n) != nil ? "; using the saved copy" : "; no saved copy"))
         }
         return (replaced, warnings)

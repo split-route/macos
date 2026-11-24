@@ -35,7 +35,7 @@ func TestHostLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ep, err := openvpn.Endpoint(p, "x", "", "")
+	ep, err := openvpn.Endpoint(p, "x", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

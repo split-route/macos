@@ -8,7 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let model = AppModel()
     private var item: NSStatusItem!
     private var settingsWindow: NSWindow?
-    private let popover = NSPopover()
+    private var menuPanel: MenuBarPanel!
     private var bag = Set<AnyCancellable>()
     private var launchedAtLogin = false
 
@@ -48,13 +48,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.target = self
         item.button?.action = #selector(togglePopover)
-        let host = NSHostingController(rootView: MenuPopover(
-            openApp: { [weak self] page in self?.popover.performClose(nil); self?.show(page: page) },
-            quit: { [weak self] in self?.popover.performClose(nil); self?.quit() }
-        ).environmentObject(model))
-        host.sizingOptions = [.preferredContentSize]
-        popover.contentViewController = host
-        popover.behavior = .transient
+        menuPanel = MenuBarPanel { onSize in
+            MenuPopover(
+                openApp: { [weak self] page in self?.menuPanel.close(); self?.show(page: page) },
+                quit: { [weak self] in self?.menuPanel.close(); self?.quit() },
+                onSize: onSize
+            ).environmentObject(self.model)
+        }
         model.$status.combineLatest(model.$connError)
             .receive(on: RunLoop.main)
             .sink { [weak self] _, _ in self?.updateIcon() }
@@ -94,11 +94,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func togglePopover() {
         guard let button = item.button else { return }
-        if popover.isShown { return popover.performClose(nil) }
-        // The lists in the popover come from the config, which the window normally loads.
+        if menuPanel.isShown { return menuPanel.close() }
+        // The default route in the panel comes from the config, which the window normally loads.
         Task { await model.loadSettings() }
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        popover.contentViewController?.view.window?.makeKey()
+        menuPanel.show(relativeTo: button)
     }
 
     private func action(_ title: String, _ sel: Selector, key: String = "") -> NSMenuItem {
@@ -120,7 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "keep": turnOff = false
         default:
             let alert = NSAlert()
-            alert.messageText = "The VPN is still on."
+            alert.messageText = "The connection is still on."
             alert.informativeText = "It stays on after you quit. Open Splitroute again to turn it off later."
             alert.addButton(withTitle: "Turn Off and Quit")
             alert.addButton(withTitle: "Quit")
@@ -139,7 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if !model.vpnOn { return NSApp.terminate(nil) }
             // Never quit over a failure: the VPN would stay on with no icon.
             let alert = NSAlert()
-            alert.messageText = "Couldn't turn the VPN off."
+            alert.messageText = "Couldn't disconnect."
             alert.informativeText = model.actionError ?? model.summary
             NSApp.activate(ignoringOtherApps: true)
             alert.runModal()
@@ -148,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func openSettings() { show(page: nil) }
 
-    /// Opens the window, on `page` when given, else on Tunnels (the first page).
+    /// Opens the window, on `page` when given, else on Home (the first page).
     private func show(page: Destination?) {
         if settingsWindow == nil {
             let w = NSWindow(
@@ -175,7 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let page {
             UserDefaults.standard.set(page.rawValue, forKey: "settingsPage")
         } else if settingsWindow?.isVisible != true {
-            UserDefaults.standard.set(Destination.tunnels.rawValue, forKey: "settingsPage")
+            UserDefaults.standard.set(Destination.home.rawValue, forKey: "settingsPage")
         }
         model.settingsVisible = true
         Task { await model.loadSettings() }

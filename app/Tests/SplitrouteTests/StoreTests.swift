@@ -86,6 +86,61 @@ final class StoreTests: XCTestCase {
         XCTAssertFalse(c3.lists[0].entries.contains("# the office"), "a note goes with its entry")
     }
 
+    /// "No Action" keeps the list (and its entries) without applying it: the lists table accepts it and the rows survive.
+    func testAListWithNoActionIsKeptWithItsEntries() throws {
+        let s = try newStore()
+        try s.update { try $0.creating("Work", .block) }
+        try s.update { try $0.settingEntries("Work", ["example.com"]).0 }
+        try s.update { try $0.settingAction("Work", .none, tunnel: nil) }
+        let l = try s.config().lists.first { $0.name == "Work" }
+        XCTAssertEqual(l?.action, Action.none) // not .none: that reads as Optional.none
+        XCTAssertEqual(l?.entries, ["example.com"])
+    }
+
+    /// A custom list or import can carry a one-line description; a ready-made list cannot (its text is the catalog's).
+    func testAListDescriptionRoundTripsAndIsChecked() throws {
+        let s = try newStore()
+        try s.update { try $0.creating("Work", .block, description: "Sites for the office") }
+        XCTAssertEqual(try s.config().lists.first { $0.name == "Work" }?.description, "Sites for the office")
+        try s.update { try $0.settingDescription("Work", "") }
+        XCTAssertNil(try s.config().lists.first { $0.name == "Work" }?.description, "empty clears it")
+        XCTAssertThrowsError(try s.update { try $0.settingDescription("Work", String(repeating: "x", count: 121)) })
+        XCTAssertThrowsError(try s.update { try $0.settingDescription("Work", "two\nlines") })
+        XCTAssertThrowsError(try s.update { try $0.settingDescription("ir-cidr", "mine") }, "a ready-made list has the catalog's")
+        try s.update { try $0.importing("Feed", .block, url: "https://example.com/a.txt", description: "A feed") }
+        XCTAssertEqual(try s.config().lists.first { $0.name == "Feed" }?.description, "A feed")
+    }
+
+    func testAnImportsAddressCanBeChangedOnlyToAnHTTPSOne() throws {
+        let s = try newStore()
+        try s.update { try $0.importing("Feed", .block, url: "https://example.com/a.txt") }
+        XCTAssertThrowsError(try s.update { try $0.settingImportURL("Feed", to: "http://example.com/a.txt") })
+        XCTAssertThrowsError(try s.update { try $0.settingImportURL("ir-cidr", to: "https://example.com/b.txt") }, "not an import")
+        try s.update { try $0.settingImportURL("Feed", to: "https://example.com/b.txt") }
+        XCTAssertEqual(try s.config().lists.first { $0.name == "Feed" }?.importSource?.url, "https://example.com/b.txt")
+    }
+
+    /// Renaming an import keeps its downloaded entries (they live only in the database).
+    func testRenamingAnImportKeepsItsEntries() throws {
+        let s = try newStore()
+        try s.update { try $0.importing("Feed", .block, url: "https://example.com/a.txt") }
+        _ = try s.saveDownload(name: "Feed", url: "https://example.com/a.txt", lines: ["example.com", "8.8.8.0/24"], etag: "", lastModified: "", sha256: "x", skipped: 0)
+        try s.renameList("Feed", to: "News")
+        XCTAssertEqual(try s.importLines("News"), ["example.com", "8.8.8.0/24"])
+        XCTAssertEqual(try s.config().lists.map(\.name).contains("Feed"), false)
+        XCTAssertThrowsError(try s.renameList("News", to: "ir-cidr"), "a taken name")
+    }
+
+    /// Refusing QUIC is on by default and survives a round trip.
+    func testBlockQUICDefaultsOnAndRoundTrips() throws {
+        let s = try newStore()
+        XCTAssertTrue(try s.config().blockQUIC)
+        try s.update { var c = $0; c.blockQUIC = false; return c }
+        XCTAssertFalse(try s.config().blockQUIC)
+        try s.update { var c = $0; c.blockQUIC = true; return c }
+        XCTAssertTrue(try s.config().blockQUIC)
+    }
+
     func testListRulesRefuseWhatTheyMust() throws {
         let c = Config.initial
         XCTAssertThrowsError(try c.enablingRelease("ir-cidr", .direct)) // twice
@@ -106,6 +161,29 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(try s.listsUsing(tunnel: t.id), ["ir-cidr"])
         XCTAssertThrowsError(try s.removeTunnel(t.id)) { XCTAssertTrue("\($0)".contains("ir-cidr")) }
         XCTAssertEqual(try s.tunnels().count, 1, "a refused removal changes nothing")
+    }
+
+    /// The final route (everything no list matches) defaults to the selected tunnel, survives a round trip, refuses
+    /// a missing tunnel or "no action", and keeps the tunnel it names from being removed.
+    func testTheFinalRouteRoundTripsAndPinsItsTunnel() throws {
+        let s = try newStore()
+        var c = try s.config()
+        XCTAssertEqual(c.finalAction, .tunnel)
+        XCTAssertNil(c.finalTunnel)
+        try s.update { try $0.settingFinal(.direct, tunnel: nil) }
+        c = try s.config()
+        XCTAssertEqual(c.finalAction, .direct)
+        XCTAssertThrowsError(try s.update { try $0.settingFinal(.none, tunnel: nil) })
+        XCTAssertThrowsError(try s.update { try $0.settingFinal(.direct, tunnel: "Work") }, "a tunnel only with the tunnel action")
+        XCTAssertThrowsError(try s.update { try $0.settingFinal(.tunnel, tunnel: "Ghost") })
+        let t = try s.addTunnels([tunnel("Work")]).tunnels[0]
+        try s.update { try $0.settingFinal(.tunnel, tunnel: "Work") }
+        c = try s.config()
+        XCTAssertEqual(c.finalTunnel, "Work")
+        XCTAssertEqual(try s.listsUsing(tunnel: t.id), ["Default Route"])
+        XCTAssertThrowsError(try s.removeTunnel(t.id)) { XCTAssertTrue("\($0)".contains("Default Route")) }
+        try s.update { try $0.settingFinal(.tunnel, tunnel: nil) }
+        try s.removeTunnel(t.id)
     }
 
     func testAnImportKeepsItsEntriesUntilItsAddressChanges() throws {
@@ -146,7 +224,7 @@ final class StoreTests: XCTestCase {
         let added = try s.addTunnels([tunnel("Node"), tunnel("node"), tunnel("  Node\u{200E} "), tunnel(String(repeating: "é", count: 80))]).tunnels
         XCTAssertEqual(added.map(\.name).prefix(3), ["Node", "node 2", "Node 3"])
         XCTAssertLessThanOrEqual(added[3].name.utf8.count, 64)
-        XCTAssertEqual(Store.cleanName("\u{0}\u{7}"), "Tunnel")
+        XCTAssertEqual(Store.cleanName("\u{0}\u{7}"), "Server")
     }
 
     func testRemovingASubscriptionRemovesItsTunnelsUnlessAListUsesOne() throws {

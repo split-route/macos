@@ -82,16 +82,15 @@ public struct SectionTitle: View {
 /// A page: header on top, content below, scrolling when it is long.
 public struct PageScaffold<Trailing: View, Content: View>: View {
     let title: String
-    let summary: String
     let trailing: Trailing
     let content: Content
-    public init(_ title: String, summary: String, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) {
-        self.title = title; self.summary = summary; self.trailing = trailing(); self.content = content()
+    public init(_ title: String, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) {
+        self.title = title; self.trailing = trailing(); self.content = content()
     }
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.xl) {
-                PageHeader(title, summary: summary) { trailing }
+                PageHeader(title) { trailing }
                 // A section title sits close to its panel; the gap above it separates sections.
                 VStack(alignment: .leading, spacing: Space.s) { content }
             }

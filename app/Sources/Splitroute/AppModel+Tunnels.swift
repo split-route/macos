@@ -12,7 +12,7 @@ extension AppModel {
     var tunnels: [Tunnel] { tunnelList?.tunnels ?? [] }
 
     private func stored(_ name: String) throws -> StoreTunnel {
-        guard let t = try store?.tunnels().first(where: { $0.name == name }) else { throw StoreError("No tunnel named \"\(name)\".") }
+        guard let t = try store?.tunnels().first(where: { $0.name == name }) else { throw StoreError("No server named \"\(name)\".") }
         return t
     }
 
@@ -98,7 +98,7 @@ extension AppModel {
             guard let store else { throw StoreError("The settings database isn't open.") }
             if on {
                 let ts = try store.tunnels()
-                guard !ts.isEmpty else { throw StoreError("Add a tunnel first.") }
+                guard !ts.isEmpty else { throw StoreError("Add a server first.") }
                 if try store.vpn().selected == nil { try store.setSelected(ts[0].id) }
                 link?.retry("*") // the user asked: tunnels that failed may be tried again
             }
@@ -187,7 +187,7 @@ extension AppModel {
                 await refreshStatus()
             }
             guard service?.running == true else {
-                errors["test"] = "The VPN didn't start, so there is nothing to test. See the tunnel's message."
+                errors["test"] = "It didn't connect, so there is nothing to test. See the server's message."
                 return
             }
         }
@@ -237,7 +237,7 @@ extension AppModel {
             if let why = check.refused?.nilIfEmpty { throw StoreError(why) }
             let clean = Store.cleanName(name)
             if try store.tunnels().contains(where: { $0.name.caseInsensitiveCompare(clean) == .orderedSame }) {
-                throw StoreError("A tunnel with that name already exists.")
+                throw StoreError("A server with that name already exists.")
             }
             let data = Data(text.utf8)
             var t = StoreTunnel(id: 0, name: clean, kind: "openvpn", sha: AppFiles.sha256(data), remotes: check.remotes ?? [])
@@ -353,7 +353,7 @@ extension AppModel {
             let sub = try self.subscription(name)
             let ts = try store.tunnels().filter { $0.subscriptionID == sub.id }
             do { try store.selectedGuard(ts.map(\.id)) } catch {
-                throw StoreError("The selected tunnel is in this group, and the VPN is on: select a tunnel outside it or turn the VPN off first.")
+                throw StoreError("The selected server is in this group, and it is connected: select a server outside it or disconnect first.")
             }
             try store.removeSubscription(sub.id) // refuses while a list uses one of its tunnels
             for t in ts { self.files.removeTunnelFiles(t.id); TunnelKeychain.delete(t.name) }
@@ -568,7 +568,7 @@ extension AppModel {
         case .needsAuth: return .needsAuth
         case .connected: return .connected
         case .ready: return .ready
-        case .failed: return .failed(t.error ?? "The tunnel stopped.")
+        case .failed: return .failed(t.error ?? "The server stopped.")
         }
     }
 }

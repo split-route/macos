@@ -37,8 +37,11 @@ func engineCheck() string {
 // tunnel with no session of its own (cheap, and then choosing between them needs
 // no restart), the selected tunnel, and each OpenVPN tunnel that a list names (a
 // loaded OpenVPN tunnel opens a real session, so no others), unless all is set (a connectivity test).
-func desiredTunnels(ts []api.TunnelSpec, selected string, ls []api.ListSpec, all bool) map[string]bool {
+func desiredTunnels(ts []api.TunnelSpec, selected string, ls []api.ListSpec, final api.FinalSpec, all bool) map[string]bool {
 	named := map[string]bool{}
+	if final.Tunnel != "" {
+		named[strings.ToLower(final.Tunnel)] = true
+	}
 	for _, l := range ls {
 		if l.Tunnel != "" {
 			named[strings.ToLower(l.Tunnel)] = true
@@ -51,6 +54,14 @@ func desiredTunnels(ts []api.TunnelSpec, selected string, ls []api.ListSpec, all
 		}
 	}
 	return want
+}
+
+// activeLists are the lists the engine applies: none while routing is off, when only the default route is left.
+func activeLists(s api.Snapshot) []api.ListSpec {
+	if !s.ListsOn {
+		return nil
+	}
+	return s.Lists
 }
 
 // listID is the engine's ID for a list. Names can hold spaces and any script;
@@ -85,6 +96,8 @@ func (a *app) Apply(s api.Snapshot) error {
 	}
 	a.host.setBootstrap(s.Bootstrap)
 	a.host.setSelected(s.Selected)
+	a.host.setFinal(s.Final)
+	a.host.setBlockQUIC(s.BlockQUIC && s.ListsOn)
 	a.host.setVPN(s.VPN)
 	a.reconcile(s)
 	a.mu.Lock()
@@ -183,7 +196,7 @@ func (a *app) reconcile(s api.Snapshot) {
 	if !s.VPN {
 		return
 	}
-	want := desiredTunnels(s.Tunnels, s.Selected, s.Lists, s.LoadAll)
+	want := desiredTunnels(s.Tunnels, s.Selected, activeLists(s), s.Final, s.LoadAll)
 	for _, t := range s.Tunnels {
 		_, _, wanted := a.host.loaded(t.ID)
 		loaded := wanted || a.host.isWaiting(t.ID)
@@ -203,17 +216,29 @@ func (a *app) reconcile(s api.Snapshot) {
 // name, so a renamed tunnel is renamed in place and a changed one reconnects.
 func fingerprint(t api.TunnelSpec) string {
 	h := sha256.New()
-	for _, p := range []string{t.Protocol, t.Profile, string(t.Options), t.Username, t.Password} {
+	for _, p := range []string{t.Protocol, t.Profile, string(t.Options), t.Username, t.Password, t.KeyPassword} {
 		fmt.Fprintf(h, "%d:%s|", len(p), p)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// lacksCredentials is whether an OpenVPN tunnel needs a sign-in or a key password and has none yet.
+func lacksCredentials(t api.TunnelSpec) bool {
+	if t.Protocol != api.ProtocolOpenVPN {
+		return false
+	}
+	if t.NeedsAuth && t.Username == "" && t.Password == "" {
+		return true
+	}
+	p, err := openvpn.Parse([]byte(t.Profile))
+	return err == nil && p.KeyEncrypted && t.KeyPassword == ""
 }
 
 // connect asks the host for a tunnel; one that needs credentials and has none
 // waits for the app to send them in the next snapshot. A tunnel the host already
 // runs from the same source is left alone.
 func (a *app) connect(t api.TunnelSpec) error {
-	if t.Protocol == api.ProtocolOpenVPN && t.NeedsAuth && t.Username == "" && t.Password == "" {
+	if lacksCredentials(t) {
 		if _, _, wanted := a.host.loaded(t.ID); wanted {
 			a.host.disconnect(t.ID) // its credentials are gone
 		}
@@ -251,7 +276,7 @@ func options(t api.TunnelSpec) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	ep, err := openvpn.Endpoint(p, "x", t.Username, t.Password)
+	ep, err := openvpn.Endpoint(p, "x", t.Username, t.Password, t.KeyPassword)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +293,11 @@ func checkProfile(text []byte) (openvpn.Profile, error) {
 	if len(p.Scripts) > 0 {
 		return p, fmt.Errorf("the profile runs %v, which the engine does not support: it runs no scripts or plugins", p.Scripts)
 	}
-	if _, err := openvpn.Endpoint(p, "x", "x", "x"); err != nil {
+	// An encrypted key is opened later, with the password the app sends: here the profile is only checked, so the
+	// key's text is passed through as it is.
+	probe := p
+	probe.KeyEncrypted = false
+	if _, err := openvpn.Endpoint(probe, "x", "x", "x", ""); err != nil {
 		return p, fmt.Errorf("the engine can't run this profile: %w", err)
 	}
 	return p, nil

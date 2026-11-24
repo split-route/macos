@@ -29,7 +29,7 @@ extension Store {
 
     /// Makes a display name fit the schema: no control characters, no edge spaces, at most 64 bytes without cutting a
     /// character, never empty.
-    static func cleanName(_ s: String, fallback: String = "Tunnel") -> String {
+    static func cleanName(_ s: String, fallback: String = "Server") -> String {
         let mapped = String(s.unicodeScalars.map { u -> Character in
             (u.value < 0x20 || u.value == 0x7f || u.value == 0x200E || u.value == 0x200F || u.value == 0xFEFF) ? " " : Character(u)
         })
@@ -51,11 +51,11 @@ extension Store {
             }
             if try Int.fetchOne(db, sql: "SELECT count(*) FROM \(table) WHERE name = ?", arguments: [name]) == 0 { return name }
         }
-        throw StoreError("Too many tunnels with the same name.")
+        throw StoreError("Too many servers with the same name.")
     }
 
     private static func insert(_ db: Database, _ t: StoreTunnel, now: String) throws -> Int64 {
-        guard t.sha.count == 64 else { throw StoreError("A tunnel needs its content's SHA-256.") }
+        guard t.sha.count == 64 else { throw StoreError("A server needs its content's SHA-256.") }
         try db.execute(sql: """
             INSERT INTO tunnels (name, kind, profile_sha256, remotes, needs_auth, key_encrypted, scripts, auto_connect, subscription_id, warning, position, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, (SELECT coalesce(max(position), -1) + 1 FROM tunnels), ?, ?)
@@ -69,7 +69,7 @@ extension Store {
     func addTunnels(_ ts: [StoreTunnel], subscription: String? = nil) throws -> (subscription: StoreSubscription?, tunnels: [StoreTunnel]) {
         try queue.write { db in
             let n = try Int.fetchOne(db, sql: "SELECT count(*) FROM tunnels") ?? 0
-            guard n + ts.count <= Store.maxTunnels else { throw StoreError("At most \(Store.maxTunnels) tunnels; remove some first.") }
+            guard n + ts.count <= Store.maxTunnels else { throw StoreError("At most \(Store.maxTunnels) servers; remove some first.") }
             let now = Store.stamp()
             var sub: StoreSubscription?
             if let name = subscription {
@@ -93,11 +93,13 @@ extension Store {
     }
 
     private static func listsUsing(_ db: Database, _ id: Int64) throws -> [String] {
-        try String.fetchAll(db, sql: "SELECT name FROM lists WHERE tunnel_id = ? ORDER BY position", arguments: [id])
+        var names = try String.fetchAll(db, sql: "SELECT name FROM lists WHERE tunnel_id = ? ORDER BY position", arguments: [id])
+        if try Int.fetchOne(db, sql: "SELECT 1 FROM settings WHERE final_tunnel_id = ?", arguments: [id]) != nil { names.append("Default Route") }
+        return names
     }
 
     static func inUse(_ lists: [String]) -> StoreError {
-        StoreError("This tunnel is used by the lists \(lists.joined(separator: ", ")); choose another tunnel for them first.")
+        StoreError("This server is used by the lists \(lists.joined(separator: ", ")); choose another server for them first.")
     }
 
     func removeTunnel(_ id: Int64) throws {
@@ -113,7 +115,7 @@ extension Store {
         do {
             try queue.write { try $0.execute(sql: "UPDATE tunnels SET name = ?, updated_at = ? WHERE id = ?", arguments: [clean, Store.stamp(), id]) }
         } catch let e as DatabaseError where e.extendedResultCode == .SQLITE_CONSTRAINT_UNIQUE {
-            throw StoreError("A tunnel with that name already exists.")
+            throw StoreError("A server with that name already exists.")
         }
     }
 
@@ -131,6 +133,8 @@ extension Store {
         try String.fetchAll(db, sql: """
             SELECT DISTINCT l.name FROM lists l JOIN tunnels t ON l.tunnel_id = t.id WHERE t.subscription_id = ? ORDER BY l.position
             """, arguments: [id])
+            + (try Int.fetchOne(db, sql: "SELECT 1 FROM settings s JOIN tunnels t ON s.final_tunnel_id = t.id WHERE t.subscription_id = ?", arguments: [id]) != nil
+               ? ["Default Route"] : [])
     }
 
     /// Deletes a subscription and its tunnels in one transaction. Refused while a list uses one of them.
@@ -138,7 +142,7 @@ extension Store {
         try queue.write { db in
             let using = try Store.listsUsingSubscription(db, id)
             guard using.isEmpty else {
-                throw StoreError("A tunnel of this subscription is used by the lists \(using.joined(separator: ", ")); choose another tunnel for them first.")
+                throw StoreError("A server of this subscription is used by the lists \(using.joined(separator: ", ")); choose another server for them first.")
             }
             try db.execute(sql: "DELETE FROM tunnels WHERE subscription_id = ?", arguments: [id])
             try db.execute(sql: "DELETE FROM subscriptions WHERE id = ?", arguments: [id])
@@ -177,7 +181,7 @@ extension Store {
         try queue.write { db in
             guard try Int.fetchOne(db, sql: "SELECT count(*) FROM subscriptions WHERE id = ?", arguments: [id]) == 1 else { throw StoreError("No such subscription.") }
             let n = try Int.fetchOne(db, sql: "SELECT count(*) FROM tunnels") ?? 0
-            guard n + sy.add.count - sy.remove.count <= Store.maxTunnels else { throw StoreError("At most \(Store.maxTunnels) tunnels; remove some first.") }
+            guard n + sy.add.count - sy.remove.count <= Store.maxTunnels else { throw StoreError("At most \(Store.maxTunnels) servers; remove some first.") }
             let now = Store.stamp()
             for tid in sy.remove {
                 let using = try Store.listsUsing(db, tid)

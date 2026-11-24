@@ -3,13 +3,15 @@ import Foundation
 // What the app shows and stores: lists, tunnels and their state. The database owns them; the daemon only runs them.
 
 enum Action: String, Codable, CaseIterable, Identifiable {
-    case direct, block, tunnel
+    /// "none": the list is kept but not applied, so it can be switched on later without downloading or typing it again.
+    case none, direct, block, tunnel
     var id: String { rawValue }
     var label: String {
         switch self {
+        case .none: return "No Action"
         case .direct: return "Direct"
         case .block: return "Block"
-        case .tunnel: return "Tunnel"
+        case .tunnel: return "Server"
         }
     }
 
@@ -31,13 +33,15 @@ struct RouteList: Codable, Hashable, Identifiable {
     var tunnel: String?
     var custom = false
     var entries: [String] = []
+    /// A short note the user gave a custom list or an import; shown under its title. Nil: none.
+    var description: String?
     /// Set for a list downloaded from a URL. Its entries live in the daemon's
     /// database, never in the config. Must survive set_config round trips.
     var importSource: ImportSource?
     var id: String { name }
 
     enum CodingKeys: String, CodingKey {
-        case name, action, tunnel, custom, entries, importSource = "import"
+        case name, action, tunnel, custom, entries, description, importSource = "import"
     }
 
     init(name: String, action: Action, custom: Bool = false, entries: [String] = []) {
@@ -54,6 +58,7 @@ struct RouteList: Codable, Hashable, Identifiable {
         tunnel = try c.decodeIfPresent(String.self, forKey: .tunnel)
         custom = try c.decodeIfPresent(Bool.self, forKey: .custom) ?? false
         entries = try c.decodeIfPresent([String].self, forKey: .entries) ?? []
+        description = try c.decodeIfPresent(String.self, forKey: .description)
         importSource = try c.decodeIfPresent(ImportSource.self, forKey: .importSource)
     }
 
@@ -64,6 +69,7 @@ struct RouteList: Codable, Hashable, Identifiable {
         try c.encodeIfPresent(tunnel, forKey: .tunnel)
         if custom { try c.encode(custom, forKey: .custom) }
         if !entries.isEmpty { try c.encode(entries, forKey: .entries) }
+        try c.encodeIfPresent(description, forKey: .description)
         try c.encodeIfPresent(importSource, forKey: .importSource)
     }
 }
@@ -95,9 +101,14 @@ struct Config: Codable, Equatable {
     var baseURL: String?
     var disabled = false
     var lists: [RouteList] = []
+    /// Where traffic no list matches goes: direct, block or a tunnel (`finalTunnel` nil: the selected one).
+    var finalAction: Action = .tunnel
+    var finalTunnel: String?
+    /// Refuse QUIC no list matched (browsers then use TCP, where names can be read).
+    var blockQUIC = true
 
     enum CodingKeys: String, CodingKey {
-        case baseURL = "base_url", disabled, lists
+        case baseURL = "base_url", disabled, lists, finalAction = "final_action", finalTunnel = "final_tunnel", blockQUIC = "block_quic"
     }
 
     init() {}
@@ -107,6 +118,9 @@ struct Config: Codable, Equatable {
         baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL)
         disabled = try c.decodeIfPresent(Bool.self, forKey: .disabled) ?? false
         lists = try c.decodeIfPresent([RouteList].self, forKey: .lists) ?? []
+        finalAction = try c.decodeIfPresent(Action.self, forKey: .finalAction) ?? .tunnel
+        finalTunnel = try c.decodeIfPresent(String.self, forKey: .finalTunnel)
+        blockQUIC = try c.decodeIfPresent(Bool.self, forKey: .blockQUIC) ?? true
     }
 }
 
@@ -132,12 +146,6 @@ struct Status: Decodable, Equatable {
     enum CodingKeys: String, CodingKey {
         case version, enabled, running, connected, lists, fetched, warnings, error, imports
     }
-}
-
-struct Preset: Decodable, Identifiable, Hashable {
-    var id: String
-    var name: String
-    var lists: [RouteList]
 }
 
 // Tunnels: mirror internal/api/tunnels.go.
@@ -312,9 +320,9 @@ extension TunnelTest {
         case .failed(let why, let detail):
             if let detail, !detail.isEmpty { return detail }
             switch why {
-            case "Timeout": return "No answer from this tunnel within 5 seconds."
-            case "Needs sign-in": return "This tunnel needs its credentials: use the ... menu, then Credentials."
-            default: return "The engine stopped this tunnel without saying why. Open the ... menu, then Show Log."
+            case "Timeout": return "No answer from this server within 5 seconds."
+            case "Needs sign-in": return "This server needs its credentials: use the ... menu, then Credentials."
+            default: return "The engine stopped this server without saying why. Open the ... menu, then Show Log."
             }
         }
     }

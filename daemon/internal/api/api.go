@@ -15,7 +15,7 @@
 //
 //	{"cmd": "check_profile", "text": "<.ovpn>"}             → check
 //	{"cmd": "parse_links", "text": "<links or a body>"}     → nodes
-//	{"cmd": "parse_entries", "text": "…", "format": "custom|import|release", "want_lines": true}  → entries
+//	{"cmd": "parse_entries", "text": "…" or "data": "<base64 .srs>", "format": "custom|import|release", "want_lines": true}  → entries
 //	{"cmd": "canon_entries", "lines": ["Example.COM"]}      → canon
 //	{"cmd": "legacy_export"}                                → legacy (root-only files of versions before 0.3)
 package api
@@ -43,7 +43,7 @@ type Backend interface {
 	Test(ids []string) map[string]TestResult
 	CheckProfile(text string) (TunnelCheck, error)
 	ParseLinks(text string) (Nodes, error)
-	ParseEntries(text, format string, wantLines bool) (Entries, error)
+	ParseEntries(text string, data []byte, format string, wantLines bool) (Entries, error)
 	CanonEntries(lines []string) []Canon
 	LegacyExport() (LegacyState, error)
 }
@@ -56,7 +56,9 @@ type Request struct {
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
 
-	Text      string   `json:"text,omitempty"`
+	Text string `json:"text,omitempty"`
+	// Data is a binary list (a sing-box .srs rule-set) for parse_entries, in place of Text; JSON carries it as base64.
+	Data      []byte   `json:"data,omitempty"`
 	Format    string   `json:"format,omitempty"`
 	WantLines bool     `json:"want_lines,omitempty"`
 	Lines     []string `json:"lines,omitempty"`
@@ -184,7 +186,7 @@ func Respond(b Backend, req Request) Response {
 		}
 	case "parse_entries":
 		var e Entries
-		if e, err = b.ParseEntries(req.Text, req.Format, req.WantLines); err == nil {
+		if e, err = b.ParseEntries(req.Text, req.Data, req.Format, req.WantLines); err == nil {
 			r.Entries = &e
 		}
 	case "canon_entries":

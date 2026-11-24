@@ -47,11 +47,16 @@ type Snapshot struct {
 	// VPN is whether the user wants the VPN on. Off stops the engine and drops
 	// every tunnel's credentials.
 	VPN bool `json:"vpn"`
-	// ListsOn is whether the lists are applied; off, the selected tunnel carries
-	// all traffic.
+	// ListsOn is whether the lists are applied (routing). Off, only the default route is left: it still
+	// sends everything where Final says.
 	ListsOn bool `json:"lists_on"`
 	// Selected is the ID of the tunnel that carries all traffic no list names.
 	Selected string `json:"selected,omitempty"`
+	// Final is where traffic no list matches goes: direct, block, or a tunnel (Tunnel empty: the selected one). The
+	// zero value is the selected tunnel. It applies whether or not the lists do.
+	Final FinalSpec `json:"final,omitempty"`
+	// BlockQUIC refuses QUIC that no list matched, so browsers use TCP, where names can be read. Ignored while ListsOn is false.
+	BlockQUIC bool `json:"block_quic,omitempty"`
 	// Retry names tunnels that failed and may be tried again because the user
 	// asked: IDs, or "*" for all. A failed tunnel is never retried without it
 	// (retrying bad credentials locks accounts).
@@ -70,10 +75,17 @@ type Snapshot struct {
 	Lists         []ListSpec   `json:"lists"`
 }
 
+// FinalSpec is the route of everything no list matches. Tunnel is a tunnel's name (case-insensitive), like a list's.
+type FinalSpec struct {
+	Action rules.Action `json:"action,omitempty"` // direct, block or tunnel; empty means tunnel
+	Tunnel string       `json:"tunnel,omitempty"`
+}
+
 // TunnelSpec is one tunnel. An OpenVPN tunnel carries its profile text and the
 // daemon builds the engine's options from it; any other protocol carries the
 // engine's options, which the core refuses if they could read a file or steer
-// the engine's own traffic. Username and Password are used and dropped.
+// the engine's own traffic. Username, Password and KeyPassword (the passphrase of an encrypted private key in the
+// profile) are used and dropped.
 type TunnelSpec struct {
 	ID        string          `json:"id"` // "t12": the app's row ID
 	Name      string          `json:"name"`
@@ -83,6 +95,8 @@ type TunnelSpec struct {
 	NeedsAuth bool            `json:"needs_auth,omitempty"`
 	Username  string          `json:"username,omitempty"`
 	Password  string          `json:"password,omitempty"`
+	// KeyPassword opens the profile's encrypted client key. The engine is given the plain key, in memory only.
+	KeyPassword string `json:"key_password,omitempty"`
 }
 
 // List formats: how a ListSpec carries its entries.
@@ -149,6 +163,14 @@ func (s Snapshot) Validate() error {
 	if s.Selected != "" && !ids[s.Selected] {
 		return fmt.Errorf("the selected tunnel %q is not in the snapshot", s.Selected)
 	}
+	switch f := s.Final; {
+	case f.Action != "" && f.Action != rules.Direct && f.Action != rules.Block && f.Action != rules.Tunnel:
+		return fmt.Errorf("final route: action must be direct, block or tunnel, not %q", f.Action)
+	case f.Tunnel != "" && f.Action != rules.Tunnel:
+		return fmt.Errorf("final route: only the tunnel action can name a tunnel")
+	case len(f.Tunnel) > maxName:
+		return fmt.Errorf("final route: tunnel name longer than %d characters", maxName)
+	}
 	lists := map[string]bool{}
 	for _, l := range s.Lists {
 		switch {
@@ -187,7 +209,7 @@ type ListCount struct {
 
 // APIRevision is bumped when the app needs something of the service that an older one would silently ignore (a new
 // snapshot field, say). The app compares it with the one it needs and says the service must be restarted.
-const APIRevision = 5 // 5: bootstrap resolver; 4: kill switch (3: OpenVPN tunnels are tested by address)
+const APIRevision = 9 // 9: block QUIC; 8: .srs lists (parse_entries data); 7: key password for an encrypted OpenVPN key; 6: final route; 5: bootstrap resolver; 4: kill switch (3: OpenVPN tunnels are tested by address)
 
 // Status is what the control socket returns for `status`.
 type Status struct {
