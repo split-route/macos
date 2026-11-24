@@ -21,7 +21,7 @@ struct AddTunnelSheet: View {
         guard check != nil else { return "" }
         if trimmedName.isEmpty { return "" }
         if trimmedName.count > 64 { return "Use at most 64 characters for the name." }
-        if takenNames.contains(trimmedName.lowercased()) { return "Another tunnel has this name." }
+        if takenNames.contains(trimmedName.lowercased()) { return "Another server has this name." }
         if let s = check?.scripts, !s.isEmpty { return "This profile runs \(s.joined(separator: ", ")), which Splitroute does not support." }
         return nil
     }

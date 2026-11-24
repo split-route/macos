@@ -20,12 +20,6 @@ struct TunnelsPage: View {
     /// Subscriptions that just finished updating: true if it worked. Cleared after a few seconds.
     @State private var updated: [String: Bool] = [:]
 
-    private var summary: String {
-        if model.connError != nil { return "The service isn't running." }
-        if model.tunnels.isEmpty { return "No tunnels yet." }
-        return "Choose the tunnel that carries your traffic."
-    }
-
     /// The default group first, then one per subscription in the order they were added.
     private struct Group: Identifiable {
         var name: String?
@@ -59,9 +53,9 @@ struct TunnelsPage: View {
     }
 
     var body: some View {
-        PageScaffold("VPN", summary: summary) {
+        PageScaffold("Servers") {
             if !model.tunnels.isEmpty, model.connError == nil {
-                Button { importing = true } label: { Label("Add tunnels", systemImage: "plus") }.buttonStyle(SolidButtonStyle()).disabled(unavailable)
+                Button { importing = true } label: { Label("Add servers", systemImage: "plus") }.buttonStyle(SolidButtonStyle()).disabled(unavailable)
             }
         } content: {
             if model.connError != nil {
@@ -71,9 +65,9 @@ struct TunnelsPage: View {
                     if let u = model.tunnelList?.unavailable { NoteLine(.warning, u) }
                     if let e = model.error("tunnels") { NoteLine(.error, e) }
                     Panel {
-                        EmptyState(title: "Add your first tunnel",
-                                   message: "Paste a share link or a subscription address, or import an OpenVPN profile. Then turn the VPN on.",
-                                   action: "Add tunnels") { importing = true }
+                        EmptyState(title: "Add your first server",
+                                   message: "Paste a share link or a subscription address, or import an OpenVPN profile. Then connect.",
+                                   action: "Add servers") { importing = true }
                     }
                 }
             } else {
@@ -100,7 +94,7 @@ struct TunnelsPage: View {
         ), presenting: confirmRemove) { t in
             Button("Remove", role: .destructive) { Task { await model.removeTunnel(t.name) } }
         } message: { _ in
-            Text("The tunnel and its saved credentials are deleted. Keep the profile or link if you want to add it again.")
+            Text("The server and its saved credentials are deleted. Keep the profile or link if you want to add it again.")
         }
     }
 
@@ -126,15 +120,15 @@ struct TunnelsPage: View {
                         .frame(width: 52)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(model.vpnOn ? "VPN is on" : "VPN is off").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
+                        Text(model.vpnOn ? "Connected" : "Disconnected").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
                         Text(vpnSubtitle).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: Space.m)
-                    Toggle("VPN", isOn: Binding(get: { model.vpnOn }, set: { on in Task { await model.setVPN(on) } }))
+                    Toggle("Connection", isOn: Binding(get: { model.vpnOn }, set: { on in Task { await model.setVPN(on) } }))
                         .labelsHidden().toggleStyle(.switch).tint(Accent.color)
                         .disabled(model.tunnels.isEmpty)
-                        .accessibilityLabel("VPN")
+                        .accessibilityLabel("Connection")
                 }
                 if let e = model.error("vpn") { NoteLine(.error, e) }
             }
@@ -144,9 +138,9 @@ struct TunnelsPage: View {
         }
     }
 
-    /// What the VPN is doing; with it off, the tunnel that will carry the traffic once it is on.
+    /// What the connection is doing; with it off, the tunnel that will carry the traffic once it is on.
     private var vpnSubtitle: String {
-        if !model.vpnOn { return model.selectedTunnel?.name ?? "Select a tunnel, then turn the VPN on." }
+        if !model.vpnOn { return model.selectedTunnel?.name ?? "Select a server, then connect." }
         return model.summary
     }
 
@@ -167,7 +161,7 @@ struct TunnelsPage: View {
             }
             .buttonStyle(.plain).disabled(model.testing || unavailable || model.tunnels.isEmpty)
             .accessibilityLabel("Connectivity Test")
-            .accessibilityHint("Turns the VPN on if needed, then measures a request through each running tunnel.")
+            .accessibilityHint("Connects if needed, then measures a request through each running server.")
             if let e = model.error("test") { NoteLine(.warning, e) }
         }
         .padding(.vertical, Space.m).padding(.horizontal, Space.l)
@@ -189,7 +183,7 @@ struct TunnelsPage: View {
                 }
                 if open {
                     if all.isEmpty {
-                        Text("This group has no tunnels.").font(TypeScale.body).foregroundStyle(Palette.inkSecondary.color)
+                        Text("This group has no servers.").font(TypeScale.body).foregroundStyle(Palette.inkSecondary.color)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(Space.l)
                     }
                     LazyVStack(spacing: 0) {
@@ -225,13 +219,13 @@ struct TunnelsPage: View {
             .buttonStyle(.plain)
             .accessibilityLabel(name)
             .accessibilityValue(open ? "Expanded" : "Collapsed")
-            .accessibilityHint("Shows or hides the tunnels of this subscription")
+            .accessibilityHint("Shows or hides the servers of this subscription")
             if let sub = group.subscription {
                 Text("\(group.tunnels.count)").font(TypeScale.secondary).monospacedDigit()
                     .foregroundStyle(Palette.inkSecondary.color)
                     .padding(.horizontal, 10).padding(.vertical, 4)
                     .background(Capsule().fill(Glass.control))
-                    .accessibilityLabel(plural(group.tunnels.count, "tunnel"))
+                    .accessibilityLabel(plural(group.tunnels.count, "server"))
                 Button { update(sub.name) } label: {
                     ZStack {
                         if updating {
@@ -362,7 +356,7 @@ struct TunnelsPage: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(t.name)
                 .accessibilityValue(testWords(t) ?? label(t, selected: selected) ?? "")
-                .accessibilityHint("Use this tunnel for all traffic that no list names")
+                .accessibilityHint("Use this server for all traffic that no list names")
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
                 Menu {
                     Button("Credentials…") { promptFor = t }
@@ -451,7 +445,7 @@ struct CredentialsSheet: View {
                 } header: {
                     Text("Credentials for \(tunnel.name)").font(.headline)
                 } footer: {
-                    Text("Sent to the service to connect and kept in its memory only while the tunnel is on.")
+                    Text("Sent to the service to connect and kept in its memory only while the server is on.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -600,7 +594,7 @@ struct SubscriptionEditSheet: View {
         .confirmationDialog("Remove \(subscription.name)?", isPresented: $confirmRemove) {
             Button("Remove subscription", role: .destructive) { Task { await remove() } }
         } message: {
-            Text("Its \(plural(subscription.tunnels, "tunnel")) and the saved address are deleted. A list that uses one of them must be moved to another tunnel first.")
+            Text("Its \(plural(subscription.tunnels, "server")) and the saved address are deleted. A list that uses one of them must be moved to another server first.")
         }
     }
 

@@ -88,8 +88,8 @@ struct ActionPicker: View {
             if action == .tunnel, !tunnels.isEmpty || tunnel != nil {
                 // "" is the default tunnel. A named tunnel is always an option, even if it's missing from the list.
                 let options = [""] + (tunnel.map { n in tunnels.contains(n) ? tunnels : tunnels + [n] } ?? tunnels)
-                SelectMenu(title: tunnel ?? "Default tunnel", options: options,
-                           label: { $0.isEmpty ? "Default tunnel" : $0 }, selected: tunnel ?? "") {
+                SelectMenu(title: tunnel ?? "Default server", options: options,
+                           label: { $0.isEmpty ? "Default server" : $0 }, selected: tunnel ?? "") {
                     set(.tunnel, $0.isEmpty ? nil : $0)
                 }
             }
@@ -104,6 +104,12 @@ struct SelectMenu<Value: Hashable>: View {
     let options: [Value]
     let label: (Value) -> String
     var selected: Value?
+    /// A colored dot before each option and before the title.
+    var dot: ((Value) -> Color)?
+    /// A group title above the first visible option of each group; nil: no group.
+    var group: ((Value) -> String?)?
+    /// The title is one line, cut with … beyond this width: a long server name never makes its row wrap.
+    var maxTitleWidth: CGFloat? = 200
     let onSelect: (Value) -> Void
 
     @State private var open = false
@@ -115,7 +121,8 @@ struct SelectMenu<Value: Hashable>: View {
     var body: some View {
         Button { open.toggle() } label: {
             HStack(spacing: 6) {
-                Text(title)
+                if let dot, let selected { Circle().fill(dot(selected)).frame(width: 8, height: 8) }
+                Text(title).lineLimit(1).truncationMode(.tail).frame(maxWidth: maxTitleWidth, alignment: .trailing).fixedSize(horizontal: maxTitleWidth == nil, vertical: false)
                 Image(systemName: "chevron.down")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -143,18 +150,24 @@ struct SelectMenu<Value: Hashable>: View {
     }
 
     private var rows: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 4) {
             if matches.isEmpty {
                 Text("No matches").foregroundStyle(.secondary).padding(12)
             }
             ForEach(Array(matches.enumerated()), id: \.element) { i, v in
-                MenuRow(text: label(v), checked: v == selected, highlighted: highlighted == i,
+                if let g = group?(v), i == 0 || group?(matches[i - 1]) != g {
+                    Text(g).font(TypeScale.secondary.weight(.semibold)).foregroundStyle(Palette.inkSecondary.color)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12).padding(.top, i == 0 ? 2 : 10).padding(.bottom, 2)
+                        .accessibilityAddTraits(.isHeader)
+                }
+                MenuRow(text: label(v), dot: dot?(v), checked: v == selected, highlighted: highlighted == i,
                         hover: { if $0 { highlighted = i } }) { pick(v) }
                     .id(v)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
     }
 
     /// Up/Down move the highlight, Return picks it. A local monitor works on
@@ -188,23 +201,24 @@ struct SelectMenu<Value: Hashable>: View {
             VStack(spacing: 0) {
                 TextField("Search…", text: $query)
                     .textFieldStyle(.plain)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                    .font(.system(size: 15))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
                     .onChange(of: query) { highlighted = matches.isEmpty ? nil : 0 }
                 Divider()
                 ScrollViewReader { proxy in
                     ScrollView { rows }
-                        .frame(maxHeight: 280)
+                        .frame(maxHeight: 360)
                         .onChange(of: highlighted) { _, i in
                             if let i, i < matches.count { proxy.scrollTo(matches[i]) }
                         }
                 }
             }
-            .frame(width: 240)
+            .frame(width: 300)
             .onAppear(perform: installKeys)
             .onDisappear(perform: removeKeys)
         } else {
-            rows.frame(minWidth: 160)
+            rows.frame(minWidth: 200)
                 .onAppear(perform: installKeys)
                 .onDisappear(perform: removeKeys)
         }
@@ -214,6 +228,7 @@ struct SelectMenu<Value: Hashable>: View {
 /// A row in SelectMenu's popover; highlighted by the pointer or arrow keys, like a menu item.
 private struct MenuRow: View {
     let text: String
+    var dot: Color?
     let checked: Bool
     let highlighted: Bool
     let hover: (Bool) -> Void
@@ -221,14 +236,15 @@ private struct MenuRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack {
-                Text(text)
+            HStack(spacing: 10) {
+                if let dot { Circle().fill(dot).frame(width: 9, height: 9) }
+                Text(text).font(.system(size: 14))
                 Spacer(minLength: 8)
                 if checked { Image(systemName: "checkmark").font(.caption.weight(.semibold)).foregroundStyle(Accent.color) }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(highlighted ? 0.1 : 0)))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(highlighted ? 0.1 : 0)))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

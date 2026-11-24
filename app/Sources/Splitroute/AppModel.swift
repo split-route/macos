@@ -13,7 +13,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var status: Status?
     @Published private(set) var connError: DaemonError?
     @Published private(set) var config: Config?
-    @Published private(set) var presets: [Preset] = Presets.all
     @Published var available: [String] = []
     @Published var catalog: [ListInfo] = []
     @Published var actionError: String?
@@ -26,6 +25,10 @@ final class AppModel: ObservableObject {
     @Published var testResults: [String: TunnelTest] = [:]
     @Published var testing = false
     @Published var busy = false
+    /// Speed through the engine; sampled while the window is open, so Home's chart survives a visit to another page.
+    let traffic = TrafficMonitor()
+    /// Lists being downloaded now, or whose last download failed; a finished one is removed.
+    @Published var downloads: [String: Fetch.DownloadState] = [:]
     /// The last error per row or sheet (keys like "list:Work", "preset", "baseURL"), shown under that row until it next succeeds.
     @Published var errors: [String: String] = [:]
     /// While the settings window is open, the config is re-read on every poll.
@@ -94,22 +97,22 @@ final class AppModel: ObservableObject {
         return .idle
     }
 
-    /// One sentence on what the VPN is doing, plain about the case where it is on but not carrying traffic.
+    /// One sentence on what the connection is doing, plain about the case where it is on but not carrying traffic.
     var summary: String {
         switch health {
         case .notRunning: return connError?.localizedDescription ?? "Connecting…"
         case .problem: return "Problem: \(status?.error ?? "unknown")"
         case .active:
-            return "On, through \(selectedTunnel?.name ?? "the selected tunnel")" + (status?.enabled == false ? ", lists off" : "")
+            return "Connected through \(selectedTunnel?.name ?? "the selected server")" + (status?.enabled == false ? ", lists off" : "")
         case .idle:
-            guard vpnOn else { return "The VPN is off" }
-            guard let t = selectedTunnel else { return "On, but no tunnel is selected" }
+            guard vpnOn else { return "Disconnected" }
+            guard let t = selectedTunnel else { return "No server is selected" }
             let direct = "Traffic uses your normal connection."
             switch t.state {
-            case .needsAuth: return "On, but \(t.name) needs your sign-in. \(direct)"
-            case .failed: return "On, but \(t.name) failed. \(direct)"
+            case .needsAuth: return "\(t.name) needs your sign-in. \(direct)"
+            case .failed: return "\(t.name) failed. \(direct)"
             case .connecting, .reconnecting: return "Connecting through \(t.name)…"
-            default: return "On, but \(t.name) isn't ready. \(direct)"
+            default: return "\(t.name) isn't ready. \(direct)"
             }
         }
     }
@@ -314,6 +317,9 @@ final class AppModel: ObservableObject {
     /// Where `splitroute install` (and app versions before 0.9) put the service.
     private static let legacyPlist = "/Library/LaunchDaemons/io.github.aliraghebi.splitroute.plist"
     private static let promptedKey = "autoInstallPromptedVersion"
+    /// What the one automatic try is counted by: the app version, and the API revision it needs, so a dev build (whose
+    /// version is always "dev") still restarts an old service once when the API changes.
+    private static var upgradeMarker: String { "\(appVersion)/api\(Daemon.requiredAPIRev)" }
     private static let uninstalledKey = "serviceUninstalledByUser"
 
     private var legacyInstalled: Bool { FileManager.default.fileExists(atPath: Self.legacyPlist) }
@@ -391,14 +397,14 @@ final class AppModel: ObservableObject {
     /// doesn't repeat every poll; a service the user removed stays removed.
     private func autoInstallIfNeeded() async {
         let d = UserDefaults.standard
-        guard !busy, d.string(forKey: Self.promptedKey) != Self.appVersion else { return }
+        guard !busy, d.string(forKey: Self.promptedKey) != Self.upgradeMarker else { return }
         let st = Self.daemon.status
         let neverInstalled = connError == .notRunning
             && st != .enabled && st != .requiresApproval
             && !legacyInstalled
             && !d.bool(forKey: Self.uninstalledKey)
         guard neverInstalled || serviceOutdated else { return }
-        d.set(Self.appVersion, forKey: Self.promptedKey)
+        d.set(Self.upgradeMarker, forKey: Self.promptedKey)
         if neverInstalled { await installService() } else { await restartService() }
     }
 
@@ -439,7 +445,11 @@ final class AppModel: ObservableObject {
 
     // MARK: Launch at login
 
-    var launchAtLogin: Bool { SMAppService.mainApp.status == .enabled }
+    /// Cached: asking SMAppService is an IPC to the system, too slow to do on every redraw of Settings. Read again when
+    /// the window opens and after a change.
+    @Published private(set) var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
+
+    func refreshLaunchAtLogin() { launchAtLogin = SMAppService.mainApp.status == .enabled }
 
     func setLaunchAtLogin(_ on: Bool) {
         do {
@@ -448,7 +458,7 @@ final class AppModel: ObservableObject {
         } catch {
             actionError = "Launch at login: \(error.localizedDescription)"
         }
-        objectWillChange.send()
+        refreshLaunchAtLogin()
     }
 }
 

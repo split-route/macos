@@ -91,6 +91,8 @@ type host struct {
 	mu        sync.Mutex
 	vpnOn     bool
 	selected  string          // the core ID of the default tunnel; "" for none
+	blockQUIC bool            // refuse QUIC no list matched
+	final     api.FinalSpec   // where traffic no list matches goes; the tunnel is named, like a list's
 	bootstrap string          // core.DNS.Bootstrap: how proxy tunnels' servers are found by name
 	wanted    []*wantedTunnel // the tunnels the engine loads
 	waiting   map[string]string
@@ -165,6 +167,28 @@ func (h *host) setBootstrap(b string) {
 		return
 	}
 	h.bootstrap = b
+	h.scheduleLocked()
+}
+
+// setBlockQUIC turns the QUIC rule on or off; a change restarts the engine.
+func (h *host) setBlockQUIC(on bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.blockQUIC == on {
+		return
+	}
+	h.blockQUIC = on
+	h.scheduleLocked()
+}
+
+// setFinal chooses where traffic no list matches goes; a change restarts the engine.
+func (h *host) setFinal(f api.FinalSpec) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.final == f {
+		return
+	}
+	h.final = f
 	h.scheduleLocked()
 }
 
@@ -439,13 +463,23 @@ func (h *host) buildLocked() core.Config {
 	if bootstrap == "" {
 		bootstrap = defaultBootstrap
 	}
-	cfg := core.Config{WorkDir: h.workDir, Default: h.selected, Inbound: h.inbound, DNS: core.DNS{Bootstrap: bootstrap}, Log: core.Log{Level: "info"}}
+	cfg := core.Config{WorkDir: h.workDir, Default: h.selected, BlockQUIC: h.blockQUIC, Inbound: h.inbound, DNS: core.DNS{Bootstrap: bootstrap}, Log: core.Log{Level: "info"}}
 	byName := map[string]string{}
 	for _, w := range h.wanted {
 		cfg.Tunnels = append(cfg.Tunnels, core.Tunnel{ID: w.id, Name: w.name, Protocol: w.protocol, Options: w.options})
 		byName[strings.ToLower(w.name)] = w.id
 	}
 	h.warns = nil
+	cfg.Final = core.Final{Action: h.final.Action}
+	if h.final.Action == rules.Tunnel && h.final.Tunnel != "" {
+		if id, ok := byName[strings.ToLower(h.final.Tunnel)]; ok {
+			cfg.Final.Tunnel = id
+		} else {
+			// Like a list: a tunnel that isn't connected never hands its traffic to another path.
+			cfg.Final = core.Final{Action: rules.Block}
+			h.warns = append(h.warns, fmt.Sprintf("default route: the tunnel %q isn't connected, so that traffic is blocked", h.final.Tunnel))
+		}
+	}
 	for _, l := range h.lists {
 		cl := core.List{ID: l.ID, Name: l.Name, Action: l.Action}
 		if l.Action == rules.Tunnel && l.Tunnel != "" {

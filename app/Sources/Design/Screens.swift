@@ -2,22 +2,22 @@ import SwiftUI
 
 public enum Destination: String, CaseIterable, Sendable {
     // The raw values are stored in the user's defaults: keep them when a title changes.
-    case tunnels = "Tunnels", lists = "Lists", status = "Status", settings = "Settings"
+    case home = "Home", tunnels = "Tunnels", lists = "Lists", settings = "Settings"
 
     public var title: String {
         switch self {
-        case .tunnels: return "VPN"
+        case .home: return "Home"
+        case .tunnels: return "Servers"
         case .lists: return "Routing"
-        case .status: return "Status"
         case .settings: return "Settings"
         }
     }
 
     public var symbol: String {
         switch self {
-        case .tunnels: return "dot.radiowaves.left.and.right"
+        case .home: return "house"
+        case .tunnels: return "shield"
         case .lists: return "arrow.triangle.branch"
-        case .status: return "waveform.path.ecg"
         case .settings: return "gearshape"
         }
     }
@@ -26,6 +26,8 @@ public enum Destination: String, CaseIterable, Sendable {
 // MARK: Sidebar
 
 public struct Sidebar: View {
+    @Namespace private var selectionNamespace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var selection: Destination
     let tunnels: [TunnelItem]
     /// Space above the title for the window's traffic lights.
@@ -59,21 +61,28 @@ public struct Sidebar: View {
             .padding(.horizontal, Space.s).padding(.top, topInset).padding(.bottom, Space.xl)
             ForEach(Destination.allCases, id: \.self) { d in
                 let on = selection == d
-                Button { selection = d } label: {
+                Button {
+                    if reduceMotion { selection = d } else { withAnimation(.spring(response: 0.2, dampingFraction: 0.9)) { selection = d } }
+                } label: {
                     HStack(spacing: Space.m) {
                         Image(systemName: d.symbol).font(.system(size: 18, weight: .regular)).frame(width: 26)
                             .foregroundStyle(on ? Color.white : Palette.inkSecondary.color)
                             .shadow(color: on ? Accent.lightTone.color.opacity(0.7) : .clear, radius: 4)
+                        // The weight changes with the selection: animating that makes the letters swell and shrink, so the text snaps.
                         Text(d.title).font(on ? TypeScale.sidebarStrong : TypeScale.sidebar)
+                            .transaction { $0.animation = nil }
                         Spacer()
                     }
                     .foregroundStyle(on ? Color.white : Palette.inkSecondary.color)
                     .padding(.vertical, 15).padding(.horizontal, Space.m)
                     .background {
                         if on {
+                            // One highlight that moves, not one that disappears and another that appears.
                             LiquidSelection(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
+                                .matchedGeometryEffect(id: "selection", in: selectionNamespace)
                         }
                     }
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: on) // the icon color
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -118,7 +127,7 @@ public struct Sidebar: View {
 
     static func summary(_ t: [TunnelItem]) -> String {
         let on = t.filter { $0.state == .connected }.count
-        return on == 0 ? "No tunnel connected" : "\(on) of \(t.count) tunnels connected"
+        return on == 0 ? "No server connected" : "\(on) of \(t.count) servers connected"
     }
 }
 
@@ -152,23 +161,13 @@ public struct TunnelsScreen: View {
     let tunnels: [TunnelItem]
     public init(tunnels: [TunnelItem]) { self.tunnels = tunnels }
 
-    var summary: String {
-        if tunnels.isEmpty { return "No tunnels yet." }
-        let on = tunnels.filter { $0.state == .connected }.map(\.name)
-        let needs = tunnels.filter { $0.state == .needsAuth }.map(\.name)
-        var parts: [String] = []
-        if !on.isEmpty { parts.append("\(on.joined(separator: " and ")) \(on.count == 1 ? "is" : "are") connected.") }
-        if !needs.isEmpty { parts.append("\(needs.joined(separator: " and ")) needs your sign-in.") }
-        return parts.isEmpty ? "No tunnel is connected." : parts.joined(separator: " ")
-    }
-
     public var body: some View {
         VStack(alignment: .leading, spacing: Space.xl) {
-            PageHeader("Tunnels", summary: summary) {
-                if !tunnels.isEmpty { Button("Add tunnel") {}.buttonStyle(SolidButtonStyle()) }
+            PageHeader("Servers") {
+                if !tunnels.isEmpty { Button("Add server") {}.buttonStyle(SolidButtonStyle()) }
             }
             if tunnels.isEmpty {
-                Panel { EmptyState(title: "Add your first tunnel",
+                Panel { EmptyState(title: "Add your first server",
                                    message: "Import an OpenVPN profile to connect, then choose which lists go through it.",
                                    action: "Import a profile") }
             } else {
@@ -214,13 +213,13 @@ public struct ListRow: View {
                         ForEach(tunnels) { t in Button(t.name) {} }
                     } label: {
                         HStack(spacing: 4) {
-                            TunnelChip(name: tunnel?.name ?? "No tunnel", line: tunnel?.line ?? .cobalt)
+                            TunnelChip(name: tunnel?.name ?? "No server", line: tunnel?.line ?? .cobalt)
                             Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
                                 .foregroundStyle(Palette.inkSecondary.color)
                         }
                     }
                     .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
-                    .accessibilityLabel("Tunnel for \(item.name)")
+                    .accessibilityLabel("Server for \(item.name)")
                 }
                 ActionChoice(listName: item.name, selection: $action, tunnelLine: tunnel?.line, forceFocus: forceFocus)
             }
@@ -254,21 +253,14 @@ public struct ListsScreen: View {
 
     var defaultTunnel: TunnelItem? { tunnels.first { $0.state == .connected } }
 
-    var summary: String {
-        if lists.isEmpty { return "No lists yet." }
-        let n = lists.count
-        let rest = defaultTunnel.map { "Everything else goes through \($0.name)." } ?? "Everything else goes direct."
-        return "\(n) \(n == 1 ? "list" : "lists"). \(rest)"
-    }
-
     public var body: some View {
         VStack(alignment: .leading, spacing: Space.xl) {
-            PageHeader("Routing", summary: summary) {
+            PageHeader("Routing") {
                 if !lists.isEmpty { Button("Add list") {}.buttonStyle(SolidButtonStyle()) }
             }
             if lists.isEmpty {
                 Panel { EmptyState(title: "Choose where traffic goes",
-                                   message: "A list is a set of sites or address ranges. Send each one direct, block it, or route it through a tunnel.",
+                                   message: "A list is a set of sites or address ranges. Send each one direct, block it, or route it through a server.",
                                    action: "Add a list") }
             } else {
                 ScrollView {
@@ -280,9 +272,9 @@ public struct ListsScreen: View {
                         }
                         Hairline()
                         HStack {
-                            Text("Everything else").font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color)
+                            Text("Default Route").font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color)
                             Spacer()
-                            ActionChoice(listName: "everything else", selection: $rest,
+                            ActionChoice(listName: "default route", selection: $rest,
                                          tunnelLine: defaultTunnel?.line, allowed: [.direct, .tunnel])
                         }
                         .padding(.vertical, Space.m).padding(.horizontal, Space.l)
@@ -303,7 +295,7 @@ public struct StatusScreen: View {
     public init(items: [ActivityItem]) { self.items = items }
     public var body: some View {
         VStack(alignment: .leading, spacing: Space.xl) {
-            PageHeader("Status", summary: "What the service did, newest first.") { EmptyView() }
+            PageHeader("Status") { EmptyView() }
             Panel {
                 ForEach(Array(items.enumerated()), id: \.element.id) { i, a in
                     if i > 0 { Hairline() }
@@ -343,7 +335,7 @@ public struct SettingsScreen: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: Space.xl) {
-            PageHeader("Settings", summary: "Version 0.1.0") { EmptyView() }
+            PageHeader("Settings") { EmptyView() }
             Panel {
                 row("Open at login", "Start the menu bar app when you sign in.") { Toggle("", isOn: $launch).labelsHidden().toggleStyle(.switch) }
                 Hairline()
@@ -382,9 +374,9 @@ public struct AppWindow: View {
             Sidebar(selection: $page, tunnels: tunnels)
             Group {
                 switch page {
+                case .home: TunnelsScreen(tunnels: tunnels)
                 case .tunnels: TunnelsScreen(tunnels: tunnels)
                 case .lists: ListsScreen(lists: $lists, tunnels: tunnels, focusFirst: focusFirstList)
-                case .status: StatusScreen(items: activity)
                 case .settings: SettingsScreen()
                 }
             }
@@ -405,9 +397,9 @@ public struct Popover: View {
         VStack(spacing: 0) {
             if tunnels.isEmpty {
                 VStack(spacing: Space.s) {
-                    Text("No tunnels yet").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
+                    Text("No servers yet").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
                     Text("Add one to start routing.").font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
-                    Button("Add tunnel") {}.buttonStyle(SolidButtonStyle()).padding(.top, 4)
+                    Button("Add server") {}.buttonStyle(SolidButtonStyle()).padding(.top, 4)
                 }.frame(maxWidth: .infinity).padding(.vertical, Space.xl)
             } else {
                 ForEach(tunnels) { t in
@@ -457,7 +449,7 @@ public struct Popover: View {
     }
 
     func label(_ l: ListItem) -> String {
-        l.action == .tunnel ? ((tunnels.first { $0.id == l.tunnelID } ?? tunnels.first)?.name ?? "Tunnel") : l.action.rawValue
+        l.action == .tunnel ? ((tunnels.first { $0.id == l.tunnelID } ?? tunnels.first)?.name ?? "Server") : l.action.rawValue
     }
 }
 

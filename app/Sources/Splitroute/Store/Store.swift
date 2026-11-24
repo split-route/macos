@@ -174,17 +174,23 @@ final class Store {
     }
 
     static func read(_ db: Database) throws -> Config {
-        guard let s = try Row.fetchOne(db, sql: "SELECT base_url, disabled FROM settings WHERE id = 1") else {
+        guard let s = try Row.fetchOne(db, sql: """
+            SELECT s.base_url, s.disabled, s.final_action, s.block_quic, t.name AS final_tunnel
+            FROM settings s LEFT JOIN tunnels t ON t.id = s.final_tunnel_id WHERE s.id = 1
+            """) else {
             throw StoreError("The settings database has no settings.")
         }
         var cfg = Config()
         let base: String = s["base_url"]
         cfg.baseURL = base.isEmpty ? nil : base
         cfg.disabled = (s["disabled"] as Int) == 1
+        cfg.finalAction = Action(rawValue: s["final_action"]) ?? .tunnel
+        cfg.finalTunnel = s["final_tunnel"]
+        cfg.blockQUIC = (s["block_quic"] as Int) == 1
         var index: [Int64: Int] = [:]
         var notes: [Int64: String] = [:]
         let rows = try Row.fetchAll(db, sql: """
-            SELECT l.id, l.name, l.source, l.action, t.name AS tunnel, l.note, i.url, i.refresh_hours
+            SELECT l.id, l.name, l.source, l.action, t.name AS tunnel, l.note, l.description, i.url, i.refresh_hours
             FROM lists l LEFT JOIN import_sources i ON i.list_id = l.id LEFT JOIN tunnels t ON t.id = l.tunnel_id
             ORDER BY l.position, l.id
             """)
@@ -192,6 +198,7 @@ final class Store {
             let id: Int64 = r["id"]
             var l = RouteList(name: r["name"], action: Action(rawValue: r["action"]) ?? .direct)
             l.tunnel = r["tunnel"]
+            l.description = (r["description"] as String).nilIfEmpty
             switch r["source"] as String {
             case "custom": l.custom = true
             case "import":
@@ -204,7 +211,12 @@ final class Store {
             notes[id] = r["note"]
             cfg.lists.append(l)
         }
-        for r in try Row.fetchAll(db, sql: "SELECT list_id, kind, value, note FROM entries ORDER BY list_id, position") {
+        // Only custom lists keep their entries in the config. An import can hold hundreds of thousands of rows, which this
+        // would read and then skip, on every change.
+        for r in try Row.fetchAll(db, sql: """
+            SELECT e.list_id, e.kind, e.value, e.note FROM entries e JOIN lists l ON l.id = e.list_id
+            WHERE l.source = 'custom' ORDER BY e.list_id, e.position
+            """) {
             guard let i = index[r["list_id"]] else { continue }
             cfg.lists[i].entries += Entries.noteLines(r["note"]) + [Entries.text(kind: r["kind"], value: r["value"])]
         }
@@ -217,7 +229,15 @@ final class Store {
     /// from `cfg` are deleted with their entries. An import keeps its downloaded entries unless its address changed.
     static func write(_ db: Database, _ cfg: Config) throws {
         let now = stamp()
-        try db.execute(sql: "UPDATE settings SET base_url = ?, disabled = ? WHERE id = 1", arguments: [cfg.baseURL ?? "", cfg.disabled ? 1 : 0])
+        var finalID: Int64?
+        if let name = cfg.finalTunnel, !name.isEmpty {
+            guard let id = try Int64.fetchOne(db, sql: "SELECT id FROM tunnels WHERE name = ?", arguments: [name]) else {
+                throw StoreError("Default route: no server named \"\(name)\".")
+            }
+            finalID = id
+        }
+        try db.execute(sql: "UPDATE settings SET base_url = ?, disabled = ?, final_action = ?, final_tunnel_id = ?, block_quic = ? WHERE id = 1",
+                       arguments: [cfg.baseURL ?? "", cfg.disabled ? 1 : 0, cfg.finalAction.rawValue, finalID, cfg.blockQUIC ? 1 : 0])
         var existing: [String: (id: Int64, source: String)] = [:]
         for r in try Row.fetchAll(db, sql: "SELECT id, name, source FROM lists") { existing[r["name"]] = (r["id"], r["source"]) }
         for (pos, l) in cfg.lists.enumerated() {
@@ -226,20 +246,20 @@ final class Store {
             var tunnelID: Int64?
             if let name = l.tunnel, !name.isEmpty {
                 guard let id = try Int64.fetchOne(db, sql: "SELECT id FROM tunnels WHERE name = ?", arguments: [name]) else {
-                    throw StoreError("List \"\(l.name)\": no tunnel named \"\(name)\".")
+                    throw StoreError("List \"\(l.name)\": no server named \"\(name)\".")
                 }
                 tunnelID = id
             }
             var id: Int64
             if let old = existing.removeValue(forKey: l.name) {
                 id = old.id
-                try db.execute(sql: "UPDATE lists SET source = ?, action = ?, tunnel_id = ?, position = ?, note = ?, updated_at = ? WHERE id = ?",
-                               arguments: [source, l.action.rawValue, tunnelID, pos, listNote, now, id])
+                try db.execute(sql: "UPDATE lists SET source = ?, action = ?, tunnel_id = ?, position = ?, note = ?, description = ?, updated_at = ? WHERE id = ?",
+                               arguments: [source, l.action.rawValue, tunnelID, pos, listNote, l.description ?? "", now, id])
                 if source != "import" || old.source != "import" { try db.execute(sql: "DELETE FROM entries WHERE list_id = ?", arguments: [id]) }
                 if source != "import" && old.source == "import" { try db.execute(sql: "DELETE FROM import_sources WHERE list_id = ?", arguments: [id]) }
             } else {
-                try db.execute(sql: "INSERT INTO lists (name, source, action, tunnel_id, position, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                               arguments: [l.name, source, l.action.rawValue, tunnelID, pos, listNote, now, now])
+                try db.execute(sql: "INSERT INTO lists (name, source, action, tunnel_id, position, note, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               arguments: [l.name, source, l.action.rawValue, tunnelID, pos, listNote, l.description ?? "", now, now])
                 id = db.lastInsertedRowID
             }
             if let im = l.importSource {
@@ -272,18 +292,48 @@ final class Store {
         }
     }
 
+    /// Renames a list in place, keeping its row: an import's downloaded entries and state live only in the database,
+    /// and `update` would see a new name as a new list and drop them.
+    func renameList(_ old: String, to new: String) throws {
+        try queue.write { db in
+            guard try Int.fetchOne(db, sql: "SELECT 1 FROM lists WHERE name = ?", arguments: [old]) != nil else {
+                throw StoreError("No list named \"\(old)\".")
+            }
+            if new != old, try Int.fetchOne(db, sql: "SELECT 1 FROM lists WHERE name = ?", arguments: [new]) != nil {
+                throw StoreError("List \"\(new)\" already exists.")
+            }
+            try db.execute(sql: "UPDATE lists SET name = ?, updated_at = ? WHERE name = ?", arguments: [new, Store.stamp(), old])
+        }
+    }
+
     // MARK: Imports
+
+    /// Entry counts per import, kept while its downloaded copy (the hash) is the same: counting a big import's rows every
+    /// time the status is read (every few seconds) would be most of the app's work.
+    private let countLock = NSLock()
+    private var counts: [Int64: (sha: String, count: Int)] = [:]
 
     func imports() throws -> [ImportState] {
         try queue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT l.name, i.url, i.refresh_hours, i.etag, i.last_modified, i.sha256, i.fetched_at, i.checked_at, i.last_error, i.force, i.skipped,
-                       (SELECT count(*) FROM entries e WHERE e.list_id = l.id) AS entries
+                SELECT l.id, l.name, i.url, i.refresh_hours, i.etag, i.last_modified, i.sha256, i.fetched_at, i.checked_at, i.last_error, i.force, i.skipped
                 FROM import_sources i JOIN lists l ON l.id = i.list_id ORDER BY l.position, l.id
-                """).map {
-                ImportState(name: $0["name"], url: $0["url"], refreshHours: $0["refresh_hours"], etag: $0["etag"], lastModified: $0["last_modified"],
-                            sha256: $0["sha256"], fetchedAt: $0["fetched_at"], checkedAt: $0["checked_at"], lastError: $0["last_error"],
-                            force: ($0["force"] as Int) == 1, skipped: $0["skipped"], entries: $0["entries"])
+                """).map { r in
+                let id: Int64 = r["id"]
+                let sha: String = r["sha256"]
+                countLock.lock()
+                let cached = counts[id]
+                countLock.unlock()
+                var n = cached?.count ?? 0
+                if cached == nil || cached?.sha != sha || sha.isEmpty {
+                    n = try Int.fetchOne(db, sql: "SELECT count(*) FROM entries WHERE list_id = ?", arguments: [id]) ?? 0
+                    countLock.lock()
+                    counts[id] = (sha, n)
+                    countLock.unlock()
+                }
+                return ImportState(name: r["name"], url: r["url"], refreshHours: r["refresh_hours"], etag: r["etag"], lastModified: r["last_modified"],
+                                   sha256: sha, fetchedAt: r["fetched_at"], checkedAt: r["checked_at"], lastError: r["last_error"],
+                                   force: (r["force"] as Int) == 1, skipped: r["skipped"], entries: n)
             }
         }
     }
@@ -383,7 +433,7 @@ final class Store {
     func selectedGuard(_ ids: [Int64]) throws {
         let v = try vpn()
         if v.on, let s = v.selected, ids.contains(s) {
-            throw StoreError("This tunnel is selected and the VPN is on: select another tunnel or turn the VPN off first.")
+            throw StoreError("This server is selected and connected: select another server or disconnect first.")
         }
     }
 }

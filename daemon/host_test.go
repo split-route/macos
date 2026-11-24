@@ -370,6 +370,24 @@ func TestHostListsNamingAnUnconnectedTunnelAreBlocked(t *testing.T) {
 	}
 }
 
+func TestHostFinalRouteNamingAnUnconnectedTunnelIsBlocked(t *testing.T) {
+	h, f := testHost(t)
+	h.setFinal(api.FinalSpec{Action: rules.Tunnel, Tunnel: "home"})
+	h.connect("t1", "Office", opts("a", "pa"))
+	h.applyNow()
+	if got := f.latest().last().Final; got.Action != rules.Block || got.Tunnel != "" {
+		t.Errorf("final = %+v", got)
+	}
+	if _, _, warns, _ := h.engineStatus(); len(warns) != 1 || !strings.Contains(warns[0], "default route") {
+		t.Errorf("warnings = %v", warns)
+	}
+	h.connect("t2", "Home", opts("b", "pb"))
+	h.applyNow()
+	if got := f.latest().last().Final; got.Action != rules.Tunnel || got.Tunnel != "t2" {
+		t.Errorf("once Home is connected: %+v", got)
+	}
+}
+
 func TestHostStopsWhenTheLastTunnelGoes(t *testing.T) {
 	h, f := testHost(t)
 	h.connect("t1", "Office", opts("a", "pa"))

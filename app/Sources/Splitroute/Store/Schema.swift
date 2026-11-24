@@ -192,5 +192,50 @@ ALTER TABLE settings ADD COLUMN kill_switch_lan INTEGER NOT NULL DEFAULT 1 CHECK
 -- IP address, or 'system'. Some networks reset DoH to one provider, so it is a setting.
 ALTER TABLE settings ADD COLUMN bootstrap TEXT NOT NULL DEFAULT '' CHECK (length(bootstrap) <= 45);
 """#,
+#"""
+-- splitroute: foreign_keys=off
+-- A list can now have no action: it is kept but not applied. lists is rebuilt because SQLite
+-- can't change a CHECK in place; ids are kept, so entries and import_sources still point at
+-- the right rows (see the fourth migration for why foreign keys are off).
+
+CREATE TABLE lists_new (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT    NOT NULL UNIQUE CHECK (length(name) BETWEEN 1 AND 64),
+    source     TEXT    NOT NULL CHECK (source IN ('release', 'custom', 'import')),
+    action     TEXT    NOT NULL CHECK (action IN ('none', 'direct', 'block', 'tunnel')),
+    tunnel_id  INTEGER REFERENCES tunnels (id) ON DELETE RESTRICT,
+    position   INTEGER NOT NULL,
+    note       TEXT    NOT NULL DEFAULT '',
+    created_at TEXT    NOT NULL,
+    updated_at TEXT    NOT NULL,
+    CHECK (tunnel_id IS NULL OR action = 'tunnel')
+);
+
+INSERT INTO lists_new (id, name, source, action, tunnel_id, position, note, created_at, updated_at)
+SELECT id, name, source, action, tunnel_id, position, note, created_at, updated_at FROM lists;
+
+DROP TABLE lists;
+ALTER TABLE lists_new RENAME TO lists;
+"""#,
+#"""
+-- Where traffic that no list matches goes: the final route. 'tunnel' with no tunnel is the selected one (the
+-- behavior before this column existed). RESTRICT: a tunnel the final route names can't be deleted from under it.
+ALTER TABLE settings ADD COLUMN final_action TEXT NOT NULL DEFAULT 'tunnel' CHECK (final_action IN ('direct', 'block', 'tunnel'));
+ALTER TABLE settings ADD COLUMN final_tunnel_id INTEGER REFERENCES tunnels (id) ON DELETE RESTRICT;
+"""#,
+#"""
+-- A short description the user gives a custom list or an import; ready-made lists are described by the catalog.
+ALTER TABLE lists ADD COLUMN description TEXT NOT NULL DEFAULT '' CHECK (length(description) <= 120);
+"""#,
+#"""
+-- Refuse QUIC (HTTP/3) that no list matched, so browsers use TCP, where a site's name can be read and a block list
+-- matches it. On by default: a block list that a browser can skip over QUIC is not much of a block list.
+ALTER TABLE settings ADD COLUMN block_quic INTEGER NOT NULL DEFAULT 1 CHECK (block_quic IN (0, 1));
+"""#,
+#"""
+-- The "Apply lists" switch is gone from the app. A database where it was off would stay off with no way back, so lists
+-- are on again. (`disabled` stays as a column; the app no longer writes anything but 0.)
+UPDATE settings SET disabled = 0;
+"""#,
     ]
 }

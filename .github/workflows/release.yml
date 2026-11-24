@@ -1,0 +1,77 @@
+name: release
+# Tag vX.Y.Z: build the app, publish the DMG as a GitHub release and update the Homebrew cask in the tap.
+# A tag with a dash (v1.2.0-rc1) is a pre-release: it is published but the cask is left alone.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # The app uses macOS 26 APIs (Liquid Glass), so it is built with the macOS 26 SDK.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+
+      - name: Version
+        id: v
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          case "$version" in *-*) echo "pre=true" >> "$GITHUB_OUTPUT" ;; *) echo "pre=false" >> "$GITHUB_OUTPUT" ;; esac
+
+      # The release builds against the published core (go.mod), never a sibling checkout.
+      - name: Test the service
+        working-directory: daemon
+        env:
+          GOWORK: "off"
+        run: go test -race ./...
+
+      - name: Build the app and the DMG
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          GOWORK: "off"
+        run: ./build-app.sh
+
+      - name: Name the DMG and checksum it
+        id: dmg
+        run: |
+          dmg="Splitroute_${{ steps.v.outputs.version }}_macos.dmg"
+          mv build/Splitroute.dmg "build/$dmg"
+          (cd build && shasum -a 256 "$dmg" > "$dmg.sha256")
+          echo "file=build/$dmg" >> "$GITHUB_OUTPUT"
+          echo "sha=$(cut -d' ' -f1 "build/$dmg.sha256")" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'NOTES'
+          ## Install
+
+          ```sh
+          brew install --cask split-route/tap/splitroute
+          ```
+
+          Or download the DMG below and drag Split Route to Applications. The app is not notarized: the first time, allow
+          it in System Settings > Privacy & Security, and the service under General > Login Items. Needs macOS 14 or later.
+
+          ## Changes
+
+          NOTES
+          flags=""
+          [ "${{ steps.v.outputs.pre }}" = true ] && flags="--prerelease"
+          gh release create "$GITHUB_REF_NAME" $flags --title "Split Route ${{ steps.v.outputs.version }}" \
+            --notes-file notes.md --generate-notes \
+            "${{ steps.dmg.outputs.file }}" "${{ steps.dmg.outputs.file }}.sha256"
+
+      - name: Update the Homebrew cask
+        if: steps.v.outputs.pre == 'false'
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: scripts/update-cask.sh "${{ steps.v.outputs.version }}" "${{ steps.dmg.outputs.sha }}"

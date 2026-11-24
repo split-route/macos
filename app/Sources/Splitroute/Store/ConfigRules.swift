@@ -5,11 +5,12 @@ import Foundation
 // refuses it), so the edits here never parse entry syntax themselves.
 
 extension Config {
-    static let defaultBaseURL = "https://github.com/split-route/routing-rules/releases/latest/download"
+    static let defaultBaseURL = "https://raw.githubusercontent.com/split-route/routing-rules/release"
     static let defaultRefreshHours = 24
     static let maxRefreshHours = 7 * 24
     static let maxEntries = 100_000
     private static let maxNameLength = 64
+    static let maxDescription = 120
     private static let maxURLLength = 2048
 
     /// What a new database starts with.
@@ -41,11 +42,24 @@ extension Config {
     /// Checks everything a write must keep true; the schema's constraints are a second line of defense.
     func validate() throws {
         if let b = baseURL, !b.isEmpty, !b.hasPrefix("https://") { throw StoreError("The release address must be https.") }
+        if finalAction == .none { throw StoreError("The default route must go direct, be blocked or use a server.") }
+        if let t = finalTunnel, !t.isEmpty {
+            if finalAction != .tunnel { throw StoreError("Only the server action can name a server.") }
+            if t.utf8.count > Config.maxNameLength || t.trimmingCharacters(in: .whitespaces) != t {
+                throw StoreError("The server name \"\(t)\" is not valid.")
+            }
+        }
         var seen = Set<String>()
         for l in lists {
             let n = l.name
             if n.isEmpty || n.utf8.count > Config.maxNameLength || n.trimmingCharacters(in: .whitespaces) != n {
                 throw StoreError("List name \"\(n)\": 1-\(Config.maxNameLength) characters, no leading or trailing spaces.")
+            }
+            if let d = l.description {
+                if d.count > Config.maxDescription || d.contains(where: \.isNewline) || d.trimmingCharacters(in: .whitespaces) != d {
+                    throw StoreError("List \"\(n)\": the description is one line of at most \(Config.maxDescription) characters.")
+                }
+                if !l.custom && l.importSource == nil { throw StoreError("List \"\(n)\": only custom lists and imports have a description of their own.") }
             }
             if l.custom && l.importSource != nil { throw StoreError("List \"\(n)\" is custom or an import, not both.") }
             if !l.custom, l.importSource == nil,
@@ -54,9 +68,9 @@ extension Config {
             }
             if !l.custom && !l.entries.isEmpty { throw StoreError("List \"\(n)\": only custom lists have entries.") }
             if let t = l.tunnel, !t.isEmpty {
-                if l.action != .tunnel { throw StoreError("List \"\(n)\": only a tunnel list can name a tunnel.") }
+                if l.action != .tunnel { throw StoreError("List \"\(n)\": only a server list can name a server.") }
                 if t.utf8.count > Config.maxNameLength || t.trimmingCharacters(in: .whitespaces) != t {
-                    throw StoreError("List \"\(n)\": the tunnel name \"\(t)\" is not valid.")
+                    throw StoreError("List \"\(n)\": the server name \"\(t)\" is not valid.")
                 }
             }
             if !seen.insert(n).inserted { throw StoreError("List \"\(n)\" is listed twice.") }
@@ -84,12 +98,17 @@ extension Config {
         return c
     }
 
-    func creating(_ name: String, _ a: Action) throws -> Config { try adding(RouteList(name: name, action: a, custom: true)) }
+    func creating(_ name: String, _ a: Action, description: String? = nil) throws -> Config {
+        var l = RouteList(name: name, action: a, custom: true)
+        l.description = description?.nilIfEmpty
+        return try adding(l)
+    }
 
     func enablingRelease(_ name: String, _ a: Action) throws -> Config { try adding(RouteList(name: name, action: a)) }
 
-    func importing(_ name: String, _ a: Action, url: String) throws -> Config {
+    func importing(_ name: String, _ a: Action, url: String, description: String? = nil) throws -> Config {
         var l = RouteList(name: name, action: a)
+        l.description = description?.nilIfEmpty
         l.importSource = ImportSource(url: url, refreshHours: nil)
         return try adding(l)
     }
@@ -110,6 +129,34 @@ extension Config {
         if new != name && index(new) != nil { throw StoreError("List \"\(new)\" already exists.") }
         var c = self
         c.lists[i].name = new
+        try c.validate()
+        return c
+    }
+
+    /// Where traffic no list matches goes. `tunnel` names a tunnel for the tunnel action; nil is the selected one.
+    func settingFinal(_ a: Action, tunnel: String?) throws -> Config {
+        var c = self
+        c.finalAction = a
+        c.finalTunnel = (tunnel?.isEmpty ?? true) ? nil : tunnel
+        try c.validate()
+        return c
+    }
+
+    /// Points an import at another address; its entries are dropped until the new one is downloaded (the store does that).
+    func settingImportURL(_ name: String, to url: String) throws -> Config {
+        guard let i = index(name), lists[i].importSource != nil else { throw StoreError("\"\(name)\" is not a list from a URL.") }
+        try Config.validateImportURL(url)
+        var c = self
+        c.lists[i].importSource?.url = url
+        try c.validate()
+        return c
+    }
+
+    /// A custom list's or import's description; empty clears it.
+    func settingDescription(_ name: String, _ text: String?) throws -> Config {
+        guard let i = index(name) else { throw StoreError("No list named \"\(name)\".") }
+        var c = self
+        c.lists[i].description = text?.nilIfEmpty
         try c.validate()
         return c
     }
@@ -214,14 +261,6 @@ extension Config {
         try c.validate()
         return (c, ed)
     }
-
-    /// Replaces the release lists with a preset's and keeps the custom lists and imports after them.
-    func applying(_ preset: Preset) throws -> Config {
-        var c = self
-        c.lists = preset.lists + lists.filter { $0.custom || $0.importSource != nil }
-        try c.validate()
-        return c
-    }
 }
 
 // MARK: Entries
@@ -286,26 +325,12 @@ enum Entries {
     }
 }
 
-// MARK: Presets and the catalog (content, not engine)
-
-enum Presets {
-    static let all: [Preset] = [
-        Preset(id: "iran", name: "Iran", lists: [
-            RouteList(name: "ir-cidr", action: .direct),
-            RouteList(name: "malware", action: .block),
-            RouteList(name: "phishing", action: .block),
-        ]),
-        Preset(id: "security", name: "Block malware and phishing", lists: [
-            RouteList(name: "malware", action: .block),
-            RouteList(name: "phishing", action: .block),
-        ]),
-    ]
-}
+// MARK: The catalog (content, not engine)
 
 /// Titles and descriptions of the release lists, and the action most people want (see the release's sources.yaml).
 enum Catalog {
     static let all: [ListInfo] = ([
-        ("ir-cidr", "Iran IP ranges", "Addresses registered in Iran. Direct keeps Iranian sites off the VPN.", .direct),
+        ("ir-cidr", "Iran IP ranges", "Addresses registered in Iran. Direct keeps Iranian sites off the server.", .direct),
         ("ir-domains", "Iranian websites", "Iranian domains, .ir and sites hosted in Iran.", .direct),
         ("ir-injected", "Iran block pages", "Addresses Iran's DNS returns for filtered sites.", .block),
         ("private", "Local networks", "Private and special-use ranges, such as your home network.", .direct),

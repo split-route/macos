@@ -44,7 +44,7 @@ struct AppFiles {
     /// What a tunnel runs, checked against the hash stored at import: a file changed on disk is refused.
     func tunnelSource(_ t: StoreTunnel) throws -> Data {
         guard let data = try? Data(contentsOf: tunnelFile(t)) else {
-            throw StoreError("The saved \(t.isOpenVPN ? "profile" : "options") of this tunnel can't be read. Import it again.")
+            throw StoreError("The saved \(t.isOpenVPN ? "profile" : "options") of this server can't be read. Import it again.")
         }
         guard AppFiles.sha256(data) == t.sha else { throw StoreError("The saved \(t.isOpenVPN ? "profile" : "options") changed since it was imported. Import it again.") }
         return data
@@ -83,6 +83,11 @@ struct AppFiles {
     func releaseFile(_ name: String) -> URL { dir("lists").appendingPathComponent(name + ".list") }
 
     func releaseText(_ name: String) -> String? { try? String(contentsOf: releaseFile(name), encoding: .utf8) }
+
+    /// When a release list was last downloaded and verified (its saved copy's modification time).
+    func releaseUpdated(_ name: String) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: releaseFile(name).path))?[.modificationDate] as? Date
+    }
 
     func writeRelease(_ name: String, _ data: Data) throws { try writePrivate(data, to: releaseFile(name)) }
 }

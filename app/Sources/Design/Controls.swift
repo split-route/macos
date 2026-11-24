@@ -207,18 +207,13 @@ public struct Panel<Content: View>: View {
 
 public struct PageHeader<Trailing: View>: View {
     let title: String
-    let summary: String
     let trailing: Trailing
-    public init(_ title: String, summary: String, @ViewBuilder trailing: () -> Trailing) {
-        self.title = title; self.summary = summary; self.trailing = trailing()
+    public init(_ title: String, @ViewBuilder trailing: () -> Trailing) {
+        self.title = title; self.trailing = trailing()
     }
     public var body: some View {
         HStack(alignment: .top, spacing: Space.l) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(TypeScale.title).foregroundStyle(Palette.ink.color)
-                Text(summary).font(TypeScale.body).foregroundStyle(Palette.inkSecondary.color)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text(title).font(TypeScale.title).foregroundStyle(Palette.ink.color)
             Spacer(minLength: Space.l)
             trailing
         }

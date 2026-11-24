@@ -87,7 +87,7 @@ extension AppModel {
             link?.markDirty()
             reloadLocal()
         } catch {
-            errors["migration"] = "Moving your tunnels from the service: \(error.localizedDescription)"
+            errors["migration"] = "Moving your servers from the service: \(error.localizedDescription)"
         }
     }
 }

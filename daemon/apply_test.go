@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagernet/sing-box/common/srs"
+	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing-box/option"
 	"github.com/split-route/core"
 	"github.com/split-route/core/rules"
 	"github.com/split-route/core/ruleset"
@@ -168,7 +172,7 @@ func TestApplyAFailedTunnelIsNotRetriedUntilAsked(t *testing.T) {
 	bad := ovpn("t1", "Work")
 	bad.Username, bad.Password = "a", "wrong"
 	// A list names Work, so the engine loads it although it isn't selected.
-	s := api.Snapshot{VPN: true, Selected: "t2", Tunnels: []api.TunnelSpec{bad, good},
+	s := api.Snapshot{VPN: true, ListsOn: true, Selected: "t2", Tunnels: []api.TunnelSpec{bad, good},
 		Lists: []api.ListSpec{{Name: "l", Action: rules.Tunnel, Tunnel: "Work", Entries: []string{"example.com"}}}}
 	if err := a.Apply(s); err != nil {
 		t.Fatal(err)
@@ -305,8 +309,8 @@ func TestApplyListFormats(t *testing.T) {
 
 func TestDesiredTunnels(t *testing.T) {
 	ts := []api.TunnelSpec{ovpn("t1", "Work"), ovpn("t2", "Home"), ovpn("t3", "Spare"), proxy("t4", "Alpha")}
-	got := desiredTunnels(ts, "t2", []api.ListSpec{{Name: "l", Action: rules.Tunnel, Tunnel: "WORK"}}, false)
-	for id, want := range map[string]bool{"t1": true, "t2": true, "t3": false, "t4": true} {
+	got := desiredTunnels(ts, "t2", []api.ListSpec{{Name: "l", Action: rules.Tunnel, Tunnel: "WORK"}}, api.FinalSpec{Action: rules.Tunnel, Tunnel: "spare"}, false)
+	for id, want := range map[string]bool{"t1": true, "t2": true, "t3": true, "t4": true} {
 		if got[id] != want {
 			t.Errorf("%s: %v, want %v", id, got[id], want)
 		}
@@ -330,11 +334,11 @@ func TestParsers(t *testing.T) {
 	if canon[0].Entry != "example.com" && !strings.Contains(canon[0].Entry, "example.com") || canon[1].Entry != "# note" || canon[3].Error == "" {
 		t.Errorf("canon = %+v", canon)
 	}
-	e, err := a.ParseEntries("example.com\n8.8.8.0/24\n", api.FormatCustom, true)
+	e, err := a.ParseEntries("example.com\n8.8.8.0/24\n", nil, api.FormatCustom, true)
 	if err != nil || e.Count != 2 || len(e.Lines) != 2 {
 		t.Errorf("entries = %+v, %v", e, err)
 	}
-	if _, err := a.ParseEntries("   \n", api.FormatCustom, false); err == nil {
+	if _, err := a.ParseEntries("   \n", nil, api.FormatCustom, false); err == nil {
 		t.Error("an empty file was accepted as a list")
 	}
 }
@@ -372,7 +376,7 @@ func TestLegacyExportReadsTheRootOnlyFiles(t *testing.T) {
 
 // The same JSON the app's ServiceLinkTests builds: the two sides must agree on the wire.
 func TestSnapshotFromTheApp(t *testing.T) {
-	const golden = `{"lists":[{"action":"direct","entries":["# office","example.com","8.8.8.0/24"],"name":"Office"},{"action":"block","name":"malware"},{"action":"tunnel","entries":["full:a.example.com"],"name":"Work list","tunnel":"Work"}],"lists_on":true,"retry":["*"],"selected":"t1","tunnels":[{"id":"t1","name":"Proxy","needs_auth":false,"options":{"server":"example.com","server_port":443,"type":"vless"},"protocol":"vless"},{"id":"t2","name":"Work","needs_auth":true,"password":"pw","profile":"client\n","protocol":"openvpn","username":"alice"}],"vpn":true}`
+	const golden = `{"block_quic":true,"lists":[{"action":"direct","entries":["# office","example.com","8.8.8.0/24"],"name":"Office"},{"action":"block","name":"malware"},{"action":"tunnel","entries":["full:a.example.com"],"name":"Work list","tunnel":"Work"}],"lists_on":true,"retry":["*"],"selected":"t1","tunnels":[{"id":"t1","name":"Proxy","needs_auth":false,"options":{"server":"example.com","server_port":443,"type":"vless"},"protocol":"vless"},{"id":"t2","name":"Work","needs_auth":true,"password":"pw","profile":"client\n","protocol":"openvpn","username":"alice"}],"vpn":true}`
 	dec := json.NewDecoder(strings.NewReader(golden))
 	dec.DisallowUnknownFields() // a field the app sends that the daemon doesn't know is a mismatch
 	var s api.Snapshot
@@ -506,5 +510,86 @@ func TestApplyBootstrapReachesTheEngineAndIsValidated(t *testing.T) {
 		if err := a.Apply(s); err == nil {
 			t.Fatalf("bootstrap %q was accepted", bad)
 		}
+	}
+}
+
+func TestApplyFinalRouteReachesTheEngineAndIsValidated(t *testing.T) {
+	a, f := testApp(t)
+	s := api.Snapshot{VPN: true, ListsOn: true, Selected: "t1", Tunnels: []api.TunnelSpec{proxy("t1", "Alpha"), proxy("t2", "Beta")}}
+	for name, tc := range map[string]struct {
+		final api.FinalSpec
+		want  core.Final
+	}{
+		"default":      {api.FinalSpec{}, core.Final{}},
+		"direct":       {api.FinalSpec{Action: rules.Direct}, core.Final{Action: rules.Direct}},
+		"block":        {api.FinalSpec{Action: rules.Block}, core.Final{Action: rules.Block}},
+		"named tunnel": {api.FinalSpec{Action: rules.Tunnel, Tunnel: "BETA"}, core.Final{Action: rules.Tunnel, Tunnel: "t2"}},
+	} {
+		s.Final = tc.final
+		if err := a.Apply(s); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := applied(t, a, f).Final; got != tc.want {
+			t.Errorf("%s: final = %+v, want %+v", name, got, tc.want)
+		}
+	}
+	s.Final = api.FinalSpec{Action: rules.Block}
+	s.ListsOn = false // routing off: the lists go, the default route stays
+	if err := a.Apply(s); err != nil {
+		t.Fatal(err)
+	}
+	c := applied(t, a, f)
+	if c.Final != (core.Final{Action: rules.Block}) || len(c.Lists) != 0 {
+		t.Errorf("routing off: final = %+v, %d lists", c.Final, len(c.Lists))
+	}
+	for name, bad := range map[string]api.FinalSpec{
+		"unknown action":    {Action: "maybe"},
+		"tunnel on direct":  {Action: rules.Direct, Tunnel: "Beta"},
+		"tunnel, no action": {Tunnel: "Beta"},
+	} {
+		s.ListsOn, s.Final = true, bad
+		if err := a.Apply(s); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+}
+
+// A sing-box .srs list comes in as binary data and out as the same entries a text list gives.
+func TestParseEntriesReadsASingBoxRuleSet(t *testing.T) {
+	a, _ := testApp(t)
+	var buf bytes.Buffer
+	rs := option.PlainRuleSet{Rules: []option.HeadlessRule{{Type: "default", DefaultOptions: option.DefaultHeadlessRule{
+		Domain: []string{"exact.example.com"}, DomainSuffix: []string{"example.org"}, DomainKeyword: []string{"ads"}, IPCIDR: []string{"203.0.113.0/24"},
+	}}}}
+	if err := srs.Write(&buf, rs, C.RuleSetVersionCurrent); err != nil {
+		t.Fatal(err)
+	}
+	e, err := a.ParseEntries("", buf.Bytes(), api.FormatImport, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Count != 3 || e.Skipped != 1 { // the keyword can't be an entry
+		t.Errorf("count %d skipped %d, lines %v", e.Count, e.Skipped, e.Lines)
+	}
+	if _, err := a.ParseEntries("", []byte("not a rule-set"), api.FormatImport, false); err == nil {
+		t.Error("binary that isn't a rule-set was accepted")
+	}
+}
+
+func TestApplyBlockQUICReachesTheEngineOnlyWithListsOn(t *testing.T) {
+	a, f := testApp(t)
+	s := api.Snapshot{VPN: true, ListsOn: true, Selected: "t1", BlockQUIC: true, Tunnels: []api.TunnelSpec{proxy("t1", "Alpha")}}
+	if err := a.Apply(s); err != nil {
+		t.Fatal(err)
+	}
+	if !applied(t, a, f).BlockQUIC {
+		t.Error("BlockQUIC did not reach the engine")
+	}
+	s.ListsOn = false // lists off: no names to match, so no reason to refuse QUIC
+	if err := a.Apply(s); err != nil {
+		t.Fatal(err)
+	}
+	if applied(t, a, f).BlockQUIC {
+		t.Error("BlockQUIC applied with the lists off")
 	}
 }

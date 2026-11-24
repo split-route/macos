@@ -69,7 +69,6 @@ let activity = [
         ("lists-stress", AnyView(AppWindow(page: .lists, tunnels: allStates, lists: stressLists, activity: activity)), win),
         ("lists-focus", AnyView(AppWindow(page: .lists, tunnels: normalTunnels, lists: normalLists, activity: activity, focusFirstList: true)), win),
         ("lists-empty", AnyView(AppWindow(page: .lists, tunnels: normalTunnels, lists: [], activity: activity)), win),
-        ("status", AnyView(AppWindow(page: .status, tunnels: normalTunnels, lists: normalLists, activity: activity)), win),
         ("settings", AnyView(AppWindow(page: .settings, tunnels: normalTunnels, lists: normalLists, activity: activity)), win),
         ("popover-normal", AnyView(Popover(tunnels: normalTunnels, lists: normalLists)), pop),
         ("popover-states", AnyView(Popover(tunnels: allStates, lists: normalLists)), pop),
