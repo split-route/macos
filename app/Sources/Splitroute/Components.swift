@@ -122,7 +122,7 @@ struct SelectMenu<Value: Hashable>: View {
         Button { open.toggle() } label: {
             HStack(spacing: 6) {
                 if let dot, let selected { Circle().fill(dot(selected)).frame(width: 8, height: 8) }
-                Text(title).lineLimit(1).truncationMode(.tail).frame(maxWidth: maxTitleWidth, alignment: .trailing).fixedSize(horizontal: maxTitleWidth == nil, vertical: false)
+                titleText
                 Image(systemName: "chevron.down")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -136,6 +136,22 @@ struct SelectMenu<Value: Hashable>: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $open, arrowEdge: .bottom) { list }
+    }
+
+    /// One line that hugs its text, cut with … only when it would be wider than `maxTitleWidth`. (A frame with a maximum
+    /// would grow to the maximum and leave a gap between the dot and the words.)
+    @ViewBuilder private var titleText: some View {
+        let text = Text(title).lineLimit(1)
+        if let max = maxTitleWidth, Self.estimatedWidth(title) > max {
+            text.truncationMode(.tail).frame(width: max, alignment: .leading)
+        } else {
+            text.fixedSize()
+        }
+    }
+
+    private static func estimatedWidth(_ s: String) -> CGFloat {
+        let font = NSFont(name: "Inter", size: 13.5) ?? NSFont.systemFont(ofSize: 13.5)
+        return (s as NSString).size(withAttributes: [.font: font]).width
     }
 
     private var matches: [Value] {

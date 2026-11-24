@@ -64,6 +64,7 @@ struct MenuPopover: View {
                 Text(detail).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color).lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .layoutPriority(1) // the words get their room first; the control takes what is left
             Spacer(minLength: Space.s)
             control()
         }
