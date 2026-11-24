@@ -11,7 +11,7 @@ struct SettingsPage: View {
     @State private var confirmUninstall = false
     @AppStorage("quitAction") private var quitAction = "" // read by AppDelegate.quit
 
-    static let defaultBaseURL = "https://github.com/split-route/routing-rules/releases/latest/download" // config.DefaultBaseURL
+    static let defaultBaseURL = "https://raw.githubusercontent.com/split-route/routing-rules/release" // config.DefaultBaseURL
     static let logPath = "/var/log/splitroute.log"
     static let databasePath = "/var/db/splitroute/splitroute.db"
     private static let repo = URL(string: "https://github.com/split-route/macos")!
