@@ -90,7 +90,7 @@ struct ListsPage: View {
                 destinationMenu(l, title: title)
                 infoMenu(l)
             }
-            if l.action == .tunnel, let n = l.tunnel, model.tunnels.first(where: { $0.name == n })?.state != .connected {
+            if model.vpnOn, l.action == .tunnel, let n = l.tunnel, !model.serverIsUp(n) {
                 NoteLine(.error, "\(n) isn't connected, so this list is blocked until it is.")
             }
             if let e = model.error("list:\(l.name)") { NoteLine(.error, e) }
@@ -117,7 +117,7 @@ struct ListsPage: View {
             Panel {
                 FormRow("Default Route", detail: "Traffic that matches no list") { DefaultRouteMenu() }
             }
-            if case .tunnel(let n) = DefaultRouteMenu.current(model.config), model.tunnels.first(where: { $0.name == n })?.state != .connected {
+            if model.vpnOn, case .tunnel(let n) = DefaultRouteMenu.current(model.config), !model.serverIsUp(n) {
                 NoteLine(.error, "\(n) isn't connected, so the default route is blocked until it is.")
             }
             if let e = model.error("final") { NoteLine(.error, e) }
@@ -274,6 +274,8 @@ enum RouteDestination: Hashable {
 /// The dropdown for the default route: used on the Routing page and in the menu bar.
 struct DefaultRouteMenu: View {
     @EnvironmentObject private var model: AppModel
+    /// How wide the chosen name may get before it is cut with …
+    var maxTitleWidth: CGFloat? = 200
 
     /// What the stored default route is, as a destination.
     static func current(_ cfg: Config?) -> RouteDestination {
@@ -289,7 +291,7 @@ struct DefaultRouteMenu: View {
         let names = model.tunnels.map(\.name)
         let named = model.config?.finalTunnel.map { n in names.contains(n) ? names : names + [n] } ?? names
         SelectMenu(title: current.label, options: [.direct, .block, .selected] + named.map(RouteDestination.tunnel),
-                   label: \.label, selected: current, dot: \.dot, group: \.group) { d in
+                   label: \.label, selected: current, dot: \.dot, group: \.group, maxTitleWidth: maxTitleWidth) { d in
             guard d != current else { return }
             Task {
                 switch d {

@@ -97,6 +97,13 @@ final class AppModel: ObservableObject {
         return .idle
     }
 
+    /// Whether a server can carry traffic now. An OpenVPN server reports connected; a proxy server has no session of its
+    /// own and reports ready. Both are up. Used to warn that a list or the default route names one that is not.
+    func serverIsUp(_ name: String) -> Bool {
+        guard let t = tunnels.first(where: { $0.name == name }) else { return false }
+        return t.state == .connected || t.state == .ready
+    }
+
     /// One sentence on what the connection is doing, plain about the case where it is on but not carrying traffic.
     var summary: String {
         switch health {

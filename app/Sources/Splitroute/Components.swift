@@ -143,7 +143,8 @@ struct SelectMenu<Value: Hashable>: View {
     @ViewBuilder private var titleText: some View {
         let text = Text(title).lineLimit(1)
         if let max = maxTitleWidth, Self.estimatedWidth(title) > max {
-            text.truncationMode(.tail).frame(width: max, alignment: .leading)
+            // Flexible, and the first to give: when the row is short of room it is this name that is cut, not its neighbors.
+            text.truncationMode(.tail).frame(maxWidth: max, alignment: .leading).layoutPriority(-1)
         } else {
             text.fixedSize()
         }
