@@ -12,6 +12,9 @@ struct MenuPopover: View {
 
     private var connected: Bool { model.health == .active }
 
+    /// A long server name is cut short here so the words next to it keep one line.
+    private static let controlTitleWidth: CGFloat = 130
+
     var body: some View {
         VStack(spacing: 0) {
             if model.connError != nil {
@@ -61,9 +64,10 @@ struct MenuPopover: View {
         HStack(spacing: Space.m) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color)
-                Text(detail).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color).lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(detail).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                    .lineLimit(1).fixedSize(horizontal: true, vertical: false) // one line, never cut: the server name gives way
             }
+            .layoutPriority(1) // the words get their room first; the control takes what is left
             Spacer(minLength: Space.s)
             control()
         }
@@ -97,7 +101,7 @@ struct MenuPopover: View {
         let selected = model.tunnelList?.selected
         return row("Server", selected == nil ? "None selected" : "Carries your traffic") {
             SelectMenu(title: selected ?? "Choose…", options: names, label: { $0 }, selected: selected,
-                       group: { n in model.tunnels.first { $0.name == n }?.group }) { n in
+                       group: { n in model.tunnels.first { $0.name == n }?.group }, maxTitleWidth: Self.controlTitleWidth) { n in
                 Task { if let t = model.tunnels.first(where: { $0.name == n }), await model.selectTunnel(t) { openApp(.tunnels) } }
             }
             .accessibilityLabel("Server")
@@ -122,7 +126,7 @@ struct MenuPopover: View {
     }
 
     private var defaultRouteRow: some View {
-        row("Default Route", "Traffic that matches no list", dimmed: !connected) { DefaultRouteMenu() }
+        row("Default Route", "When no list matches", dimmed: !connected) { DefaultRouteMenu(maxTitleWidth: Self.controlTitleWidth) }
     }
 
     /// The service can't be reached: the way to fix it, as the old menu offered.

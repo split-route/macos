@@ -97,6 +97,22 @@ final class AppModel: ObservableObject {
         return .idle
     }
 
+    /// Whether a server can carry traffic now. OpenVPN reports connected; a proxy server has no session of its own and
+    /// reports ready when it is the active one. A proxy server that is not the active one is loaded and idle while the
+    /// engine runs, and the service reports that as disconnected: it carries a list's traffic all the same.
+    func serverIsUp(_ name: String) -> Bool {
+        guard let t = tunnels.first(where: { $0.name == name }) else { return false }
+        return Self.isUp(t, engineRunning: status?.running == true)
+    }
+
+    nonisolated static func isUp(_ t: Tunnel, engineRunning: Bool) -> Bool {
+        switch t.state {
+        case .connected, .ready: return true
+        case .disconnected: return engineRunning && t.protocolName != "openvpn"
+        default: return false // connecting, needs sign-in, failed
+        }
+    }
+
     /// One sentence on what the connection is doing, plain about the case where it is on but not carrying traffic.
     var summary: String {
         switch health {

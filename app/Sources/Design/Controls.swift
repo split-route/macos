@@ -9,7 +9,7 @@ public struct SolidButtonStyle: ButtonStyle {
             .font(TypeScale.bodyStrong)
             .foregroundStyle(Color.white)
             .padding(.horizontal, 18).padding(.vertical, 11)
-            .background(AccentSurface(RoundedRectangle(cornerRadius: Radius.row + 4, style: .continuous)).opacity(configuration.isPressed ? 0.8 : 1))
+            .background(AccentSurface(RoundedRectangle(cornerRadius: Radius.row + 2, style: .continuous)).opacity(configuration.isPressed ? 0.8 : 1))
     }
 }
 
@@ -200,8 +200,8 @@ public struct Panel<Content: View>: View {
     public var body: some View {
         VStack(spacing: 0) { content }
             .background(Glass.fill)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.panel + 4))
-            .overlay(RoundedRectangle(cornerRadius: Radius.panel + 4).stroke(Glass.stroke, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.panel))
+            .overlay(RoundedRectangle(cornerRadius: Radius.panel).stroke(Glass.stroke, lineWidth: 1))
     }
 }
 

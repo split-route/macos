@@ -10,7 +10,7 @@ final class MenuBarPanel: NSObject {
         override var canBecomeKey: Bool { true }
     }
 
-    static let cornerRadius: CGFloat = 8
+    static let cornerRadius: CGFloat = 12
 
     private let panel: Panel
     private weak var button: NSStatusBarButton?

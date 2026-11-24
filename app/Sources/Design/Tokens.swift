@@ -76,8 +76,8 @@ public enum Line: String, CaseIterable, Codable, Sendable {
 /// Radii by role: a field is not a row is not a panel.
 public enum Radius {
     public static let control: CGFloat = 6
-    public static let row: CGFloat = 10
-    public static let panel: CGFloat = 14
+    public static let row: CGFloat = 8
+    public static let panel: CGFloat = 12
 }
 
 public enum Space {
