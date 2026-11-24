@@ -94,7 +94,14 @@ final class ServiceLink {
             }
             var w = WireTunnel(id: t.coreID, name: t.name, protocol: t.kind, needsAuth: t.needsAuth)
             if t.isOpenVPN {
-                w.profile = String(decoding: data, as: UTF8.self)
+                var profile = String(decoding: data, as: UTF8.self)
+                if !t.serverOverride.isEmpty {
+                    do { profile = try OvpnProfile.overridingServer(profile, with: t.serverOverride) } catch {
+                        problems[t.coreID] = "The server override isn't valid: \(error.localizedDescription)"
+                        continue
+                    }
+                }
+                w.profile = profile
                 if let c = credentials[t.name] {
                     if t.needsAuth, !(c.username.isEmpty && c.password.isEmpty) {
                         w.username = c.username.nilIfEmpty
@@ -119,8 +126,13 @@ final class ServiceLink {
         var lists: [WireList] = []
         for l in cfg.lists where l.action != .none { // a list with no action isn't sent: the service never sees it
             var w = WireList(name: l.name, action: l.action, tunnel: l.action == .tunnel ? l.tunnel : nil)
-            if l.custom {
-                w.entries = l.entries
+            if l.ruleSet {
+                // A rule-set kept as it was imported: its bytes go to the engine unchanged.
+                guard let bytes = try store.ruleSetData(l.name) else { continue }
+                (w.format, w.data) = ("ruleset", bytes)
+            } else if l.custom {
+                guard !l.rules.isEmpty else { continue } // a rule with no values yet applies nothing
+                (w.format, w.rules) = ("rules", l.rules)
             } else if l.importSource != nil {
                 w.entries = try store.importLines(l.name)
             } else if let text = files.releaseText(l.name) {

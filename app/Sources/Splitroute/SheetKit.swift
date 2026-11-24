@@ -1,3 +1,4 @@
+import AppKit
 import Design
 import SwiftUI
 
@@ -25,8 +26,8 @@ extension View {
         textFieldStyle(.plain)
             .font(TypeScale.body)
             .padding(.horizontal, Space.m).padding(.vertical, 7)
-            .background(Palette.surface.color, in: RoundedRectangle(cornerRadius: Radius.control))
-            .overlay(RoundedRectangle(cornerRadius: Radius.control).stroke(Palette.hairline.color, lineWidth: 1))
+            .background(Glass.control, in: RoundedRectangle(cornerRadius: Radius.control)) // a field inside a panel: one step lighter than the panel
+            .overlay(RoundedRectangle(cornerRadius: Radius.control).stroke(Glass.stroke, lineWidth: 1))
     }
 }
 
@@ -44,8 +45,8 @@ struct SheetTabs<T: Hashable & Identifiable & RawRepresentable>: View where T.Ra
                     .padding(.horizontal, 14).padding(.vertical, 5)
                     .background {
                         if selection == o {
-                            RoundedRectangle(cornerRadius: Radius.control - 2).fill(Palette.surface.color)
-                                .overlay(RoundedRectangle(cornerRadius: Radius.control - 2).stroke(Palette.hairline.color, lineWidth: 1))
+                            RoundedRectangle(cornerRadius: Radius.control - 2).fill(Glass.fill)
+                                .overlay(RoundedRectangle(cornerRadius: Radius.control - 2).stroke(Glass.stroke, lineWidth: 1))
                         }
                     }
                     .contentShape(Rectangle())
@@ -73,8 +74,8 @@ struct SheetSearch: View {
             }
         }
         .padding(.horizontal, Space.m).padding(.vertical, 8)
-        .background(Palette.surface.color, in: RoundedRectangle(cornerRadius: Radius.row))
-        .overlay(RoundedRectangle(cornerRadius: Radius.row).stroke(Palette.hairline.color, lineWidth: 1))
+        .background(Glass.fill, in: RoundedRectangle(cornerRadius: Radius.row))
+        .overlay(RoundedRectangle(cornerRadius: Radius.row).stroke(Glass.stroke, lineWidth: 1))
     }
 }
 
@@ -156,5 +157,62 @@ struct SheetBar<Buttons: View>: View {
             }
         }
         .padding(.horizontal, Space.xl).padding(.vertical, Space.l)
+    }
+}
+
+
+/// An application as the list shows it: its icon and name, and where it is.
+struct AppRow: View {
+    let path: String
+    let remove: () -> Void
+
+    private var exists: Bool { FileManager.default.fileExists(atPath: path) }
+
+    /// "Safari" for /Applications/Safari.app.
+    static func name(_ path: String) -> String {
+        let n = FileManager.default.displayName(atPath: path)
+        return n.hasSuffix(".app") ? String(n.dropLast(4)) : n
+    }
+
+    var body: some View {
+        HStack(spacing: Space.m) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable().frame(width: 30, height: 30)
+                .opacity(exists ? 1 : 0.4).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(Self.name(path)).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color).lineLimit(1)
+                Text(exists ? path : "Not found: \(path)").font(TypeScale.secondary)
+                    .foregroundStyle(exists ? Palette.inkSecondary.color : Palette.warning.color)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: Space.s)
+            RowButton(symbol: "minus.circle", help: "Remove \(Self.name(path))", action: remove)
+        }
+        .padding(.horizontal, Space.l).padding(.vertical, Space.s)
+    }
+}
+
+
+private struct ClosePageKey: EnvironmentKey { static let defaultValue: () -> Void = {} }
+
+extension EnvironmentValues {
+    /// Leaves the page of the Routing section that is open (adding or editing a list) and returns to the lists.
+    var closePage: () -> Void {
+        get { self[ClosePageKey.self] }
+        set { self[ClosePageKey.self] = newValue }
+    }
+}
+
+
+/// The glass behind a dialog: the window's own backdrop, darkened in the dark look and frosted in the light one, so a
+/// dialog is light when the app is light.
+private struct GlassSheetBackground: View {
+    @Environment(\.colorScheme) private var scheme
+    var body: some View { Backdrop(material: .hudWindow, darkness: scheme == .dark ? 0.55 : 1.0) }
+}
+
+extension View {
+    /// A dialog on liquid glass like the window, in the look the app has (light, dark or the system's).
+    func glassSheet() -> some View {
+        presentationBackground { GlassSheetBackground() }
     }
 }

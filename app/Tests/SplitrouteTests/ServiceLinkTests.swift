@@ -10,7 +10,7 @@ final class ServiceLinkTests: XCTestCase {
     override func setUp() { dir = FileManager.default.temporaryDirectory.appendingPathComponent("sr-\(UUID().uuidString)") }
     override func tearDown() { try? FileManager.default.removeItem(at: dir) }
 
-    static let goldenSnapshot = ##"{"block_quic":true,"lists":[{"action":"direct","entries":["# office","example.com","8.8.8.0\/24"],"name":"Office"},{"action":"block","name":"malware"},{"action":"tunnel","entries":["full:a.example.com"],"name":"Work list","tunnel":"Work"}],"lists_on":true,"retry":["*"],"selected":"t1","tunnels":[{"id":"t1","name":"Proxy","needs_auth":false,"options":{"server":"example.com","server_port":443,"type":"vless"},"protocol":"vless"},{"id":"t2","name":"Work","needs_auth":true,"password":"pw","profile":"client\n","protocol":"openvpn","username":"alice"}],"vpn":true}"##
+    static let goldenSnapshot = ##"{"block_quic":true,"lists":[{"action":"direct","format":"rules","name":"Office","rules":{"domain_suffix":["example.com"],"ip_cidr":["8.8.8.0\/24"]}},{"action":"block","name":"malware"},{"action":"tunnel","format":"rules","name":"Work list","rules":{"domain":["a.example.com"],"mode":"and","port":[443]},"tunnel":"Work"}],"lists_on":true,"retry":["*"],"selected":"t1","tunnels":[{"id":"t1","name":"Proxy","needs_auth":false,"options":{"server":"example.com","server_port":443,"type":"vless"},"protocol":"vless"},{"id":"t2","name":"Work","needs_auth":true,"password":"pw","profile":"client\n","protocol":"openvpn","username":"alice"}],"vpn":true}"##
 
     func make() throws -> (Store, AppFiles, ServiceLink) {
         let files = AppFiles(root: dir)
@@ -35,11 +35,13 @@ final class ServiceLinkTests: XCTestCase {
         try s.setVPN(on: true)
         try s.update { c in
             var c = try c.creating("Office", .direct)
-            c = try c.settingEntries("Office", ["# office", "example.com", "8.8.8.0/24"]).0
+            var office = RuleSpec(); office.domainSuffix = ["example.com"]; office.ipCIDR = ["8.8.8.0/24"]
+            c = try c.settingRules("Office", office)
             c = try c.enablingRelease("malware", .block)
             c = try c.creating("Work list", .tunnel)
             c.lists[c.lists.count - 1].tunnel = "Work"
-            return try c.settingEntries("Work list", ["full:a.example.com"]).0
+            var work = RuleSpec(); work.mode = "and"; work.domain = ["a.example.com"]; work.port = [443]
+            return try c.settingRules("Work list", work)
         }
         try s.update { try $0.removing("ir-cidr") }
         link.credentials = { $0 == "Work" ? TunnelSecrets(username: "alice", password: "pw", keyPassword: "") : nil }

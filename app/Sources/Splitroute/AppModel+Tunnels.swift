@@ -59,6 +59,30 @@ extension AppModel {
         await followTunnel(t.name)
     }
 
+    /// Saves the edits of an OpenVPN server: the server it connects to in place of its profile's, and its credentials. A
+    /// changed server reconnects a running server (the service sees a different profile). `connect` also connects it.
+    /// Returns what is wrong, or nil.
+    func saveServerEdit(_ t: Tunnel, secrets: TunnelSecrets?, remember: Bool, serverOverride: String, connect: Bool) async -> String? {
+        let spec = serverOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        do { _ = try OvpnProfile.parseServer(spec) } catch { return error.localizedDescription }
+        do {
+            let st = try stored(t.name)
+            if st.serverOverride != spec { try store?.setServerOverride(st.id, spec) }
+        } catch { return error.localizedDescription }
+        if connect {
+            await connectTunnel(t, secrets: secrets, remember: remember)
+        } else if let secrets, t.isActive {
+            await answerCredentials(t, secrets: secrets, remember: remember)
+        } else {
+            if let secrets {
+                if remember { TunnelKeychain.save(t.name, secrets) } else { sessionSecrets[t.name] = secrets }
+                credentialsRefused.remove(t.name)
+            }
+            await changed()
+        }
+        return nil
+    }
+
     /// Credentials for a tunnel that is running and asks for them (a challenge), or that waits for them.
     func answerCredentials(_ t: Tunnel, secrets: TunnelSecrets, remember: Bool) async {
         if remember { TunnelKeychain.save(t.name, secrets) } else { sessionSecrets[t.name] = secrets }
@@ -110,7 +134,7 @@ extension AppModel {
 
     /// How proxy tunnels' server names are found: "" (the service's default, Google DoH), a DoH server's address, or
     /// "system". 8.8.8.8 is the default, so it is shown as "".
-    var bootstrap: String { tunnelList?.bootstrap == "8.8.8.8" ? "" : tunnelList?.bootstrap ?? "" }
+    var bootstrap: String { tunnelList?.bootstrap ?? "" } // "" is automatic
 
     func setBootstrap(_ value: String) async {
         errors["bootstrap"] = nil

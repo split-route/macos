@@ -39,13 +39,13 @@ func snapshotSettings(_ window: NSWindow, model: AppModel, popover: AnyView, to 
         w.orderOut(nil)
         // The import sheet, in the states a person meets.
         let sheets: [(String, AnyView)] = [
-            ("import-links", AnyView(ImportTunnelsSheet(openProfile: {}, text: "vless://b831381d-6324-4d53-ad4f-8cda48b30811@example.com:443?security=tls#Alpha\ntrojan://pw@example.org:443#Beta").environmentObject(model))),
-            ("import-address", AnyView(ImportTunnelsSheet(openProfile: {}, text: "https://panel.example.com/sub/8f2c0c1e").environmentObject(model))),
-            ("import-done", AnyView(ImportTunnelsSheet(openProfile: {}, result: AddResult(
+            ("import-links", AnyView(ImportTunnelsSheet(openProfile: { _ in }, text: "vless://b831381d-6324-4d53-ad4f-8cda48b30811@example.com:443?security=tls#Alpha\ntrojan://pw@example.org:443#Beta").environmentObject(model))),
+            ("import-address", AnyView(ImportTunnelsSheet(openProfile: { _ in }, text: "https://panel.example.com/sub/8f2c0c1e").environmentObject(model))),
+            ("import-done", AnyView(ImportTunnelsSheet(openProfile: { _ in }, result: AddResult(
                 added: 38, skipped: [SkippedNode(label: "🇩🇪 Frankfurt xhttp", reason: "transport \"xhttp\" isn't supported by the engine"),
                                      SkippedNode(label: "hysteria2://…", reason: "certificate pinning (pinSHA256) isn't supported: refusing to connect without it")],
                 group: "Provider")).environmentObject(model))),
-            ("import-none", AnyView(ImportTunnelsSheet(openProfile: {}, result: AddResult(
+            ("import-none", AnyView(ImportTunnelsSheet(openProfile: { _ in }, result: AddResult(
                 added: 0, skipped: [SkippedNode(label: "Clash node", reason: "VLESS encryption (the encryption= parameter) isn't supported")], group: nil)).environmentObject(model))),
         ]
         for (name, view) in sheets {

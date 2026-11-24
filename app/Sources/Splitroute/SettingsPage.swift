@@ -11,8 +11,9 @@ struct SettingsPage: View {
     private static let repo = URL(string: "https://github.com/split-route/macos")!
     private static let releases = URL(string: "https://github.com/split-route/macos/releases")!
     private static let rules = URL(string: "https://github.com/split-route/routing-rules")!
+    @AppStorage(Theme.key) private var theme = Theme.system.rawValue
     private static let quitLabels = ["": "Ask", "turnOff": "Disconnect", "keep": "Keep it on"]
-    private static let bootstrapLabels = ["": "Google (8.8.8.8)", "1.1.1.1": "Cloudflare (1.1.1.1)", "9.9.9.9": "Quad9 (9.9.9.9)", "system": "System resolver"]
+    private static let bootstrapLabels = ["": "Automatic", "1.1.1.1": "Cloudflare (1.1.1.1)", "8.8.8.8": "Google (8.8.8.8)", "9.9.9.9": "Quad9 (9.9.9.9)", "system": "System resolver"]
 
     var body: some View {
         PageScaffold("Settings") {
@@ -58,6 +59,14 @@ struct SettingsPage: View {
     @ViewBuilder private var general: some View {
         SectionTitle("General")
         Panel {
+            FormRow("Theme", detail: "Light, dark, or follow the system.") {
+                SelectMenu(title: (Theme(rawValue: theme) ?? .system).title, options: Theme.allCases, label: { $0.title },
+                           selected: Theme(rawValue: theme) ?? .system) { t in
+                    theme = t.rawValue
+                    t.apply()
+                }
+            }
+            Hairline()
             FormRow("Open at login", detail: "Show the connection state in the menu bar after you log in.") {
                 toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
             }
@@ -76,9 +85,9 @@ struct SettingsPage: View {
         SectionTitle("Connection")
         Panel {
             FormRow("Find servers with",
-                    detail: "If every server fails with \"connection reset by peer\", your network blocks this DNS provider: pick another. The system resolver can return a blocked network's fake address.",
+                    detail: "Automatic asks Cloudflare, Google and Quad9 when you connect and uses the first that answers from your network, because networks block different ones. Pick one yourself if a server still fails with \"connection reset by peer\" or times out. The system resolver can return a blocked network's fake address.",
                     error: model.error("bootstrap")) {
-                SelectMenu(title: Self.bootstrapLabels[model.bootstrap] ?? model.bootstrap, options: ["", "1.1.1.1", "9.9.9.9", "system"],
+                SelectMenu(title: Self.bootstrapLabels[model.bootstrap] ?? model.bootstrap, options: ["", "1.1.1.1", "8.8.8.8", "9.9.9.9", "system"],
                            label: { Self.bootstrapLabels[$0] ?? $0 }, selected: model.bootstrap) { v in Task { await model.setBootstrap(v) } }
                     .disabled(model.busy)
             }

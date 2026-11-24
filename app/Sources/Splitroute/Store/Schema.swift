@@ -237,5 +237,55 @@ ALTER TABLE settings ADD COLUMN block_quic INTEGER NOT NULL DEFAULT 1 CHECK (blo
 -- are on again. (`disabled` stays as a column; the app no longer writes anything but 0.)
 UPDATE settings SET disabled = 0;
 """#,
+#"""
+-- splitroute: foreign_keys=off
+-- List entries of more kinds: a keyword or a regular expression a name matches, a destination port (or range), and an
+-- application or a program name. entries is rebuilt because SQLite can't change a CHECK in place, and a stored value
+-- can now be a path, so its length limit goes from 253 to 1024. Rows keep their order, notes and list.
+
+CREATE TABLE entries_new (
+    list_id  INTEGER NOT NULL REFERENCES lists (id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    kind     TEXT    NOT NULL CHECK (kind IN ('cidr', 'domain', 'domain_suffix', 'asn', 'keyword', 'regex', 'port', 'app', 'process')),
+    value    TEXT    NOT NULL CHECK (length(value) BETWEEN 1 AND 1024),
+    note     TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (list_id, kind, value)
+) WITHOUT ROWID;
+
+INSERT INTO entries_new (list_id, position, kind, value, note) SELECT list_id, position, kind, value, note FROM entries;
+
+DROP TABLE entries;
+ALTER TABLE entries_new RENAME TO entries;
+CREATE INDEX entries_order ON entries (list_id, position);
+"""#,
+#"""
+-- Custom lists are built from fields (sing-box's own: domain, domain_suffix, domain_keyword, domain_regex, ip_cidr, port,
+-- port_range, process_name, ... and the applications picked from Finder), kept as JSON in `builder`. A list that is a
+-- sing-box rule-set kept as it was imported (an .srs or JSON file or address) keeps its bytes in `ruleset`.
+ALTER TABLE lists ADD COLUMN builder TEXT NOT NULL DEFAULT '';
+ALTER TABLE lists ADD COLUMN ruleset BLOB;
+
+-- The entries of existing custom lists become fields of their rule. Notes and AS numbers (sing-box has no rule for an
+-- AS number, and the engine never applied them) are not carried over.
+UPDATE lists SET builder = json_object(
+    'domain',           json((SELECT coalesce(json_group_array(value), '[]') FROM entries e WHERE e.list_id = lists.id AND e.kind = 'domain')),
+    'domain_suffix',    json((SELECT coalesce(json_group_array(value), '[]') FROM entries e WHERE e.list_id = lists.id AND e.kind = 'domain_suffix')),
+    'domain_keyword',   json((SELECT coalesce(json_group_array(value), '[]') FROM entries e WHERE e.list_id = lists.id AND e.kind = 'keyword')),
+    'domain_regex',     json((SELECT coalesce(json_group_array(value), '[]') FROM entries e WHERE e.list_id = lists.id AND e.kind = 'regex')),
+    'ip_cidr',          json((SELECT coalesce(json_group_array(value), '[]') FROM entries e WHERE e.list_id = lists.id AND e.kind = 'cidr')),
+    'port',             json((SELECT coalesce(json_group_array(CAST(value AS INTEGER)), '[]') FROM entries e WHERE e.list_id = lists.id AND e.kind = 'port' AND value NOT LIKE '%-%')),
+    'port_range',       json((SELECT coalesce(json_group_array(replace(value, '-', ':')), '[]') FROM entries e WHERE e.list_id = lists.id AND e.kind = 'port' AND value LIKE '%-%')),
+    'process_name',     json((SELECT coalesce(json_group_array(value), '[]') FROM entries e WHERE e.list_id = lists.id AND e.kind = 'process')),
+    'applications',     json((SELECT coalesce(json_group_array(value), '[]') FROM entries e WHERE e.list_id = lists.id AND e.kind = 'app'))
+) WHERE source = 'custom' AND EXISTS (SELECT 1 FROM entries e WHERE e.list_id = lists.id AND e.kind != 'asn');
+
+DELETE FROM entries WHERE list_id IN (SELECT id FROM lists WHERE source = 'custom');
+UPDATE lists SET note = '' WHERE source = 'custom';
+"""#,
+#"""
+-- An OpenVPN server can be overridden, as in OpenVPN's own app: the host (and port) to connect to in place of the
+-- profile's remote lines. Empty: the profile's. The profile file itself is never changed.
+ALTER TABLE tunnels ADD COLUMN server_override TEXT NOT NULL DEFAULT '' CHECK (length(server_override) <= 300);
+"""#,
     ]
 }

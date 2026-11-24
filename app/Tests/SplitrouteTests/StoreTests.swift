@@ -56,7 +56,8 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(try s.config().lists.first?.action, .tunnel, "the old vpn action reads as tunnel")
         XCTAssertEqual(try s.tunnels().map(\.name), ["Work"])
         // Foreign keys were off during the rebuild: dropping the old lists table must not have cascaded to the entries.
-        XCTAssertEqual(try s.queue.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM entries") }, 2)
+        XCTAssertEqual(try s.queue.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM entries") }, 1, "the import's entry stays; the custom list's moved into its rule")
+        XCTAssertEqual(try s.config().lists.first?.rules.domainSuffix, ["example.com"], "an entry of a custom list becomes a field of its rule")
         XCTAssertEqual(try s.importLines("feed"), ["ads.example.net"])
         XCTAssertEqual(try s.queue.read { try Int.fetchOne($0, sql: "PRAGMA foreign_keys") }, 1, "turned back on afterwards")
         XCTAssertEqual(try s.queue.read { try Int.fetchOne($0, sql: "SELECT seq FROM sqlite_sequence WHERE name = 'tunnels'") }, 1, "ids are never reused")
@@ -71,30 +72,31 @@ final class StoreTests: XCTestCase {
     func testListEditsRoundTripThroughTheDatabase() throws {
         let s = try newStore()
         try s.update { try $0.creating("Work", .block) }
-        try s.update { try $0.settingEntries("Work", ["# the office", "example.com", "full:a.example.com", "AS13335", "8.8.8.0/24", "1.1.1.1", "# trailing"]).0 }
+        var r = RuleSpec()
+        r.mode = "and"
+        r.invert = true
+        r.domainSuffix = ["example.com"]; r.domain = ["a.example.com"]; r.domainKeyword = ["tracker"]; r.domainRegex = [#"^ads[0-9]+\."#]
+        r.ipCIDR = ["8.8.8.0/24", "2400:cb00::/32"]; r.port = [443]; r.portRange = ["8000:9000"]
+        r.processName = ["curl"]; r.processPath = ["/usr/bin/curl"]; r.processPathRegex = ["^/opt/"]
+        r.applications = ["/Applications/Safari.app"]; r.network = ["tcp"]
+        try s.update { try $0.settingRules("Work", r) }
         try s.update { try $0.moving("Work", to: 0) }
         let c = try s.config()
         XCTAssertEqual(c.lists.map(\.name), ["Work", "ir-cidr"])
-        XCTAssertEqual(c.lists[0].entries, ["# the office", "example.com", "full:a.example.com", "AS13335", "8.8.8.0/24", "1.1.1.1", "# trailing"])
-        let (c2, ed) = try c.addingEntries("Work", ["example.com", "mail.example.com"])
-        XCTAssertEqual(ed.added, 1)
-        XCTAssertEqual(ed.duplicates, 1)
-        let (c3, ed3) = try c2.removingEntries("Work", ["example.com", "nope.example.com"])
-        XCTAssertEqual(ed3.removed, 1)
-        XCTAssertEqual(ed3.notFound, ["nope.example.com"])
-        XCTAssertFalse(c3.lists[0].entries.contains("example.com"))
-        XCTAssertFalse(c3.lists[0].entries.contains("# the office"), "a note goes with its entry")
+        XCTAssertEqual(c.lists[0].rules, r, "every field, the mode and the invert survive the database")
+        XCTAssertThrowsError(try s.update { try $0.settingRules("ir-cidr", r) }, "a release list has no rules of its own")
     }
 
-    /// "No Action" keeps the list (and its entries) without applying it: the lists table accepts it and the rows survive.
+    /// "No Action" keeps the list (and its rule) without applying it: the lists table accepts it and the rule survives.
     func testAListWithNoActionIsKeptWithItsEntries() throws {
         let s = try newStore()
         try s.update { try $0.creating("Work", .block) }
-        try s.update { try $0.settingEntries("Work", ["example.com"]).0 }
+        var r = RuleSpec(); r.domainSuffix = ["example.com"]
+        try s.update { try $0.settingRules("Work", r) }
         try s.update { try $0.settingAction("Work", .none, tunnel: nil) }
         let l = try s.config().lists.first { $0.name == "Work" }
         XCTAssertEqual(l?.action, Action.none) // not .none: that reads as Optional.none
-        XCTAssertEqual(l?.entries, ["example.com"])
+        XCTAssertEqual(l?.rules.domainSuffix, ["example.com"])
     }
 
     /// A custom list or import can carry a one-line description; a ready-made list cannot (its text is the catalog's).
@@ -156,6 +158,65 @@ final class StoreTests: XCTestCase {
         for s in [TunnelState.failed, .needsAuth, .connecting] { XCTAssertFalse(AppModel.isUp(server("vless", s), engineRunning: true)) }
     }
 
+    /// The typed forms a plain list uses (v2fly's keyword:, regexp:, full:) become fields of a rule, and the stored kinds
+    /// of the text imports still read back.
+    func testPlainListLinesBecomeTheFieldsOfARule() {
+        let r = RuleSpec(canonicalLines: ["# why", "keyword:tracker", #"regexp:^ads[0-9]+\.net$"#, "port:443", "port:8000-9000", "app:/Applications/Safari.app",
+                                          "process:curl", "full:www.example.com", "example.com", "203.0.113.0/24", "2400:cb00::/32", "AS13335"])
+        XCTAssertEqual(r.domainKeyword, ["tracker"])
+        XCTAssertEqual(r.domainRegex, [#"^ads[0-9]+\.net$"#])
+        XCTAssertEqual(r.port, [443])
+        XCTAssertEqual(r.portRange, ["8000:9000"], "sing-box writes a range with a colon")
+        XCTAssertEqual(r.applications, ["/Applications/Safari.app"])
+        XCTAssertEqual(r.processName, ["curl"])
+        XCTAssertEqual(r.domain, ["www.example.com"])
+        XCTAssertEqual(r.domainSuffix, ["example.com"])
+        XCTAssertEqual(r.ipCIDR, ["203.0.113.0/24", "2400:cb00::/32"])
+        XCTAssertEqual(Entries.kind("keyword:x"), "keyword")
+        XCTAssertEqual(Entries.kind("2400:cb00::/32"), "cidr", "an IPv6 address is not a typed entry")
+        XCTAssertEqual(Entries.value("regexp:^a"), "^a")
+    }
+
+    /// The rule's JSON is the core's: the names are sing-box's, and only what is set is written.
+    func testRuleSpecJSONIsTheCoresAndOmitsWhatIsEmpty() throws {
+        var r = RuleSpec()
+        r.domainSuffix = ["example.com"]; r.port = [443]; r.processPathRegex = ["^/opt/"]
+        let json = String(decoding: try { let e = JSONEncoder(); e.outputFormatting = .sortedKeys; return try e.encode(r) }(), as: UTF8.self)
+        XCTAssertEqual(json, #"{"domain_suffix":["example.com"],"port":[443],"process_path_regex":["^\/opt\/"]}"#)
+        r.mode = "and"; r.invert = true
+        XCTAssertTrue(String(decoding: try JSONEncoder().encode(r), as: UTF8.self).contains(#""mode":"and""#))
+        XCTAssertEqual(try JSONDecoder().decode(RuleSpec.self, from: Data(#"{"domain":["a.com"]}"#.utf8)).mode, "or", "no mode is or")
+    }
+
+    /// A rule-set kept as it was imported lives in the database untouched, and a changed address drops it.
+    func testARuleSetIsKeptAsItIsAndDroppedWithItsAddress() throws {
+        let s = try newStore()
+        try s.update { try $0.importing("Feed", .block, url: "https://example.com/a.srs") }
+        let bytes = Data("SRS\u{05}whatever the service checked".utf8)
+        XCTAssertTrue(try s.saveRuleSetDownload(name: "Feed", url: "https://example.com/a.srs", data: bytes, etag: "e", lastModified: "", sha256: "h"))
+        XCTAssertEqual(try s.ruleSetData("Feed"), bytes)
+        XCTAssertTrue(try s.config().lists.first { $0.name == "Feed" }!.ruleSet)
+        XCTAssertTrue(try s.imports()[0].hasRuleSet)
+        try s.update { try $0.settingDescription("Feed", "mine") }
+        XCTAssertEqual(try s.ruleSetData("Feed"), bytes, "an unrelated edit keeps the download")
+        try s.update { try $0.settingImportURL("Feed", to: "https://example.com/b.srs") }
+        XCTAssertNil(try s.ruleSetData("Feed"), "a rule-set from another address would mislead")
+        try s.update { try $0.creating("Mine", .block) }
+        try s.setRuleSet(name: "Mine", data: bytes)
+        XCTAssertTrue(try s.config().lists.first { $0.name == "Mine" }!.ruleSet)
+    }
+
+    /// Renaming a list with `renameList` keeps a rule-set that lives only in the database.
+    func testRenamingARuleSetListKeepsItsBytes() throws {
+        let s = try newStore()
+        try s.update { try $0.creating("Shared", .block) }
+        let bytes = Data("SRS\u{05}x".utf8)
+        try s.setRuleSet(name: "Shared", data: bytes)
+        try s.renameList("Shared", to: "Renamed")
+        XCTAssertEqual(try s.ruleSetData("Renamed"), bytes)
+        XCTAssertTrue(try s.config().lists.first { $0.name == "Renamed" }!.ruleSet)
+    }
+
     func testListRulesRefuseWhatTheyMust() throws {
         let c = Config.initial
         XCTAssertThrowsError(try c.enablingRelease("ir-cidr", .direct)) // twice
@@ -164,7 +225,7 @@ final class StoreTests: XCTestCase {
         XCTAssertThrowsError(try c.importing("feed", .block, url: "https://user:pw@example.com/x"))
         XCTAssertThrowsError(try c.renaming("ir-cidr", to: "other")) // a release list
         XCTAssertThrowsError(try c.settingAction("ir-cidr", .block, tunnel: "Work")) // only a tunnel list names a tunnel
-        XCTAssertThrowsError(try c.creating("x", .direct).addingEntries("ir-cidr", ["a.com"])) // not custom
+        XCTAssertThrowsError(try c.creating("x", .direct).settingRules("ir-cidr", RuleSpec())) // not custom
         XCTAssertThrowsError(try c.moving("ir-cidr", to: 5))
     }
 

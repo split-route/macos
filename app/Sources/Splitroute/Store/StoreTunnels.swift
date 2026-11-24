@@ -5,14 +5,15 @@ import GRDB
 // options) is a 0600 file (Secrets), checked against `sha` before it is sent to the service.
 
 extension Store {
-    private static let tunnelColumns = "id, name, kind, profile_sha256, remotes, needs_auth, key_encrypted, auto_connect, subscription_id, warning"
+    private static let tunnelColumns = "id, name, kind, profile_sha256, remotes, needs_auth, key_encrypted, auto_connect, subscription_id, warning, server_override"
 
     private static func tunnel(_ r: Row) -> StoreTunnel {
         let remotes: String = r["remotes"]
         return StoreTunnel(id: r["id"], name: r["name"], kind: r["kind"], sha: r["profile_sha256"],
                            remotes: remotes.isEmpty ? [] : remotes.components(separatedBy: "\n"),
                            needsAuth: (r["needs_auth"] as Int) == 1, keyEncrypted: (r["key_encrypted"] as Int) == 1,
-                           autoConnect: (r["auto_connect"] as Int) == 1, subscriptionID: r["subscription_id"], warning: r["warning"])
+                           autoConnect: (r["auto_connect"] as Int) == 1, subscriptionID: r["subscription_id"], warning: r["warning"],
+                           serverOverride: r["server_override"])
     }
 
     func tunnels() throws -> [StoreTunnel] {
@@ -108,6 +109,11 @@ extension Store {
             guard using.isEmpty else { throw Store.inUse(using) }
             try db.execute(sql: "DELETE FROM tunnels WHERE id = ?", arguments: [id])
         }
+    }
+
+    /// Sets or clears (empty) the server an OpenVPN tunnel connects to in place of its profile's.
+    func setServerOverride(_ id: Int64, _ spec: String) throws {
+        try queue.write { try $0.execute(sql: "UPDATE tunnels SET server_override = ?, updated_at = ? WHERE id = ?", arguments: [spec, Store.stamp(), id]) }
     }
 
     func renameTunnel(_ id: Int64, to name: String) throws {

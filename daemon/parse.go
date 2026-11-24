@@ -63,32 +63,35 @@ func (a *app) ParseLinks(text string) (api.Nodes, error) {
 	return out, nil
 }
 
+// CheckRuleSet reads a rule-set a person shared (a binary .srs or sing-box's JSON source), checks that the engine can run
+// it, and returns it as the binary file it will read. A binary one comes back unchanged.
+func (a *app) CheckRuleSet(data []byte) (api.RuleSetInfo, error) {
+	bin, n, err := core.NormalizeRuleSet(data)
+	if err != nil {
+		return api.RuleSetInfo{}, err
+	}
+	return api.RuleSetInfo{Data: bin, Rules: n}, nil
+}
+
+// CheckRules says whether the engine can run a rule built from fields, or which value is wrong.
+func (a *app) CheckRules(spec core.RuleSpec) error {
+	_, err := core.CompileRules(spec)
+	return err
+}
+
 // ParseEntries reads list text. "import" applies the checks a download must
 // pass before it replaces the last good copy; "custom" is a file the user picked
 // for a new list and must hold at least one entry; "release" is a release file.
-func (a *app) ParseEntries(text string, data []byte, format string, wantLines bool) (api.Entries, error) {
+func (a *app) ParseEntries(text, format string, wantLines bool) (api.Entries, error) {
 	var out api.Entries
-	var extraSkipped int
-	if len(data) > 0 { // a sing-box binary rule-set: read it into entry text first
-		if format == api.FormatRelease {
-			return out, errors.New("a release list is text")
-		}
-		if !core.IsRuleSetBinary(data) {
-			return out, errors.New("this is not a sing-box rule-set (.srs)")
-		}
-		var err error
-		if text, extraSkipped, err = core.RuleSetText(data); err != nil {
-			return out, err
-		}
-	}
 	switch format {
 	case api.FormatImport, api.FormatCustom:
 		es, st, err := lists.ParseText([]byte(text))
 		if err != nil {
 			return out, err
 		}
-		out.Count = len(es.V4) + len(es.V6) + len(es.Domains) + len(es.Suffixes) + len(es.ASNs)
-		out.Skipped = st.Reserved + st.Invalid + st.Other + extraSkipped
+		out.Count = es.Count()
+		out.Skipped = st.Reserved + st.Invalid + st.Other
 		if format == api.FormatImport {
 			if err := lists.CheckImport(out.Count, st); err != nil {
 				return out, err

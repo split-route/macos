@@ -6,17 +6,90 @@ import SwiftUI
 /// tunnel; the tunnel is a colored chip, the same color as on the Tunnels page.
 struct ListsPage: View {
     @EnvironmentObject private var model: AppModel
-    @State private var adding = false
-    @State private var editing: CustomTarget?
-    @State private var editingImport: RouteList?
+    /// Which page of this section is open instead of the lists: adding a list, or editing one.
+    private enum Route: Equatable {
+        case add(AddTab)
+        case edit(CustomTarget)
+        case editImport(RouteList)
+
+        var key: String {
+            switch self {
+            case .add: return "add"
+            case .edit(let t): return t.id.uuidString
+            case .editImport(let l): return "import:" + l.name
+            }
+        }
+    }
+
+    @State private var route: Route?
+    @State private var query = ""
     @State private var confirmRemove: RouteList?
 
     private var lists: [RouteList] { model.config?.lists ?? [] }
 
+    /// The lists that match the search: by name, title (a ready-made list's own) or description.
+    private var shown: [RouteList] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return lists }
+        return lists.filter { l in
+            let info = model.info(l.name)
+            return [l.name, l.description ?? "", info?.title ?? "", info?.description ?? ""].contains { $0.localizedCaseInsensitiveContains(q) }
+        }
+    }
+
     var body: some View {
+        // Adding and editing are pages of their own, not dialogs: the rule builder alone has too many fields for one.
+        ZStack {
+            if let r = route {
+                subPage(r).transition(.opacity)
+            } else {
+                listPage.transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: route?.key)
+    }
+
+    private func subPage(_ r: Route) -> some View {
+        let title: String
+        switch r {
+        case .add: title = "Add list"
+        case .edit(let t): title = t.list.map { "Edit \($0.name)" } ?? "New list"
+        case .editImport(let l): title = "Edit \(l.name)"
+        }
+        return VStack(alignment: .leading, spacing: 0) {
+            Button { route = nil } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.left").font(.system(size: 12, weight: .semibold))
+                    Text("Routing").font(TypeScale.bodyStrong)
+                }
+                .foregroundStyle(Palette.inkSecondary.color)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, Space.xl).padding(.top, Space.xl)
+            Text(title).font(TypeScale.title).foregroundStyle(Palette.ink.color).lineLimit(1)
+                .padding(.horizontal, Space.xl).padding(.top, Space.s).padding(.bottom, Space.m)
+            Group {
+                switch r {
+                case .add(let tab):
+                    AddListPage(tab: tab)
+                case .edit(let t):
+                    CustomListEditor(original: t.list?.name, name: t.list?.name ?? "", action: t.list?.action ?? .direct,
+                                     description: t.list?.description ?? "", rules: t.list?.rules ?? RuleSpec(), ruleSet: t.list?.ruleSet ?? false,
+                                     takenNames: Set(lists.map(\.name)).subtracting([t.list?.name ?? ""]))
+                case .editImport(let l):
+                    EditImportView(list: l, takenNames: Set(lists.map(\.name)).subtracting([l.name]))
+                }
+            }
+            .environment(\.closePage, { route = nil })
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var listPage: some View {
         PageScaffold("Routing") {
             if model.ready, !lists.isEmpty {
-                Button("Add list") { adding = true }.buttonStyle(SolidButtonStyle())
+                Button("Add list") { route = .add(.ready) }.buttonStyle(SolidButtonStyle())
             }
         } content: {
             if !model.ready {
@@ -26,13 +99,18 @@ struct ListsPage: View {
                 Panel {
                     EmptyState(title: "Choose where traffic goes",
                                message: "A list is a set of sites or address ranges. Send each one direct, block it, or route it through a server.",
-                               action: "Add a list") { adding = true }
+                               action: "Add a list") { route = .add(.ready) }
                 }
             } else {
                 VStack(alignment: .leading, spacing: Space.m) {
                     routingSwitch
+                    SheetSearch(text: $query, prompt: "Search lists…")
+                    if shown.isEmpty {
+                        Text("No lists match.").font(TypeScale.body).foregroundStyle(Palette.inkSecondary.color)
+                            .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, Space.xl)
+                    }
                     Panel {
-                        ForEach(Array(lists.enumerated()), id: \.element.id) { i, l in
+                        ForEach(Array(shown.enumerated()), id: \.element.id) { i, l in
                             if i > 0 { Hairline() }
                             row(l)
                         }
@@ -47,26 +125,12 @@ struct ListsPage: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if model.ready { finalBar }
         }
-        .sheet(isPresented: $adding) {
-            AddListSheet().environmentObject(model)
-        }
-        .sheet(item: $editingImport) { l in
-            EditImportSheet(list: l, takenNames: Set(lists.map(\.name)).subtracting([l.name])).environmentObject(model).sheetBackground().frame(width: 560, height: 360)
-        }
         .confirmationDialog("Delete \(confirmRemove?.name ?? "")?", isPresented: Binding(
             get: { confirmRemove != nil }, set: { if !$0 { confirmRemove = nil } }
         ), presenting: confirmRemove) { l in
             Button("Delete", role: .destructive) { Task { await model.removeList(l.name) } }
         } message: { l in
-            Text("Its \(plural(entryCount(l), "entry", "entries")) are deleted. Export the settings first (splitroute config export) to keep a copy.")
-        }
-        .sheet(item: $editing) { t in
-            CustomListEditor(original: t.list?.name, name: t.list?.name ?? "", action: t.list?.action ?? .direct,
-                             description: t.list?.description ?? "", text: (t.list?.entries ?? []).joined(separator: "\n"),
-                             takenNames: Set(lists.map(\.name)).subtracting([t.list?.name ?? ""]))
-                .environmentObject(model)
-                .sheetBackground()
-                .frame(width: 560, height: 512)
+            Text("Its rules are deleted.")
         }
     }
 
@@ -134,13 +198,13 @@ struct ListsPage: View {
                 Divider()
             }
             if l.custom {
-                Button("Edit List…") { editing = CustomTarget(list: l) }
+                Button("Edit List…") { route = .edit(CustomTarget(list: l)) }
                 Divider()
                 Button("Delete…", role: .destructive) {
-                    if entryCount(l) > 0 { confirmRemove = l } else { Task { await model.removeList(l.name) } }
+                    if !l.rules.isEmpty || l.ruleSet { confirmRemove = l } else { Task { await model.removeList(l.name) } }
                 }
             } else if l.importSource != nil {
-                Button("Edit List…") { editingImport = l }
+                Button("Edit List…") { route = .editImport(l) }
                 Button("Update Now") { Task { await model.refreshImport(l.name) } }
                 Divider()
                 Button("Delete", role: .destructive) { Task { await model.removeList(l.name) } }
@@ -166,10 +230,6 @@ struct ListsPage: View {
             date = model.files.releaseUpdated(l.name)
         }
         return date.map { "Updated \(relative($0))" } ?? "Not downloaded yet"
-    }
-
-    private func entryCount(_ l: RouteList) -> Int {
-        l.entries.filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.count
     }
 
     /// A progress ring with the percentage while the list downloads, a red icon (click to try again) when it failed.

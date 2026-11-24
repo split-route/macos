@@ -52,7 +52,7 @@ struct MenuPopover: View {
         }
         .frame(width: 360)
         .font(TypeScale.body)
-        .background(Palette.surface.color)
+        .background(PanelGlass())
         .background(GeometryReader { g in Color.clear.preference(key: PanelSizeKey.self, value: g.size) })
         .onPreferenceChange(PanelSizeKey.self) { onSize($0) }
     }
@@ -142,6 +142,27 @@ struct MenuPopover: View {
             }
         }
         .frame(maxWidth: .infinity).padding(Space.xl)
+    }
+}
+
+/// The panel's body: Liquid Glass on macOS 26+, a blurred material before. The panel window is clear, so this is all
+/// the backdrop there is.
+private struct PanelGlass: View {
+    @Environment(\.colorScheme) private var scheme
+    /// How much of the tint covers the glass: higher is less see-through.
+    private static let tint = 0.55
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: MenuBarPanel.cornerRadius, style: .continuous)
+        ZStack {
+            if #available(macOS 26, *) {
+                Color.clear.glassEffect(.regular, in: shape)
+            } else {
+                shape.fill(.ultraThinMaterial)
+            }
+            // Glass alone shows the windows behind it; the tint keeps them from competing with the text.
+            shape.fill(scheme == .dark ? Color.black.opacity(Self.tint) : Color.white.opacity(Self.tint))
+        }
     }
 }
 

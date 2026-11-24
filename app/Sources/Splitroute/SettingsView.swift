@@ -31,7 +31,6 @@ struct SettingsView: View {
         }
         .font(TypeScale.body)
         .foregroundStyle(Palette.ink.color)
-        .preferredColorScheme(.dark)
         .ignoresSafeArea()
         .frame(minWidth: 820, minHeight: 520)
         .onAppear { if model.settingsVisible { model.traffic.start() } }

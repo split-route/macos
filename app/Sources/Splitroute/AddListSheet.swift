@@ -8,27 +8,25 @@ enum AddTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-struct AddListSheet: View {
+/// Adding a list: a page with a tab for each way (ready-made, from a URL, from a file, a custom rule).
+struct AddListPage: View {
     @EnvironmentObject private var model: AppModel
-    @State private var tab: AddTab = .ready
+    @State var tab: AddTab
 
     private var taken: Set<String> { Set((model.config?.lists ?? []).map(\.name)) }
 
     var body: some View {
         VStack(spacing: 0) {
             SheetTabs(options: AddTab.allCases, selection: $tab)
-                .padding(.top, Space.l)
-                .padding(.bottom, Space.s)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Space.xl).padding(.bottom, Space.s)
             switch tab {
             case .ready: ReadyListsTab()
             case .url: ImportEditor(takenNames: taken)
             case .file: FileImportTab(takenNames: taken)
-            case .custom: CustomListEditor(original: nil, name: "", action: .direct, description: "", text: "", takenNames: taken)
+            case .custom: CustomListEditor(original: nil, name: "", action: .direct, description: "", rules: RuleSpec(), ruleSet: false, takenNames: taken)
             }
         }
-        .sheetBackground()
-        // Fits under the toolbar of the 580 pt window.
-        .frame(width: 560, height: 512)
     }
 }
 
@@ -36,7 +34,7 @@ struct AddListSheet: View {
 /// several can be added in a row; each shows on the page at once, downloading.
 struct ReadyListsTab: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.closePage) private var close
     @State private var query = ""
     @State private var actions: [String: Action] = [:] // changed before adding
 
@@ -81,7 +79,7 @@ struct ReadyListsTab: View {
             }
             .scrollIndicators(.never)
             SheetBar(error: model.error("lists")) {
-                SheetButton(title: "Done", primary: true) { dismiss() }
+                SheetButton(title: "Done", primary: true) { close() }
             }
         }
     }
@@ -91,20 +89,20 @@ struct ReadyListsTab: View {
 /// sends its text; the service parses it like an import.
 struct FileImportTab: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.closePage) private var close
     let takenNames: Set<String>
     @State private var file: URL?
     @State private var text: String?
-    @State private var binary: Data? // a sing-box rule-set (.srs)
+    @State private var binary: Data? // a sing-box rule-set (.srs, or its JSON source)
     @State private var name = ""
     @State private var action: Action = .block
     @State private var description = ""
     @State private var choosing = false
     @State private var error: String?
-    @State private var done: EntryEdit?
+    @State private var done: String? // what was added
 
-    /// The service takes requests up to 8 MiB; leave room for JSON escaping (and base64 for a binary list).
-    private static let maxBytes = 5 << 20
+    private static let maxText = 5 << 20 // a plain list
+    private static let maxRuleSet = Daemon.maxRuleSet
 
     private var trimmedName: String { name.trimmingCharacters(in: .whitespaces) }
 
@@ -122,7 +120,7 @@ struct FileImportTab: View {
                 VStack(alignment: .leading, spacing: Space.m) {
                     Panel {
                         FormRow(file?.lastPathComponent ?? "No file chosen",
-                                detail: binary != nil ? "sing-box rule-set" : text.map { plural($0.split(whereSeparator: \.isNewline).count, "line") }) {
+                                detail: binary != nil ? "sing-box rule-set, kept as it is" : text.map { plural($0.split(whereSeparator: \.isNewline).count, "line") }) {
                             Button("Choose File…") { choosing = true }.buttonStyle(OutlineButtonStyle())
                         }
                         Hairline()
@@ -133,16 +131,16 @@ struct FileImportTab: View {
                         ActionRow(action: $action)
                     }
                     .disabled(done != nil)
-                    SheetNote("Plain lists (one address, range, domain or AS number per line), hosts files, Surge/Clash domain sets and sing-box rule-sets (.srs), up to 5 MB. Lines that aren't entries are skipped. The entries are copied into a custom list you can edit; for a list that changes, use From URL so it stays up to date.")
+                    SheetNote("A sing-box rule-set (.srs, or its JSON source) is used exactly as it is: everything sing-box can run in one works, up to 16 MB. A plain list (one domain, address or range per line, hosts files, Surge/Clash domain sets, up to 5 MB) becomes the fields of a rule you can edit; lines that aren't entries are skipped. For a list that changes, use From URL so it stays up to date.")
                 }
                 .padding(.horizontal, Space.xl).padding(.vertical, Space.s)
             }
             .scrollIndicators(.never)
-            SheetBar(error: error ?? problem, success: done.map(summary)) {
+            SheetBar(error: error ?? problem, success: done) {
                 if done != nil {
-                    SheetButton(title: "Done", primary: true) { dismiss() }
+                    SheetButton(title: "Done", primary: true) { close() }
                 } else {
-                    SheetButton(title: "Cancel") { dismiss() }
+                    SheetButton(title: "Cancel") { close() }
                     SheetButton(title: "Import", primary: true, disabled: problem != nil || model.busy) { Task { await importFile() } }
                 }
             }
@@ -163,18 +161,21 @@ struct FileImportTab: View {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        guard size <= Self.maxBytes else {
-            error = "This file is \(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)); the limit is 5 MB. Put it online and use From URL instead."
+        guard size <= Self.maxRuleSet else {
+            error = "This file is \(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)); the limit is 16 MB. Put it online and use From URL instead."
             return
         }
         guard let data = try? Data(contentsOf: url) else {
             error = "This file can't be read."
             return
         }
-        if Daemon.isRuleSet(data) {
+        if Daemon.looksLikeRuleSet(data) {
             binary = data
-        } else if let s = String(data: data, encoding: .utf8) {
+        } else if data.count <= Self.maxText, let s = String(data: data, encoding: .utf8) {
             text = s
+        } else if data.count > Self.maxText {
+            error = "A plain list can be up to 5 MB. Put it online and use From URL instead."
+            return
         } else {
             error = "This isn't a text file (UTF-8) or a sing-box rule-set (.srs)."
             return
@@ -184,15 +185,9 @@ struct FileImportTab: View {
 
     private func importFile() async {
         guard text != nil || binary != nil else { return }
-        let r = await model.createFromFile(name: trimmedName, action: action, text: text ?? "", binary: binary, description: description.trimmingCharacters(in: .whitespaces))
+        let r = await model.createFromFile(name: trimmedName, action: action, text: text ?? "", ruleSet: binary, description: description.trimmingCharacters(in: .whitespaces))
         error = r.error
-        if r.error == nil { done = r.edit ?? EntryEdit() }
-    }
-
-    private func summary(_ e: EntryEdit) -> String {
-        var s = "Added \(plural(e.added ?? 0, "entry", "entries")) to \(trimmedName)."
-        if let n = e.skipped, n > 0 { s += " \(plural(n, "line")) skipped." }
-        return s
+        if r.error == nil { done = r.summary ?? "Added \(trimmedName)." }
     }
 }
 
@@ -217,24 +212,56 @@ struct SheetButtons<Buttons: View>: View {
     }
 }
 
-struct CustomTarget: Identifiable {
+struct CustomTarget: Identifiable, Equatable {
     let id = UUID()
     let list: RouteList? // nil: a new list
 }
 
-/// Creates or edits a custom list. Saving sends the changes to the service and
-/// closes only when it accepted them; its error stays in the sheet.
+/// Creates or edits a custom list: a rule built from fields. The fields have sing-box's names and mean what they mean
+/// there; "or" and "and" say how they combine, and "invert" negates the rule. Saving asks the service to check every
+/// value first, so a mistake is reported here, next to the field, and not when the list is applied.
 struct CustomListEditor: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.closePage) private var close
     @State var original: String?
     @State var name: String
     @State var action: Action
     @State var description: String
-    @State var text: String
+    let rules: RuleSpec
+    /// The list is a sing-box rule-set kept as it was imported: its rules are not edited here.
+    let ruleSet: Bool
     let takenNames: Set<String>
     @State private var error: String?
     @State private var confirmingDelete = false
+    @State private var loaded = false
+    @State private var mode = "or"
+    @State private var invert = false
+    /// What is typed in each field, one value per line, by the field's sing-box name.
+    @State private var texts: [String: String] = [:]
+    @State private var apps: [String] = []
+    @State private var network: Set<String> = []
+
+    /// The fields of the rule, grouped, with sing-box's names and a line on what each matches.
+    private typealias FieldInfo = (key: String, title: String, hint: String)
+    private static let groups: [(title: String, fields: [FieldInfo])] = [
+        ("Domain", [
+            ("domain", "Domain", "Exactly this name: www.example.com"),
+            ("domain_suffix", "Domain Suffix", "This name and everything under it: example.com"),
+            ("domain_keyword", "Domain Keyword", "Names that contain the word: google"),
+            ("domain_regex", "Domain Regex", "Names that match the pattern: ^ads[0-9]+\\.example\\.com$"),
+        ]),
+        ("Address", [("ip_cidr", "IP CIDR", "An address or a range: 203.0.113.7, 203.0.113.0/24, 2400:cb00::/32")]),
+        ("Port", [
+            ("port", "Port", "A destination port: 443"),
+            ("port_range", "Port Range", "A range of destination ports: 8000:9000 (either end may be left out: :1023)"),
+        ]),
+    ]
+    private static let programFields: [FieldInfo] = [
+        ("process_name", "Process Name", "The program's name: curl"),
+        ("process_path", "Process Path", "The program's full path: /usr/bin/curl"),
+        ("process_path_regex", "Process Path Regex", "A pattern for the path: ^/opt/tools/"),
+    ]
+    private static let networks = ["tcp", "udp", "icmp"]
 
     private var trimmedName: String { name.trimmingCharacters(in: .whitespaces) }
 
@@ -246,15 +273,10 @@ struct CustomListEditor: View {
         return nil
     }
 
-    private var entryCount: Int {
-        text.split(whereSeparator: \.isNewline).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty && !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.count
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.m) {
-                    if let o = original { Text("Edit \(o)").font(TypeScale.heading).foregroundStyle(Palette.ink.color) }
                     Panel {
                         FieldRow(title: "Name", text: $name)
                         Hairline()
@@ -262,15 +284,11 @@ struct CustomListEditor: View {
                         Hairline()
                         ActionRow(action: $action)
                     }
-                    Text("Entries").font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color)
-                    TextEditor(text: $text)
-                        .font(.system(.body, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .padding(Space.s)
-                        .frame(minHeight: 150)
-                        .background(Palette.surface.color, in: RoundedRectangle(cornerRadius: Radius.row))
-                        .overlay(RoundedRectangle(cornerRadius: Radius.row).stroke(Palette.hairline.color, lineWidth: 1))
-                    SheetNote("One per line: an address or range (203.0.113.7, 198.51.100.0/24, 2400:cb00::/32), a domain with its subdomains (example.com), one exact name (full:www.example.com) or an AS number (AS13335). Lines starting with # are notes. Only IPv4 is routed for now; the rest is kept for upcoming domain and ASN routing.")
+                    if ruleSet {
+                        SheetNote("This list is a sing-box rule-set, kept exactly as it was imported: sing-box runs every rule in it. To change its rules, import a new file or address. The name, description and action can be changed above.")
+                    } else {
+                        builder
+                    }
                 }
                 .padding(.horizontal, Space.xl).padding(.vertical, Space.s)
             }
@@ -278,37 +296,170 @@ struct CustomListEditor: View {
             SheetBar(error: error ?? (name.isEmpty ? nil : nameProblem), leading: original == nil ? nil : AnyView(
                 Button("Delete List") { confirmingDelete = true }
                     .buttonStyle(.plain).font(TypeScale.bodyStrong).foregroundStyle(Palette.danger.color)
-                    .accessibilityHint("Removes this list and its entries"))) {
+                    .accessibilityHint("Removes this list and its rules"))) {
                 if model.busy { ProgressView().controlSize(.small) }
-                SheetButton(title: "Cancel") { dismiss() }
+                SheetButton(title: "Cancel") { close() }
                 SheetButton(title: original == nil ? "Add" : "Save", primary: true, disabled: nameProblem != nil || model.busy) { Task { await save() } }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear(perform: load)
         .confirmationDialog("Delete \(original ?? "")?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) {
                 guard let o = original else { return }
-                Task { await model.removeList(o); dismiss() }
+                Task { await model.removeList(o); close() }
             }
         } message: {
-            Text("Its \(plural(entryCount, "entry", "entries")) are deleted. Export the settings first (splitroute config export) to keep a copy.")
+            Text("Its rules are deleted.")
         }
     }
 
+    // MARK: The rule
+
+    private var builder: some View {
+        VStack(alignment: .leading, spacing: Space.xl) {
+            Panel {
+                FormRow("Logic", detail: mode == "or" ? "A connection matches when it matches any field below."
+                                                       : "A connection matches only when it matches every field below.") {
+                    SelectMenu(title: mode.uppercased(), options: ["or", "and"], label: { $0.uppercased() }, selected: mode) { mode = $0 }
+                }
+                Hairline()
+                FormRow("Invert", detail: "Match everything except what this rule describes.") {
+                    Toggle("Invert", isOn: $invert).labelsHidden().toggleStyle(.switch).tint(Accent.color)
+                }
+            }
+            ForEach(Self.groups, id: \.title) { g in
+                section(g.title, fields: g.fields)
+            }
+            VStack(alignment: .leading, spacing: Space.l) {
+                Text("Program").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
+                applicationsPanel
+                ForEach(Self.programFields, id: \.key) { field($0.key, $0.title, $0.hint) }
+                SheetNote("The engine looks up which program each connection comes from, which costs a little per connection. It only does so while a list names programs.")
+            }
+            VStack(alignment: .leading, spacing: Space.l) {
+                Text("Network").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
+                Panel {
+                    FormRow("Network", detail: "The transport: tcp, udp or icmp") {
+                        HStack(spacing: Space.m) {
+                            ForEach(Self.networks, id: \.self) { n in
+                                Toggle(n, isOn: Binding(get: { network.contains(n) }, set: { on in
+                                    if on { network.insert(n) } else { network.remove(n) }
+                                })).toggleStyle(.checkbox).font(TypeScale.body)
+                            }
+                        }
+                    }
+                }
+            }
+            SheetNote("One value per line. The service checks every value when you save.")
+        }
+    }
+
+    private func section(_ title: String, fields: [FieldInfo]) -> some View {
+        VStack(alignment: .leading, spacing: Space.l) {
+            Text(title).font(TypeScale.heading).foregroundStyle(Palette.ink.color)
+            ForEach(fields, id: \.key) { field($0.key, $0.title, $0.hint) }
+        }
+    }
+
+    /// One field: its title (sing-box's name, written out), a box for its values and what it matches.
+    private func field(_ key: String, _ title: String, _ hint: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color)
+            TextEditor(text: Binding(get: { texts[key] ?? "" }, set: { texts[key] = $0 }))
+                .font(.system(size: 12.5, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .padding(Space.s)
+                .frame(height: 72)
+                .background(Glass.fill, in: RoundedRectangle(cornerRadius: Radius.row))
+                .overlay(RoundedRectangle(cornerRadius: Radius.row).stroke(Glass.stroke, lineWidth: 1))
+                .accessibilityLabel(key)
+            Text(hint).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+        }
+    }
+
+    /// The applications of this rule, picked from Finder. Each shows its icon and name.
+    private var applicationsPanel: some View {
+        Panel {
+            FormRow("Applications", detail: "Everything these programs send, whatever the address.") {
+                Button("Add…") { chooseApps() }.buttonStyle(OutlineButtonStyle())
+            }
+            ForEach(apps, id: \.self) { path in
+                Hairline()
+                AppRow(path: path) { apps.removeAll { $0 == path } }
+            }
+        }
+    }
+
+    private func chooseApps() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.prompt = "Add"
+        panel.begin { r in
+            guard r == .OK else { return }
+            for u in panel.urls where !apps.contains(u.path) { apps.append(u.path) }
+        }
+    }
+
+    // MARK: Fields and the rule
+
+    private func load() {
+        guard !loaded else { return }
+        loaded = true
+        mode = rules.mode
+        invert = rules.invert
+        apps = rules.applications
+        network = Set(rules.network)
+        texts = [
+            "domain": rules.domain.joined(separator: "\n"), "domain_suffix": rules.domainSuffix.joined(separator: "\n"),
+            "domain_keyword": rules.domainKeyword.joined(separator: "\n"), "domain_regex": rules.domainRegex.joined(separator: "\n"),
+            "ip_cidr": rules.ipCIDR.joined(separator: "\n"), "port": rules.port.map(String.init).joined(separator: "\n"),
+            "port_range": rules.portRange.joined(separator: "\n"), "process_name": rules.processName.joined(separator: "\n"),
+            "process_path": rules.processPath.joined(separator: "\n"), "process_path_regex": rules.processPathRegex.joined(separator: "\n"),
+        ]
+    }
+
+    private func lines(_ key: String) -> [String] {
+        (texts[key] ?? "").split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    /// The rule as typed, or what is wrong with it.
+    private func spec() throws -> RuleSpec {
+        var s = RuleSpec()
+        s.mode = mode
+        s.invert = invert
+        s.domain = lines("domain"); s.domainSuffix = lines("domain_suffix"); s.domainKeyword = lines("domain_keyword")
+        s.domainRegex = lines("domain_regex"); s.ipCIDR = lines("ip_cidr"); s.portRange = lines("port_range")
+        s.processName = lines("process_name"); s.processPath = lines("process_path"); s.processPathRegex = lines("process_path_regex")
+        s.applications = apps
+        s.network = Self.networks.filter { network.contains($0) }
+        for p in lines("port") {
+            guard let n = Int(p), (1...65535).contains(n) else { throw StoreError("port: \"\(p)\" is not a port from 1 to 65535.") }
+            s.port.append(n)
+        }
+        return s
+    }
+
     private func save() async {
-        let entries = text.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        let r = await model.saveCustom(original: original, name: trimmedName, action: action, entries: entries, description: description.trimmingCharacters(in: .whitespaces))
+        let rule: RuleSpec
+        if ruleSet {
+            rule = rules
+        } else {
+            do { rule = try spec() } catch { self.error = error.localizedDescription; return }
+        }
+        let r = await model.saveCustom(original: original, name: trimmedName, action: action, rules: rule, description: description.trimmingCharacters(in: .whitespaces))
         original = r.name
         error = r.error
-        if r.error == nil { dismiss() }
+        if r.error == nil { close() }
     }
 }
 
 struct ImportEditor: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.closePage) private var close
     let takenNames: Set<String>
     @State private var name = ""
     @State private var url = ""
@@ -351,11 +502,11 @@ struct ImportEditor: View {
             .scrollIndicators(.never)
             SheetBar(error: error ?? problem) {
                 if model.busy { ProgressView().controlSize(.small) }
-                SheetButton(title: "Cancel") { dismiss() }
+                SheetButton(title: "Cancel") { close() }
                 SheetButton(title: "Import", primary: true, disabled: problem != nil || model.busy) {
                     Task {
                         error = await model.importList(name: trimmedName, url: trimmedURL, action: action, description: description.trimmingCharacters(in: .whitespaces))
-                        if error == nil { dismiss() }
+                        if error == nil { close() }
                     }
                 }
             }
@@ -366,9 +517,9 @@ struct ImportEditor: View {
 
 /// Edits a list from a URL: its name, address and description. The name keeps the downloaded entries. A new address is
 /// downloaded at once, and the old entries go (entries from another source would mislead).
-struct EditImportSheet: View {
+struct EditImportView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.closePage) private var close
     let list: RouteList
     let takenNames: Set<String>
     @State private var name = ""
@@ -392,7 +543,6 @@ struct EditImportSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: Space.m) {
-                Text("Edit List").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
                 Panel {
                     FieldRow(title: "Name", text: $name)
                     Hairline()
@@ -406,11 +556,11 @@ struct EditImportSheet: View {
             Spacer(minLength: 0)
             SheetBar(error: error ?? problem) {
                 if model.busy { ProgressView().controlSize(.small) }
-                SheetButton(title: "Cancel") { dismiss() }
+                SheetButton(title: "Cancel") { close() }
                 SheetButton(title: "Save", primary: true, disabled: problem != nil || model.busy) {
                     Task {
                         error = await model.updateImport(name: list.name, newName: trimmedName, url: trimmedURL, description: description.trimmingCharacters(in: .whitespaces))
-                        if error == nil { dismiss() }
+                        if error == nil { close() }
                     }
                 }
             }

@@ -95,23 +95,27 @@ extension AppModel {
     /// The release list's title and description; nil for custom lists, imports and release lists the release hasn't described.
     func info(_ name: String) -> ListInfo? { catalog.first { $0.name == name } }
 
-    /// Creates a custom list from a file's text. Returns the entry counts, or the error.
-    func createFromFile(name: String, action: Action, text: String, binary: Data? = nil, description: String? = nil) async -> (edit: EntryEdit?, error: String?) {
-        var counts: EntryEdit?
+    /// Creates a custom list from a file. A sing-box rule-set (an .srs, or its JSON source) is kept as it is, so everything
+    /// sing-box can run in one is run; a plain list (domains, addresses, hosts lines) becomes the fields of a rule.
+    /// Returns a line saying what was added, or the error.
+    func createFromFile(name: String, action: Action, text: String, ruleSet: Data? = nil, description: String? = nil) async -> (summary: String?, error: String?) {
+        var summary: String?
         let e = await attempt {
-            let r: WireEntries
-            if let binary { try self.requireRuleSetSupport(); r = try await Daemon.parseEntries(data: binary, format: "custom", wantLines: true) }
-            else { r = try await Daemon.parseEntries(text, format: "custom", wantLines: true) }
-            var ed = EntryEdit()
-            try self.update { c in
-                let (c2, e2) = try c.creating(name, action, description: description).settingEntries(name, r.lines ?? [])
-                ed = e2
-                return c2
+            if let ruleSet {
+                try self.requireRuleSetSupport()
+                let r = try await Daemon.checkRuleSet(ruleSet)
+                try self.update { try $0.creating(name, action, description: description) }
+                try self.store?.setRuleSet(name: name, data: r.data)
+                summary = "Added \(plural(r.rules, "rule")) to \(name), as they are in the file."
+            } else {
+                let r = try await Daemon.parseEntries(text, format: "custom", wantLines: true)
+                let spec = RuleSpec(canonicalLines: r.lines ?? [])
+                guard !spec.isEmpty else { throw StoreError("The file has no domains, addresses or ports that sing-box can route.") }
+                try self.update { try $0.creating(name, action, description: description).settingRules(name, spec) }
+                summary = "Added \(plural(r.count, "entry", "entries")) to \(name)." + ((r.skipped ?? 0) > 0 ? " \(plural(r.skipped ?? 0, "line")) skipped." : "")
             }
-            ed.skipped = (r.skipped ?? 0) > 0 ? r.skipped : nil
-            counts = ed
         }
-        return (counts, e)
+        return (summary, e)
     }
 
     /// Returns the error, or nil when the import was added. It is downloaded at once.
@@ -123,18 +127,29 @@ extension AppModel {
         return e
     }
 
-    /// Saves a custom list from the editor: creates it (original nil) or applies the rename, action and entries that
-    /// changed. These are separate edits, so on an error the ones before it are kept; the returned name is the list's
-    /// name afterwards (nil if it wasn't created).
-    func saveCustom(original: String?, name: String, action: Action, entries: [String], description: String? = nil) async -> (name: String?, error: String?) {
+    /// Saves a custom list from the editor: creates it (original nil) or applies the rename, action, description and rule
+    /// that changed. These are separate edits, so on an error the ones before it are kept; the returned name is the list's
+    /// name afterwards (nil if it wasn't created). The service checks the rule first, so a value the engine would
+    /// refuse is reported here and not when the list is applied.
+    func saveCustom(original: String?, name: String, action: Action, rules: RuleSpec, description: String? = nil) async -> (name: String?, error: String?) {
         var current = original
         let old = original.flatMap { o in config?.lists.first { $0.name == o } }
+        let keepsRuleSet = old?.ruleSet == true // an imported rule-set is not edited as fields
+        if !keepsRuleSet, !rules.isEmpty {
+            do { try await Daemon.checkRules(rules) } catch { return (original, error.localizedDescription) }
+        }
         if current == nil {
             if let e = await attempt({ try self.update { try $0.creating(name, action, description: description) } }) { return (nil, e) }
             current = name
         }
         if let c = current, c != name {
-            if let e = await attempt({ try self.update { try $0.renaming(c, to: name) } }) { return (c, e) }
+            // A rename keeps the row: a rule-set kept as imported lives only in the database, and `update` would take
+            // the new name for a new list and drop it.
+            if let e = await attempt({
+                guard let cfg = self.config, let store = self.store else { throw StoreError("The settings database isn't open.") }
+                _ = try cfg.renaming(c, to: name)
+                try store.renameList(c, to: name)
+            }) { return (c, e) }
             current = name
         }
         if let old, old.description != description?.nilIfEmpty {
@@ -143,11 +158,8 @@ extension AppModel {
         if let old, old.action != action {
             if let e = await attempt({ try self.update { try $0.settingAction(name, action, tunnel: nil) } }) { return (current, e) }
         }
-        if old?.entries ?? [] != entries {
-            if let e = await attempt({
-                let canon = try await self.canonical(entries)
-                try self.update { try $0.settingEntries(name, canon).0 }
-            }) { return (current, e) }
+        if !keepsRuleSet, old?.rules != rules {
+            if let e = await attempt({ try self.update { try $0.settingRules(name, rules) } }) { return (current, e) }
         }
         return (current, nil)
     }
@@ -157,13 +169,6 @@ extension AppModel {
     func update(_ f: (Config) throws -> Config) throws {
         guard let store else { throw StoreError("The settings database isn't open.") }
         try store.update(f)
-    }
-
-    /// The service's canonical form of each line; one that isn't an entry fails the whole edit.
-    func canonical(_ lines: [String]) async throws -> [String] {
-        let c = try await Daemon.canonEntries(lines)
-        if let bad = c.first(where: { $0.error != nil }) { throw StoreError(bad.error ?? "Not an entry.") }
-        return c.map { $0.entry ?? $0.line }
     }
 
     // MARK: Downloads: release lists and imports
@@ -218,17 +223,22 @@ extension AppModel {
                 Task { @MainActor in self?.setDownload(st.name, .running(p)) }
             }
             let hash = AppFiles.sha256(f.body)
-            if f.notModified || (hash == st.sha256 && st.entries > 0) {
+            if f.notModified || (hash == st.sha256 && (st.entries > 0 || st.hasRuleSet)) {
                 try store.markChecked(name: st.name, url: st.url, etag: f.etag, lastModified: f.lastModified, error: "")
                 setDownload(st.name, nil)
                 return false
             }
-            if Daemon.isRuleSet(f.body) { try requireRuleSetSupport() }
-            let r = Daemon.isRuleSet(f.body)
-                ? try await Daemon.parseEntries(data: f.body, format: "import", wantLines: true)
-                : try await Daemon.parseEntries(String(decoding: f.body, as: UTF8.self), format: "import", wantLines: true)
-            let ok = try store.saveDownload(name: st.name, url: st.url, lines: r.lines ?? [], etag: f.etag, lastModified: f.lastModified,
+            let ok: Bool
+            if Daemon.looksLikeRuleSet(f.body) {
+                // A sing-box rule-set is kept as it is: whatever sing-box can run in one, runs.
+                try requireRuleSetSupport()
+                let r = try await Daemon.checkRuleSet(f.body)
+                ok = try store.saveRuleSetDownload(name: st.name, url: st.url, data: r.data, etag: f.etag, lastModified: f.lastModified, sha256: hash)
+            } else {
+                let r = try await Daemon.parseEntries(String(decoding: f.body, as: UTF8.self), format: "import", wantLines: true)
+                ok = try store.saveDownload(name: st.name, url: st.url, lines: r.lines ?? [], etag: f.etag, lastModified: f.lastModified,
                                             sha256: hash, skipped: r.skipped ?? 0)
+            }
             setDownload(st.name, nil)
             return ok
         } catch {

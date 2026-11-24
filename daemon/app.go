@@ -30,6 +30,7 @@ const defaultState = "/var/db/splitroute"
 type app struct {
 	stateDir string
 	host     *host
+	boot     *bootstrapPicker // which resolver finds proxy servers' names
 	ks       *killSwitch
 	bootID   string // new for every run: the app sends its snapshot when this changes
 
@@ -54,6 +55,7 @@ func newApp(stateDir string, f engineFactory) *app {
 	a := &app{stateDir: stateDir, bootID: hex.EncodeToString(b[:]), restart: make(chan struct{}, 1)}
 	a.ks = newKillSwitch(stateDir)
 	a.host = newHost(filepath.Join(stateDir, "engine"), f)
+	a.boot = newBootstrapPicker()
 	return a
 }
 

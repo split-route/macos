@@ -21,6 +21,8 @@ struct StoreTunnel: Equatable, Identifiable {
     var autoConnect = false
     var subscriptionID: Int64?
     var warning = ""
+    /// OpenVPN only: "host" or "host:port" used in place of the profile's remote lines. Empty: the profile's.
+    var serverOverride = ""
 
     /// The core's tunnel ID: the app's row ID, never reused.
     var coreID: String { "t\(id)" }
@@ -48,6 +50,8 @@ struct ImportState: Equatable {
     var force = false
     var skipped = 0
     var entries = 0
+    /// The import is a rule-set (its bytes are the content, not entries).
+    var hasRuleSet = false
 
     /// A failed download is tried again after 15 minutes, not after the whole refresh time.
     static let retryAfterError: TimeInterval = 15 * 60
@@ -187,40 +191,28 @@ final class Store {
         cfg.finalAction = Action(rawValue: s["final_action"]) ?? .tunnel
         cfg.finalTunnel = s["final_tunnel"]
         cfg.blockQUIC = (s["block_quic"] as Int) == 1
-        var index: [Int64: Int] = [:]
-        var notes: [Int64: String] = [:]
         let rows = try Row.fetchAll(db, sql: """
-            SELECT l.id, l.name, l.source, l.action, t.name AS tunnel, l.note, l.description, i.url, i.refresh_hours
+            SELECT l.id, l.name, l.source, l.action, t.name AS tunnel, l.description, l.builder, (l.ruleset IS NOT NULL) AS has_ruleset,
+                   i.url, i.refresh_hours
             FROM lists l LEFT JOIN import_sources i ON i.list_id = l.id LEFT JOIN tunnels t ON t.id = l.tunnel_id
             ORDER BY l.position, l.id
             """)
         for r in rows {
-            let id: Int64 = r["id"]
             var l = RouteList(name: r["name"], action: Action(rawValue: r["action"]) ?? .direct)
             l.tunnel = r["tunnel"]
             l.description = (r["description"] as String).nilIfEmpty
+            l.ruleSet = (r["has_ruleset"] as Int) == 1
             switch r["source"] as String {
-            case "custom": l.custom = true
+            case "custom":
+                l.custom = true
+                let json: String = r["builder"]
+                if !json.isEmpty, let spec = try? JSONDecoder().decode(RuleSpec.self, from: Data(json.utf8)) { l.rules = spec }
             case "import":
                 l.importSource = ImportSource(url: r["url"] ?? "", refreshHours: (r["refresh_hours"] as Int?).flatMap { $0 == 0 ? nil : $0 })
-                cfg.lists.append(l) // entries stay in the database
-                continue
             default: break
             }
-            index[id] = cfg.lists.count
-            notes[id] = r["note"]
-            cfg.lists.append(l)
+            cfg.lists.append(l) // entries and rule-set bytes stay in the database
         }
-        // Only custom lists keep their entries in the config. An import can hold hundreds of thousands of rows, which this
-        // would read and then skip, on every change.
-        for r in try Row.fetchAll(db, sql: """
-            SELECT e.list_id, e.kind, e.value, e.note FROM entries e JOIN lists l ON l.id = e.list_id
-            WHERE l.source = 'custom' ORDER BY e.list_id, e.position
-            """) {
-            guard let i = index[r["list_id"]] else { continue }
-            cfg.lists[i].entries += Entries.noteLines(r["note"]) + [Entries.text(kind: r["kind"], value: r["value"])]
-        }
-        for (id, i) in index { cfg.lists[i].entries += Entries.noteLines(notes[id] ?? "") }
         try cfg.validate()
         return cfg
     }
@@ -242,7 +234,7 @@ final class Store {
         for r in try Row.fetchAll(db, sql: "SELECT id, name, source FROM lists") { existing[r["name"]] = (r["id"], r["source"]) }
         for (pos, l) in cfg.lists.enumerated() {
             let source = l.custom ? "custom" : (l.importSource != nil ? "import" : "release")
-            let (rows, listNote) = try Entries.rows(l.custom ? l.entries : [])
+            let builder = l.custom && !l.rules.isEmpty ? (String(data: try JSONEncoder().encode(l.rules), encoding: .utf8) ?? "") : ""
             var tunnelID: Int64?
             if let name = l.tunnel, !name.isEmpty {
                 guard let id = try Int64.fetchOne(db, sql: "SELECT id FROM tunnels WHERE name = ?", arguments: [name]) else {
@@ -253,22 +245,16 @@ final class Store {
             var id: Int64
             if let old = existing.removeValue(forKey: l.name) {
                 id = old.id
-                try db.execute(sql: "UPDATE lists SET source = ?, action = ?, tunnel_id = ?, position = ?, note = ?, description = ?, updated_at = ? WHERE id = ?",
-                               arguments: [source, l.action.rawValue, tunnelID, pos, listNote, l.description ?? "", now, id])
+                try db.execute(sql: "UPDATE lists SET source = ?, action = ?, tunnel_id = ?, position = ?, builder = ?, description = ?, updated_at = ? WHERE id = ?",
+                               arguments: [source, l.action.rawValue, tunnelID, pos, builder, l.description ?? "", now, id])
                 if source != "import" || old.source != "import" { try db.execute(sql: "DELETE FROM entries WHERE list_id = ?", arguments: [id]) }
                 if source != "import" && old.source == "import" { try db.execute(sql: "DELETE FROM import_sources WHERE list_id = ?", arguments: [id]) }
             } else {
-                try db.execute(sql: "INSERT INTO lists (name, source, action, tunnel_id, position, note, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                               arguments: [l.name, source, l.action.rawValue, tunnelID, pos, listNote, l.description ?? "", now, now])
+                try db.execute(sql: "INSERT INTO lists (name, source, action, tunnel_id, position, builder, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               arguments: [l.name, source, l.action.rawValue, tunnelID, pos, builder, l.description ?? "", now, now])
                 id = db.lastInsertedRowID
             }
-            if let im = l.importSource {
-                try writeImport(db, id, im)
-                continue
-            }
-            for (i, e) in rows.enumerated() {
-                try db.execute(sql: "INSERT INTO entries (list_id, position, kind, value, note) VALUES (?, ?, ?, ?, ?)", arguments: [id, i, e.kind, e.value, e.note])
-            }
+            if let im = l.importSource { try writeImport(db, id, im) }
         }
         for old in existing.values { try db.execute(sql: "DELETE FROM lists WHERE id = ?", arguments: [old.id]) }
     }
@@ -283,6 +269,7 @@ final class Store {
         }
         if url != im.url {
             try db.execute(sql: "DELETE FROM entries WHERE list_id = ?", arguments: [id])
+            try db.execute(sql: "UPDATE lists SET ruleset = NULL WHERE id = ?", arguments: [id])
             try db.execute(sql: """
                 UPDATE import_sources SET url = ?, refresh_hours = ?, etag = '', last_modified = '', sha256 = '', fetched_at = '',
                 checked_at = '', last_error = '', force = 0, skipped = 0 WHERE list_id = ?
@@ -316,7 +303,8 @@ final class Store {
     func imports() throws -> [ImportState] {
         try queue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT l.id, l.name, i.url, i.refresh_hours, i.etag, i.last_modified, i.sha256, i.fetched_at, i.checked_at, i.last_error, i.force, i.skipped
+                SELECT l.id, l.name, i.url, i.refresh_hours, i.etag, i.last_modified, i.sha256, i.fetched_at, i.checked_at, i.last_error, i.force, i.skipped,
+                       (l.ruleset IS NOT NULL) AS has_ruleset
                 FROM import_sources i JOIN lists l ON l.id = i.list_id ORDER BY l.position, l.id
                 """).map { r in
                 let id: Int64 = r["id"]
@@ -333,7 +321,8 @@ final class Store {
                 }
                 return ImportState(name: r["name"], url: r["url"], refreshHours: r["refresh_hours"], etag: r["etag"], lastModified: r["last_modified"],
                                    sha256: sha, fetchedAt: r["fetched_at"], checkedAt: r["checked_at"], lastError: r["last_error"],
-                                   force: (r["force"] as Int) == 1, skipped: r["skipped"], entries: n)
+                                   force: (r["force"] as Int) == 1, skipped: r["skipped"], entries: n,
+                                   hasRuleSet: (r["has_ruleset"] as Int) == 1)
             }
         }
     }
@@ -371,6 +360,31 @@ final class Store {
                 UPDATE import_sources SET etag = ?, last_modified = ?, sha256 = ?, fetched_at = ?, checked_at = ?, last_error = '', force = 0, skipped = ?
                 WHERE list_id = ?
                 """, arguments: [etag, lastModified, sha256, now, now, skipped, id])
+            return true
+        }
+    }
+
+    /// Stores a rule-set (the binary file the service checked) for a list, as it is. nil removes it.
+    func setRuleSet(name: String, data: Data?) throws {
+        try queue.write { try $0.execute(sql: "UPDATE lists SET ruleset = ?, updated_at = ? WHERE name = ?", arguments: [data, Store.stamp(), name]) }
+    }
+
+    func ruleSetData(_ name: String) throws -> Data? {
+        try queue.read { try Data.fetchOne($0, sql: "SELECT ruleset FROM lists WHERE name = ?", arguments: [name]) }
+    }
+
+    /// Like `saveDownload`, for an import that is a rule-set: its bytes replace what the list had, entries and all.
+    @discardableResult
+    func saveRuleSetDownload(name: String, url: String, data: Data, etag: String, lastModified: String, sha256: String) throws -> Bool {
+        try queue.write { db in
+            guard let id = try Int64.fetchOne(db, sql: "SELECT l.id FROM lists l JOIN import_sources i ON i.list_id = l.id WHERE l.name = ? AND i.url = ?", arguments: [name, url]) else { return false }
+            try db.execute(sql: "DELETE FROM entries WHERE list_id = ?", arguments: [id])
+            try db.execute(sql: "UPDATE lists SET ruleset = ?, updated_at = ? WHERE id = ?", arguments: [data, Store.stamp(), id])
+            let now = Store.stamp()
+            try db.execute(sql: """
+                UPDATE import_sources SET etag = ?, last_modified = ?, sha256 = ?, fetched_at = ?, checked_at = ?, last_error = '', force = 0, skipped = 0
+                WHERE list_id = ?
+                """, arguments: [etag, lastModified, sha256, now, now, id])
             return true
         }
     }

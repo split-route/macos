@@ -56,6 +56,21 @@ func desiredTunnels(ts []api.TunnelSpec, selected string, ls []api.ListSpec, fin
 	return want
 }
 
+// bootstrapFor is the resolver the engine gets: what the app chose, or, when it chose none ("automatic"), the first public
+// resolver that answers from this network. The choice is made as the connection comes up and kept until it goes down.
+func (a *app) bootstrapFor(s api.Snapshot) string {
+	if s.Bootstrap != "" {
+		a.boot.reset()
+		return s.Bootstrap
+	}
+	if !s.VPN {
+		a.boot.reset() // the next connection asks again: it may be another network
+		return ""
+	}
+	up, current := a.host.engineUp()
+	return a.boot.choose(up, current)
+}
+
 // activeLists are the lists the engine applies: none while routing is off, when only the default route is left.
 func activeLists(s api.Snapshot) []api.ListSpec {
 	if !s.ListsOn {
@@ -94,7 +109,7 @@ func (a *app) Apply(s api.Snapshot) error {
 		}
 		a.host.retry(id)
 	}
-	a.host.setBootstrap(s.Bootstrap)
+	a.host.setBootstrap(a.bootstrapFor(s))
 	a.host.setSelected(s.Selected)
 	a.host.setFinal(s.Final)
 	a.host.setBlockQUIC(s.BlockQUIC && s.ListsOn)
@@ -119,13 +134,31 @@ func (a *app) applyLists(s api.Snapshot) error {
 	if sig == a.listsSig {
 		return nil
 	}
-	data := make([]rules.Entries, len(s.Lists))
+	// Each list is entries (custom text, an import, a release list) or a binary rule-set (built from rules, or
+	// imported as an .srs / JSON source and kept as it is).
+	type content struct {
+		es       rules.Entries
+		srs      []byte // set for a rule-set list
+		programs bool
+	}
+	data := make([]content, len(s.Lists))
 	for i, l := range s.Lists {
-		es, _, err := entriesOf(l.Format, l.Entries, l.Text)
-		if err != nil {
-			return fmt.Errorf("list %s: %w", l.Name, err)
+		switch l.Format {
+		case api.FormatRules:
+			b, err := core.CompileRules(*l.Rules)
+			if err != nil {
+				return fmt.Errorf("list %s: %w", l.Name, err)
+			}
+			data[i].srs = b
+		case api.FormatRuleSet:
+			data[i].srs = l.Data
+		default:
+			es, _, err := entriesOf(l.Format, l.Entries, l.Text)
+			if err != nil {
+				return fmt.Errorf("list %s: %w", l.Name, err)
+			}
+			data[i].es, data[i].programs = es, es.MatchesPrograms()
 		}
-		data[i] = es
 	}
 	dir := ruleset.Dir(a.host.workDir)
 	var hl []hostList
@@ -133,16 +166,28 @@ func (a *app) applyLists(s api.Snapshot) error {
 	var warn, keep []string
 	for i, l := range s.Lists {
 		id := listID(l.Name)
-		w, err := ruleset.Write(dir, id, l.Action, data[i])
-		if err != nil {
-			return fmt.Errorf("list %s: %w", l.Name, err)
-		}
-		if w != "" {
-			warn = append(warn, l.Name+": "+w)
+		binary := data[i].srs != nil
+		if binary {
+			files, programs, err := core.RuleSetFiles(id, l.Action, data[i].srs)
+			if err == nil {
+				err = ruleset.WriteFiles(dir, id, files)
+			}
+			if err != nil {
+				return fmt.Errorf("list %s: %w", l.Name, err)
+			}
+			data[i].programs = programs
+		} else {
+			w, err := ruleset.Write(dir, id, l.Action, data[i].es)
+			if err != nil {
+				return fmt.Errorf("list %s: %w", l.Name, err)
+			}
+			if w != "" {
+				warn = append(warn, l.Name+": "+w)
+			}
 		}
 		keep = append(keep, id)
-		counts = append(counts, api.ListCount{Name: l.Name, Action: l.Action, Entries: entryCount(data[i])})
-		hl = append(hl, hostList{ID: id, Name: l.Name, Action: l.Action, Tunnel: l.Tunnel})
+		counts = append(counts, api.ListCount{Name: l.Name, Action: l.Action, Entries: entryCount(data[i].es)})
+		hl = append(hl, hostList{ID: id, Name: l.Name, Action: l.Action, Tunnel: l.Tunnel, Binary: binary, Programs: data[i].programs})
 	}
 	if err := ruleset.Prune(dir, keep); err != nil {
 		log.Printf("rulesets: %v", err)
@@ -159,7 +204,7 @@ func (a *app) applyLists(s api.Snapshot) error {
 }
 
 func entryCount(es rules.Entries) int {
-	return len(es.V4) + len(es.V6) + len(es.Domains) + len(es.Suffixes)
+	return es.Count() - len(es.ASNs) // AS numbers are kept but not routed
 }
 
 // entriesOf reads a list's entries in the format it came in, with the parse

@@ -33,7 +33,8 @@ func testApp(t *testing.T) (*app, *fakes) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	a := newApp(dir, f.factory)
-	a.ks.run = func([]string, string) (string, error) { return "", nil } // never the real pfctl
+	a.ks.run = func([]string, string) (string, error) { return "", nil }              // never the real pfctl
+	a.boot.probe = func(_ context.Context, ip string) bool { return ip == "8.8.8.8" } // never the network; Google answers
 	a.host.settle = time.Hour
 	a.runDir = filepath.Join(dir, "run")
 	t.Cleanup(a.host.close)
@@ -334,11 +335,11 @@ func TestParsers(t *testing.T) {
 	if canon[0].Entry != "example.com" && !strings.Contains(canon[0].Entry, "example.com") || canon[1].Entry != "# note" || canon[3].Error == "" {
 		t.Errorf("canon = %+v", canon)
 	}
-	e, err := a.ParseEntries("example.com\n8.8.8.0/24\n", nil, api.FormatCustom, true)
+	e, err := a.ParseEntries("example.com\n8.8.8.0/24\n", api.FormatCustom, true)
 	if err != nil || e.Count != 2 || len(e.Lines) != 2 {
 		t.Errorf("entries = %+v, %v", e, err)
 	}
-	if _, err := a.ParseEntries("   \n", nil, api.FormatCustom, false); err == nil {
+	if _, err := a.ParseEntries("   \n", api.FormatCustom, false); err == nil {
 		t.Error("an empty file was accepted as a list")
 	}
 }
@@ -376,7 +377,7 @@ func TestLegacyExportReadsTheRootOnlyFiles(t *testing.T) {
 
 // The same JSON the app's ServiceLinkTests builds: the two sides must agree on the wire.
 func TestSnapshotFromTheApp(t *testing.T) {
-	const golden = `{"block_quic":true,"lists":[{"action":"direct","entries":["# office","example.com","8.8.8.0/24"],"name":"Office"},{"action":"block","name":"malware"},{"action":"tunnel","entries":["full:a.example.com"],"name":"Work list","tunnel":"Work"}],"lists_on":true,"retry":["*"],"selected":"t1","tunnels":[{"id":"t1","name":"Proxy","needs_auth":false,"options":{"server":"example.com","server_port":443,"type":"vless"},"protocol":"vless"},{"id":"t2","name":"Work","needs_auth":true,"password":"pw","profile":"client\n","protocol":"openvpn","username":"alice"}],"vpn":true}`
+	const golden = `{"block_quic":true,"lists":[{"action":"direct","format":"rules","name":"Office","rules":{"domain_suffix":["example.com"],"ip_cidr":["8.8.8.0/24"]}},{"action":"block","name":"malware"},{"action":"tunnel","format":"rules","name":"Work list","rules":{"domain":["a.example.com"],"mode":"and","port":[443]},"tunnel":"Work"}],"lists_on":true,"retry":["*"],"selected":"t1","tunnels":[{"id":"t1","name":"Proxy","needs_auth":false,"options":{"server":"example.com","server_port":443,"type":"vless"},"protocol":"vless"},{"id":"t2","name":"Work","needs_auth":true,"password":"pw","profile":"client\n","protocol":"openvpn","username":"alice"}],"vpn":true}`
 	dec := json.NewDecoder(strings.NewReader(golden))
 	dec.DisallowUnknownFields() // a field the app sends that the daemon doesn't know is a mismatch
 	var s api.Snapshot
@@ -554,25 +555,78 @@ func TestApplyFinalRouteReachesTheEngineAndIsValidated(t *testing.T) {
 	}
 }
 
-// A sing-box .srs list comes in as binary data and out as the same entries a text list gives.
-func TestParseEntriesReadsASingBoxRuleSet(t *testing.T) {
+// A rule-set a person shares comes back as the binary file the engine reads, and a binary one is not touched.
+func TestCheckRuleSetKeepsABinaryAndReadsJSON(t *testing.T) {
 	a, _ := testApp(t)
 	var buf bytes.Buffer
 	rs := option.PlainRuleSet{Rules: []option.HeadlessRule{{Type: "default", DefaultOptions: option.DefaultHeadlessRule{
-		Domain: []string{"exact.example.com"}, DomainSuffix: []string{"example.org"}, DomainKeyword: []string{"ads"}, IPCIDR: []string{"203.0.113.0/24"},
-	}}}}
+		DomainSuffix: []string{"example.org"}, DomainKeyword: []string{"ads"}, Port: []uint16{443},
+	}}, {Type: "default", DefaultOptions: option.DefaultHeadlessRule{AdGuardDomain: []string{"||ads.example^"}}}}}
 	if err := srs.Write(&buf, rs, C.RuleSetVersionCurrent); err != nil {
 		t.Fatal(err)
 	}
-	e, err := a.ParseEntries("", buf.Bytes(), api.FormatImport, true)
+	info, err := a.CheckRuleSet(buf.Bytes())
+	if err != nil || info.Rules != 2 || !bytes.Equal(info.Data, buf.Bytes()) {
+		t.Fatalf("a binary rule-set must come back as it was: %+v, %v", info, err)
+	}
+	info, err = a.CheckRuleSet([]byte(`{"version":3,"rules":[{"domain_suffix":["example.net"]}]}`))
+	if err != nil || info.Rules != 1 || !core.IsRuleSetBinary(info.Data) {
+		t.Fatalf("json source: %+v, %v", info, err)
+	}
+	if _, err := a.CheckRuleSet([]byte("example.com\n")); err == nil {
+		t.Error("text was taken for a rule-set")
+	}
+}
+
+// Lists built from rules and imported rule-sets reach the engine as binary rule-sets; programs turn lookup on.
+func TestApplyRulesAndRuleSetLists(t *testing.T) {
+	a, f := testApp(t)
+	imported, err := core.CompileRules(core.RuleSpec{DomainSuffix: []string{"example.org"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.Count != 3 || e.Skipped != 1 { // the keyword can't be an entry
-		t.Errorf("count %d skipped %d, lines %v", e.Count, e.Skipped, e.Lines)
+	s := api.Snapshot{VPN: true, ListsOn: true, Selected: "t1", Tunnels: []api.TunnelSpec{proxy("t1", "Alpha")},
+		Lists: []api.ListSpec{
+			{Name: "built", Action: rules.Direct, Format: api.FormatRules, Rules: &core.RuleSpec{Mode: "and", DomainSuffix: []string{"example.com"}, Port: []uint16{443}}},
+			{Name: "apps", Action: rules.Block, Format: api.FormatRules, Rules: &core.RuleSpec{Applications: []string{"/Applications/Foo.app"}}},
+			{Name: "shared", Action: rules.Block, Format: api.FormatRuleSet, Data: imported},
+			{Name: "text", Action: rules.Block, Entries: []string{"example.net"}},
+		}}
+	if err := a.Apply(s); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := a.ParseEntries("", []byte("not a rule-set"), api.FormatImport, false); err == nil {
-		t.Error("binary that isn't a rule-set was accepted")
+	c := applied(t, a, f)
+	got := map[string][2]bool{}
+	for _, l := range c.Lists {
+		got[l.Name] = [2]bool{l.Binary, l.Programs}
+	}
+	want := map[string][2]bool{"built": {true, false}, "apps": {true, true}, "shared": {true, false}, "text": {false, false}}
+	for name, w := range want {
+		if got[name] != w {
+			t.Errorf("%s: binary/programs = %v, want %v", name, got[name], w)
+		}
+	}
+	dir := ruleset.Dir(a.host.workDir)
+	if _, err := os.Stat(ruleset.BinaryPath(dir, listID("built"))); err != nil {
+		t.Errorf("no rule-set file for a rules list: %v", err)
+	}
+	if _, err := os.Stat(ruleset.DNSPath(dir, listID("built"))); err != nil {
+		t.Errorf("a direct rules list needs its names-only twin: %v", err)
+	}
+	if _, err := os.Stat(ruleset.DNSPath(dir, listID("apps"))); err == nil {
+		t.Error("a blocking list has a names-only twin")
+	}
+	for name, bad := range map[string]api.ListSpec{
+		"no fields":      {Name: "x", Action: rules.Block, Format: api.FormatRules, Rules: &core.RuleSpec{}},
+		"bad regex":      {Name: "x", Action: rules.Block, Format: api.FormatRules, Rules: &core.RuleSpec{DomainRegex: []string{"["}}},
+		"no rules given": {Name: "x", Action: rules.Block, Format: api.FormatRules},
+		"no data":        {Name: "x", Action: rules.Block, Format: api.FormatRuleSet},
+		"junk data":      {Name: "x", Action: rules.Block, Format: api.FormatRuleSet, Data: []byte("junk")},
+	} {
+		s.Lists = []api.ListSpec{bad}
+		if err := a.Apply(s); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }
 
@@ -591,5 +645,50 @@ func TestApplyBlockQUICReachesTheEngineOnlyWithListsOn(t *testing.T) {
 	}
 	if applied(t, a, f).BlockQUIC {
 		t.Error("BlockQUIC applied with the lists off")
+	}
+}
+
+// Typed list entries reach the engine: a list that names an application turns program lookup on, and only that list's
+// engine config says so.
+func TestApplyTypedEntriesAndProgramLookup(t *testing.T) {
+	a, f := testApp(t)
+	s := api.Snapshot{VPN: true, ListsOn: true, Selected: "t1", Tunnels: []api.TunnelSpec{proxy("t1", "Alpha")},
+		Lists: []api.ListSpec{
+			{Name: "words", Action: rules.Block, Entries: []string{"keyword:tracker", `regexp:^ads[0-9]+\.`, "port:853", "example.com"}},
+			{Name: "apps", Action: rules.Direct, Entries: []string{"app:/Applications/Safari.app", "process:curl"}},
+		}}
+	if err := a.Apply(s); err != nil {
+		t.Fatal(err)
+	}
+	c := applied(t, a, f)
+	if len(c.Lists) != 2 || c.Lists[0].Programs || !c.Lists[1].Programs {
+		t.Errorf("lists = %+v: only the list that names programs turns lookup on", c.Lists)
+	}
+	counts := map[string]int{}
+	for _, l := range a.Status().Lists {
+		counts[l.Name] = l.Entries
+	}
+	if counts["words"] != 4 || counts["apps"] != 2 {
+		t.Errorf("entry counts = %v", counts)
+	}
+	for _, bad := range []string{"keyword:ab", "regexp:.*", "port:99999", "app:relative.app"} {
+		s.Lists[0].Entries = []string{bad}
+		if err := a.Apply(s); err == nil {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+}
+
+func TestCanonEntriesTypedKinds(t *testing.T) {
+	a, _ := testApp(t)
+	got := a.CanonEntries([]string{"KEYWORD:Google", "port:8000-9000", "app:/Applications/Safari.app/", "regexp:[", "# note"})
+	want := []string{"keyword:google", "port:8000-9000", "app:/Applications/Safari.app"}
+	for i, w := range want {
+		if got[i].Entry != w || got[i].Error != "" {
+			t.Errorf("line %d = %+v, want %q", i, got[i], w)
+		}
+	}
+	if got[3].Error == "" || got[4].Entry != "# note" {
+		t.Errorf("a bad pattern must be refused and a note kept: %+v %+v", got[3], got[4])
 	}
 }

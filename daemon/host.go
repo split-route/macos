@@ -43,6 +43,8 @@ type hostList struct {
 	ID, Name string
 	Action   rules.Action
 	Tunnel   string
+	Programs bool // the list names applications or processes: the engine must look up which program owns a connection
+	Binary   bool // the list is a binary rule-set, not entries
 }
 
 // wantedTunnel is a tunnel the user asked to have connected. Its options hold
@@ -106,9 +108,9 @@ type host struct {
 	closed    bool
 }
 
-// defaultBootstrap is the DoH server that finds proxy tunnels' servers when the app chose none. The core's own
-// default is 1.1.1.1; this app's users have it reset on some networks.
-const defaultBootstrap = "8.8.8.8"
+// defaultBootstrap is the DoH server used when none was chosen and none could be asked (the engine is up and nothing
+// was picked at start). Normally the picker chooses: see bootstrap.go.
+const defaultBootstrap = "1.1.1.1"
 
 const (
 	hostSettle = 250 * time.Millisecond
@@ -157,6 +159,13 @@ func (h *host) setVPN(on bool) {
 		}
 	}
 	h.scheduleLocked()
+}
+
+// engineUp is whether the engine is running, and bootstrapNow is the resolver it was last given.
+func (h *host) engineUp() (bool, string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.eng != nil, h.bootstrap
 }
 
 // setBootstrap chooses how proxy tunnels' server names are resolved; a change restarts the engine.
@@ -481,7 +490,7 @@ func (h *host) buildLocked() core.Config {
 		}
 	}
 	for _, l := range h.lists {
-		cl := core.List{ID: l.ID, Name: l.Name, Action: l.Action}
+		cl := core.List{ID: l.ID, Name: l.Name, Action: l.Action, Programs: l.Programs, Binary: l.Binary}
 		if l.Action == rules.Tunnel && l.Tunnel != "" {
 			if id, ok := byName[strings.ToLower(l.Tunnel)]; ok {
 				cl.Tunnel = id

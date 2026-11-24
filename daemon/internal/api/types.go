@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/split-route/core"
 	"github.com/split-route/core/rules"
 )
 
@@ -66,7 +67,7 @@ type Snapshot struct {
 	LoadAll bool `json:"load_all,omitempty"`
 	// KillSwitch blocks all traffic that isn't the engine's while the VPN is on, so a dropped tunnel
 	// can't leak; KillSwitchLAN keeps the local network reachable meanwhile.
-	// Bootstrap is how proxy tunnels' server names are found: "" (DoH to 8.8.8.8, the service's default), a DoH server's IP address, or
+	// Bootstrap is how proxy tunnels' server names are found: "" (automatic: the first of 1.1.1.1, 8.8.8.8 and 9.9.9.9 that answers a DoH query from this network), a DoH server's IP address, or
 	// "system" (the system resolver, for a network that resets DoH).
 	Bootstrap     string       `json:"bootstrap,omitempty"`
 	KillSwitch    bool         `json:"kill_switch,omitempty"`
@@ -104,17 +105,27 @@ const (
 	FormatCustom  = "custom"  // Entries, canonical lines
 	FormatImport  = "import"  // Text: a downloaded list (plain entries, hosts file, domain set)
 	FormatRelease = "release" // Text: a release list file
+	FormatRules   = "rules"   // Rules: a rule built from fields (domain, domain_suffix, port, process_name, ...)
+	FormatRuleSet = "ruleset" // Data: a sing-box binary rule-set, an imported .srs or JSON source, used as it is
 )
 
 // ListSpec is one list, in config order. Tunnel is a tunnel's name (empty: the
 // default tunnel).
 type ListSpec struct {
-	Name    string       `json:"name"`
-	Action  rules.Action `json:"action"`
-	Tunnel  string       `json:"tunnel,omitempty"`
-	Format  string       `json:"format,omitempty"` // "" is custom
-	Entries []string     `json:"entries,omitempty"`
-	Text    string       `json:"text,omitempty"`
+	Name    string         `json:"name"`
+	Action  rules.Action   `json:"action"`
+	Tunnel  string         `json:"tunnel,omitempty"`
+	Format  string         `json:"format,omitempty"` // "" is custom
+	Entries []string       `json:"entries,omitempty"`
+	Text    string         `json:"text,omitempty"`
+	Rules   *core.RuleSpec `json:"rules,omitempty"` // FormatRules
+	Data    []byte         `json:"data,omitempty"`  // FormatRuleSet: base64 in the JSON
+}
+
+// RuleSetInfo is the answer to "check_ruleset": the rule-set as the engine will read it (binary), and how many rules it has.
+type RuleSetInfo struct {
+	Data  []byte `json:"data"`
+	Rules int    `json:"rules"`
 }
 
 const (
@@ -182,8 +193,14 @@ func (s Snapshot) Validate() error {
 			return fmt.Errorf("list %q: action must be direct, block or tunnel, not %q", l.Name, l.Action)
 		case l.Tunnel != "" && l.Action != rules.Tunnel:
 			return fmt.Errorf("list %q: only a tunnel list can name a tunnel", l.Name)
-		case l.Format != "" && l.Format != FormatCustom && l.Format != FormatImport && l.Format != FormatRelease:
+		case l.Format != "" && l.Format != FormatCustom && l.Format != FormatImport && l.Format != FormatRelease && l.Format != FormatRules && l.Format != FormatRuleSet:
 			return fmt.Errorf("list %q: unknown format %q", l.Name, l.Format)
+		case l.Format == FormatRules && l.Rules == nil:
+			return fmt.Errorf("list %q: a rules list needs its rules", l.Name)
+		case l.Format == FormatRuleSet && len(l.Data) == 0:
+			return fmt.Errorf("list %q: a rule-set list needs its rule-set", l.Name)
+		case len(l.Data) > core.MaxRuleSetBytes:
+			return fmt.Errorf("list %q: the rule-set is larger than %d MB", l.Name, core.MaxRuleSetBytes>>20)
 		}
 		lists[l.Name] = true
 	}
@@ -209,7 +226,7 @@ type ListCount struct {
 
 // APIRevision is bumped when the app needs something of the service that an older one would silently ignore (a new
 // snapshot field, say). The app compares it with the one it needs and says the service must be restarted.
-const APIRevision = 9 // 9: block QUIC; 8: .srs lists (parse_entries data); 7: key password for an encrypted OpenVPN key; 6: final route; 5: bootstrap resolver; 4: kill switch (3: OpenVPN tunnels are tested by address)
+const APIRevision = 12 // 12: rules and rule-set lists (check_rules, check_ruleset); 11: keyword, regexp, port, app and process list entries; 10: automatic bootstrap resolver; 9: block QUIC; 8: .srs lists (parse_entries data); 7: key password for an encrypted OpenVPN key; 6: final route; 5: bootstrap resolver; 4: kill switch (3: OpenVPN tunnels are tested by address)
 
 // Status is what the control socket returns for `status`.
 type Status struct {

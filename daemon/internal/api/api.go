@@ -15,7 +15,9 @@
 //
 //	{"cmd": "check_profile", "text": "<.ovpn>"}             → check
 //	{"cmd": "parse_links", "text": "<links or a body>"}     → nodes
-//	{"cmd": "parse_entries", "text": "…" or "data": "<base64 .srs>", "format": "custom|import|release", "want_lines": true}  → entries
+//	{"cmd": "check_rules", "rules": {...}}                   → ok, or the first value that is wrong
+//	{"cmd": "check_ruleset", "data": "<base64 .srs or JSON source>"}  → ruleset (the binary rule-set the engine will read, and its rule count)
+//	{"cmd": "parse_entries", "text": "…", "format": "custom|import|release", "want_lines": true}  → entries
 //	{"cmd": "canon_entries", "lines": ["Example.COM"]}      → canon
 //	{"cmd": "legacy_export"}                                → legacy (root-only files of versions before 0.3)
 package api
@@ -30,6 +32,8 @@ import (
 	"os/user"
 	"strconv"
 	"time"
+
+	"github.com/split-route/core"
 )
 
 // Backend is what the socket needs from the daemon.
@@ -43,7 +47,9 @@ type Backend interface {
 	Test(ids []string) map[string]TestResult
 	CheckProfile(text string) (TunnelCheck, error)
 	ParseLinks(text string) (Nodes, error)
-	ParseEntries(text string, data []byte, format string, wantLines bool) (Entries, error)
+	ParseEntries(text, format string, wantLines bool) (Entries, error)
+	CheckRuleSet(data []byte) (RuleSetInfo, error)
+	CheckRules(spec core.RuleSpec) error
 	CanonEntries(lines []string) []Canon
 	LegacyExport() (LegacyState, error)
 }
@@ -57,12 +63,14 @@ type Request struct {
 	Password string `json:"password,omitempty"`
 
 	Text string `json:"text,omitempty"`
-	// Data is a binary list (a sing-box .srs rule-set) for parse_entries, in place of Text; JSON carries it as base64.
-	Data      []byte   `json:"data,omitempty"`
-	Format    string   `json:"format,omitempty"`
-	WantLines bool     `json:"want_lines,omitempty"`
-	Lines     []string `json:"lines,omitempty"`
-	IDs       []string `json:"ids,omitempty"`
+	// Data is a rule-set (a sing-box .srs, or its JSON source) for check_ruleset; JSON carries it as base64.
+	// Rules is a rule built from fields, for check_rules.
+	Rules     *core.RuleSpec `json:"rules,omitempty"`
+	Data      []byte         `json:"data,omitempty"`
+	Format    string         `json:"format,omitempty"`
+	WantLines bool           `json:"want_lines,omitempty"`
+	Lines     []string       `json:"lines,omitempty"`
+	IDs       []string       `json:"ids,omitempty"`
 }
 
 type Response struct {
@@ -74,6 +82,7 @@ type Response struct {
 	Nodes  *Nodes       `json:"nodes,omitempty"`
 	// Entries and Canon answer the entry parsers.
 	Entries *Entries              `json:"entries,omitempty"`
+	RuleSet *RuleSetInfo          `json:"ruleset,omitempty"`
 	Canon   []Canon               `json:"canon,omitempty"`
 	Legacy  *LegacyState          `json:"legacy,omitempty"`
 	Tests   map[string]TestResult `json:"tests,omitempty"`
@@ -186,8 +195,18 @@ func Respond(b Backend, req Request) Response {
 		}
 	case "parse_entries":
 		var e Entries
-		if e, err = b.ParseEntries(req.Text, req.Data, req.Format, req.WantLines); err == nil {
+		if e, err = b.ParseEntries(req.Text, req.Format, req.WantLines); err == nil {
 			r.Entries = &e
+		}
+	case "check_rules":
+		if req.Rules == nil {
+			return Response{Error: "check_rules needs the rules"}
+		}
+		err = b.CheckRules(*req.Rules)
+	case "check_ruleset":
+		var i RuleSetInfo
+		if i, err = b.CheckRuleSet(req.Data); err == nil {
+			r.RuleSet = &i
 		}
 	case "canon_entries":
 		r.Canon = b.CanonEntries(req.Lines)

@@ -32,7 +32,11 @@ struct RouteList: Codable, Hashable, Identifiable {
     /// Action tunnel only: the tunnel's name; nil means the default tunnel.
     var tunnel: String?
     var custom = false
-    var entries: [String] = []
+    /// A custom list's rule, built from fields (sing-box's own names). Empty for any other list.
+    var rules = RuleSpec()
+    /// The list is a sing-box rule-set kept as it was imported (an .srs or JSON file or address): its bytes are in the
+    /// database, not here. Not stored by `Store.write`: set when the list is read.
+    var ruleSet = false
     /// A short note the user gave a custom list or an import; shown under its title. Nil: none.
     var description: String?
     /// Set for a list downloaded from a URL. Its entries live in the daemon's
@@ -41,14 +45,13 @@ struct RouteList: Codable, Hashable, Identifiable {
     var id: String { name }
 
     enum CodingKeys: String, CodingKey {
-        case name, action, tunnel, custom, entries, description, importSource = "import"
+        case name, action, tunnel, custom, rules, ruleSet = "rule_set", description, importSource = "import"
     }
 
-    init(name: String, action: Action, custom: Bool = false, entries: [String] = []) {
+    init(name: String, action: Action, custom: Bool = false) {
         self.name = name
         self.action = action
         self.custom = custom
-        self.entries = entries
     }
 
     init(from decoder: Decoder) throws {
@@ -57,7 +60,8 @@ struct RouteList: Codable, Hashable, Identifiable {
         action = try c.decode(Action.self, forKey: .action)
         tunnel = try c.decodeIfPresent(String.self, forKey: .tunnel)
         custom = try c.decodeIfPresent(Bool.self, forKey: .custom) ?? false
-        entries = try c.decodeIfPresent([String].self, forKey: .entries) ?? []
+        rules = try c.decodeIfPresent(RuleSpec.self, forKey: .rules) ?? RuleSpec()
+        ruleSet = try c.decodeIfPresent(Bool.self, forKey: .ruleSet) ?? false
         description = try c.decodeIfPresent(String.self, forKey: .description)
         importSource = try c.decodeIfPresent(ImportSource.self, forKey: .importSource)
     }
@@ -68,7 +72,8 @@ struct RouteList: Codable, Hashable, Identifiable {
         try c.encode(action, forKey: .action)
         try c.encodeIfPresent(tunnel, forKey: .tunnel)
         if custom { try c.encode(custom, forKey: .custom) }
-        if !entries.isEmpty { try c.encode(entries, forKey: .entries) }
+        if !rules.isEmpty { try c.encode(rules, forKey: .rules) }
+        if ruleSet { try c.encode(ruleSet, forKey: .ruleSet) }
         try c.encodeIfPresent(description, forKey: .description)
         try c.encodeIfPresent(importSource, forKey: .importSource)
     }
@@ -173,6 +178,8 @@ struct Tunnel: Decodable, Identifiable, Equatable {
     /// How the proxy carries traffic ("WebSocket", "gRPC", "TCP"...), read from its options; nil when it has none.
     var transport: String?
     var remotes: [String]?
+    /// OpenVPN: the server used in place of the profile's ("host" or "host:port"); empty when there is none.
+    var serverOverride = ""
     var needsAuth: Bool
     var keyEncrypted: Bool
     var autoConnect: Bool
@@ -276,19 +283,6 @@ struct TunnelSecrets: Codable, Equatable {
     var username = ""
     var password = ""
     var keyPassword = ""
-}
-
-/// Entry counts of an entries_* edit.
-struct EntryEdit: Decodable, Equatable {
-    var added: Int?
-    var duplicates: Int?
-    var removed: Int?
-    var notFound: [String]?
-    var skipped: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case added, duplicates, removed, notFound = "not_found", skipped
-    }
 }
 
 /// A release list described for people (Go: lists.Info). The name stays the

@@ -25,6 +25,10 @@ struct WireList: Encodable {
     var format: String?
     var entries: [String]?
     var text: String?
+    /// A custom list's rule, built from fields (format "rules").
+    var rules: RuleSpec?
+    /// A rule-set kept as it was imported (format "ruleset"): sing-box's binary file, base64 in the JSON.
+    var data: Data?
 }
 
 struct WireFinal: Encodable {
@@ -123,6 +127,11 @@ struct WireNodes: Decodable {
     var skipped: [SkippedNode]?
 }
 
+struct WireRuleSet: Decodable {
+    var data: Data
+    var rules: Int
+}
+
 struct WireEntries: Decodable {
     var count: Int
     var skipped: Int?
@@ -177,13 +186,14 @@ private struct Request: Encodable {
     var username: String?
     var password: String?
     var text: String?
-    var data: Data? // a binary list (.srs), base64 in the JSON
+    var data: Data? // a rule-set (.srs or JSON source), base64 in the JSON
+    var rules: RuleSpec?
     var format: String?
     var wantLines: Bool?
     var lines: [String]?
     var ids: [String]?
 
-    enum CodingKeys: String, CodingKey { case cmd, apply, id, username, password, text, data, format, wantLines = "want_lines", lines, ids }
+    enum CodingKeys: String, CodingKey { case cmd, apply, id, username, password, text, data, rules, format, wantLines = "want_lines", lines, ids }
 }
 
 private struct Response: Decodable {
@@ -194,6 +204,7 @@ private struct Response: Decodable {
     var check: TunnelCheck?
     var nodes: WireNodes?
     var entries: WireEntries?
+    var ruleset: WireRuleSet?
     var canon: [WireCanon]?
     var legacy: WireLegacy?
     var tests: [String: WireTest]?
@@ -219,7 +230,7 @@ enum DaemonError: LocalizedError, Equatable {
 /// Client for the service's control socket: one JSON request, one JSON response per connection.
 enum Daemon {
     /// The service revision this app needs (Go: api.APIRevision).
-    static let requiredAPIRev = 9
+    static let requiredAPIRev = 12
 
     #if DEBUG
     /// Debug builds: SPLITROUTE_SOCKET points the app at a fake service.
@@ -268,18 +279,27 @@ enum Daemon {
         return e
     }
 
-    /// A sing-box rule-set (.srs): the service reads the binary, as it reads text.
-    static func parseEntries(data: Data, format: String, wantLines: Bool = false) async throws -> WireEntries {
-        guard data.count <= maxBinaryList else { throw DaemonError.failed("This rule-set is larger than \(maxBinaryList >> 20) MB.") }
-        guard let e = try await send(Request(cmd: "parse_entries", data: data, format: format, wantLines: wantLines ? true : nil)).entries else { throw outdated }
-        return e
+    /// A rule-set (sing-box's binary .srs, or its JSON source): the service checks that the engine can run it and answers
+    /// with the binary file, which is what the list keeps. A binary one comes back as it was.
+    static func checkRuleSet(_ data: Data) async throws -> (data: Data, rules: Int) {
+        guard data.count <= maxRuleSet else { throw DaemonError.failed("This rule-set is larger than \(maxRuleSet >> 20) MB.") }
+        guard let r = try await send(Request(cmd: "check_ruleset", data: data)).ruleset else { throw outdated }
+        return (r.data, r.rules)
     }
 
-    /// The service takes requests up to 8 MiB and base64 adds a third.
-    static let maxBinaryList = 5 << 20
+    /// Whether the engine can run a rule built from fields; throws the service's message about the first value that is wrong.
+    static func checkRules(_ spec: RuleSpec) async throws {
+        _ = try await send(Request(cmd: "check_rules", rules: spec))
+    }
 
-    /// A sing-box binary rule-set starts with "SRS".
-    static func isRuleSet(_ d: Data) -> Bool { d.starts(with: [0x53, 0x52, 0x53]) }
+    static let maxRuleSet = 16 << 20
+
+    /// A sing-box binary rule-set starts with "SRS"; the JSON source starts with a brace.
+    static func looksLikeRuleSet(_ d: Data) -> Bool {
+        if d.starts(with: [0x53, 0x52, 0x53]) { return true }
+        let head = d.prefix(64).drop { $0 == 0x20 || $0 == 0x0A || $0 == 0x0D || $0 == 0x09 }
+        return head.first == UInt8(ascii: "{")
+    }
 
     static func canonEntries(_ lines: [String]) async throws -> [WireCanon] {
         guard let c = try await send(Request(cmd: "canon_entries", lines: lines)).canon else { throw outdated }

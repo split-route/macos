@@ -257,7 +257,7 @@ final class AppModel: ObservableObject {
             if let g = t.subscriptionID { counts[g, default: 0] += 1 }
             let ws = service?.tunnels[t.coreID]
             var tn = Tunnel(name: t.name, protocolName: t.kind, group: t.subscriptionID.flatMap { groups[$0] }, warning: t.warning.nilIfEmpty, transport: transport(of: t),
-                            remotes: t.remotes.isEmpty ? nil : t.remotes, needsAuth: t.needsAuth, keyEncrypted: t.keyEncrypted,
+                            remotes: t.remotes.isEmpty ? nil : t.remotes, serverOverride: t.serverOverride, needsAuth: t.needsAuth, keyEncrypted: t.keyEncrypted,
                             autoConnect: t.autoConnect, state: ws?.state ?? .disconnected)
             if let ws { (tn.error, tn.need, tn.localIP, tn.remoteIP, tn.since) = (ws.error?.nilIfEmpty, ws.need?.nilIfEmpty, ws.localIP?.nilIfEmpty, ws.remoteIP?.nilIfEmpty, ws.since) }
             if let why = link.problems[t.coreID] { tn.state = .failed; tn.error = why }

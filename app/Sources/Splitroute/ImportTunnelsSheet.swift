@@ -2,34 +2,58 @@ import AppKit
 import Design
 import SwiftUI
 
-/// Adds tunnels from share links, a subscription address, or a subscription's
-/// contents. An address is a subscription: the service downloads it, keeps the
-/// address (on this Mac, readable only by the service) and groups its tunnels.
-/// Nothing is read from the clipboard until the user asks.
+import UniformTypeIdentifiers
+
+/// How servers are given: pasted, or from a file.
+private enum AddServersTab: String, CaseIterable, Identifiable {
+    case paste = "Paste", file = "From File"
+    var id: String { rawValue }
+}
+
+/// Adds servers from share links, a subscription address, a subscription's contents, a file of any of those, or an
+/// OpenVPN profile (which has its own steps). An address is a subscription: the service downloads it, keeps the address
+/// (on this Mac, readable only by the service) and groups its servers. Nothing is read from the clipboard until the
+/// user asks.
 struct ImportTunnelsSheet: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
-    /// Closes this sheet and opens the OpenVPN profile one.
-    let openProfile: () -> Void
+    /// Closes this sheet and opens the OpenVPN profile one, with the file already chosen when there is one.
+    let openProfile: (URL?) -> Void
 
+    @State private var tab: AddServersTab = .paste
     @State private var text: String
+    @State private var fileURL: URL?
+    @State private var fileText: String?
+    @State private var fileError: String?
+    @State private var choosing = false
+    @State private var dropping = false
     @State private var group = ""
     @State private var working = false
     @State private var error: String?
     @State private var result: AddResult?
     @FocusState private var editing: Bool
 
+    private static let maxFile = 4 << 20
+
     /// The initial text and result are for the debug snapshots; the app opens the sheet empty.
-    init(openProfile: @escaping () -> Void, text: String = "", result: AddResult? = nil) {
+    init(openProfile: @escaping (URL?) -> Void, text: String = "", result: AddResult? = nil) {
         self.openProfile = openProfile
         self._text = State(initialValue: text)
         self._result = State(initialValue: result)
     }
 
-    private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// What will be added: what is typed, or what the file holds.
+    private var payload: String { tab == .paste ? text : (fileText ?? "") }
+    private var trimmed: String { payload.trimmingCharacters(in: .whitespacesAndNewlines) }
     /// One word that starts with http:// or https://.
     private var isAddress: Bool {
         !trimmed.contains(where: \.isWhitespace) && (trimmed.hasPrefix("https://") || trimmed.hasPrefix("http://"))
+    }
+    private var isProfile: Bool { tab == .file && fileURL?.pathExtension.lowercased() == "ovpn" }
+
+    private var canAdd: Bool {
+        if isProfile { return true }
+        return !trimmed.isEmpty && !(isAddress && trimmed.hasPrefix("http://"))
     }
 
     var body: some View {
@@ -37,8 +61,7 @@ struct ImportTunnelsSheet: View {
             if let result { resultView(result) } else if working { workingView } else { inputView }
         }
         .padding(Space.xl)
-        .frame(width: 540)
-        .background(Palette.surface.color)
+        .frame(width: 560)
         .font(TypeScale.body)
         .foregroundStyle(Palette.ink.color)
     }
@@ -47,52 +70,168 @@ struct ImportTunnelsSheet: View {
 
     private var inputView: some View {
         VStack(alignment: .leading, spacing: Space.l) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Add servers").font(TypeScale.title)
-                Text("Paste share links (vless://, vmess://, trojan://, ss://, hysteria2://, tuic://, anytls://), a subscription address, or the contents of a subscription.")
-                    .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
-                    .fixedSize(horizontal: false, vertical: true)
+            header
+            SheetTabs(options: AddServersTab.allCases, selection: $tab)
+            Group {
+                switch tab {
+                case .paste: pasteTab
+                case .file: fileTab
+                }
             }
+            .frame(minHeight: 200, alignment: .top)
+
+            if isAddress { addressNote }
+            if let error { NoteLine(.error, error) }
+
+            HStack(spacing: Space.s) {
+                Spacer()
+                Button("Cancel") { dismiss() }.buttonStyle(OutlineButtonStyle()).keyboardShortcut(.cancelAction)
+                Button(isProfile ? "Continue" : (isAddress ? "Download and add" : "Add")) { primary() }
+                    .buttonStyle(SolidButtonStyle()).keyboardShortcut(.defaultAction)
+                    .opacity(canAdd ? 1 : 0.45).disabled(!canAdd)
+            }
+        }
+        .onAppear { editing = true }
+        .fileImporter(isPresented: $choosing, allowedContentTypes: [.data, .plainText, .json]) { r in
+            switch r {
+            case .success(let u): load(u)
+            case .failure(let e): fileError = e.localizedDescription
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: Space.m) {
+            ZStack {
+                AccentSurface(RoundedRectangle(cornerRadius: Radius.row + 2, style: .continuous))
+                Image(systemName: "shield.lefthalf.filled").font(.system(size: 19, weight: .medium)).foregroundStyle(Color.white)
+            }
+            .frame(width: 42, height: 42)
+            .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Add servers").font(TypeScale.title)
+                Text("Paste links or a subscription, or import a file.")
+                    .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+            }
+        }
+    }
+
+    // MARK: Paste
+
+    private var pasteTab: some View {
+        VStack(alignment: .leading, spacing: Space.m) {
             ZStack(alignment: .topLeading) {
                 TextEditor(text: $text)
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.system(size: 12.5, design: .monospaced))
+                    .lineSpacing(5)
                     .scrollContentBackground(.hidden)
                     .focused($editing)
                     .padding(Space.s)
                     .accessibilityLabel("Links or subscription address")
                 if text.isEmpty {
-                    Text("vless://…\nhttps://example.com/subscription")
-                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(Palette.inkSecondary.color)
+                    // verbatim: Text turns an address in a string into a blue link, and a placeholder is all one color
+                    Text(verbatim: "vless://…\nvmess://…\nhttps://example.com/subscription")
+                        .font(.system(size: 12.5, design: .monospaced)).foregroundStyle(Palette.inkSecondary.color.opacity(0.7))
+                        .lineSpacing(5)
                         .padding(.horizontal, Space.s + 5).padding(.vertical, Space.s + 8).allowsHitTesting(false)
                 }
             }
-            .frame(height: 140)
-            .background(Palette.ground.color, in: RoundedRectangle(cornerRadius: Radius.control))
-            .overlay(RoundedRectangle(cornerRadius: Radius.control)
-                .stroke(editing ? Palette.ink.color : Palette.hairline.color, lineWidth: editing ? 2 : 1))
+            .frame(height: 138)
+            .background(Glass.fill, in: RoundedRectangle(cornerRadius: Radius.row))
+            .overlay(RoundedRectangle(cornerRadius: Radius.row)
+                .stroke(editing ? Accent.color.opacity(0.9) : Glass.stroke, lineWidth: editing ? 1.5 : 1))
+            .animation(.easeOut(duration: 0.15), value: editing)
 
-            HStack {
-                Button("Paste from clipboard") {
-                    if let s = NSPasteboard.general.string(forType: .string) { text = s }
+            HStack(spacing: Space.m) {
+                Button { if let s = NSPasteboard.general.string(forType: .string) { text = s } } label: {
+                    Label("Paste from clipboard", systemImage: "doc.on.clipboard")
                 }
                 .buttonStyle(OutlineButtonStyle())
+                if let seen = Self.recognized(text) {
+                    Label(seen, systemImage: "checkmark.circle.fill").font(TypeScale.secondary).foregroundStyle(Palette.success.color)
+                        .transition(.opacity)
+                }
                 Spacer()
             }
-
-            if isAddress { addressNote }
-            if let error { NoteLine(.error, error) }
-
-            HStack {
-                Button("Import an OpenVPN profile instead", action: openProfile)
-                    .buttonStyle(.plain).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
-                Spacer()
-                Button("Cancel") { dismiss() }.buttonStyle(OutlineButtonStyle()).keyboardShortcut(.cancelAction)
-                Button(isAddress ? "Download and add" : "Add") { Task { await add() } }
-                    .buttonStyle(SolidButtonStyle()).keyboardShortcut(.defaultAction)
-                    .disabled(trimmed.isEmpty || (isAddress && trimmed.hasPrefix("http://")))
-            }
+            .animation(.easeOut(duration: 0.15), value: Self.recognized(text))
+            Text("Share links: vless://, vmess://, trojan://, ss://, hysteria2://, tuic://, anytls://. A subscription address starts with https://.")
+                .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .onAppear { editing = true }
+    }
+
+    /// What the typed text looks like, said back to the person: a quiet check that the paste worked.
+    private static func recognized(_ text: String) -> String? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return nil }
+        if !t.contains(where: \.isWhitespace), t.hasPrefix("https://") || t.hasPrefix("http://") { return "A subscription address" }
+        let schemes = ["vless://", "vmess://", "trojan://", "ss://", "hysteria2://", "hy2://", "tuic://", "anytls://"]
+        let links = t.split(whereSeparator: \.isNewline).filter { l in schemes.contains { l.trimmingCharacters(in: .whitespaces).hasPrefix($0) } }.count
+        if links > 0 { return plural(links, "share link") }
+        if t.hasPrefix("{") { return "A sing-box configuration" }
+        return nil
+    }
+
+    // MARK: From file
+
+    private var fileTab: some View {
+        VStack(alignment: .leading, spacing: Space.m) {
+            VStack(spacing: Space.s) {
+                if let url = fileURL {
+                    Image(systemName: isProfile ? "lock.shield" : "doc.text").font(.system(size: 30, weight: .light)).foregroundStyle(Accent.color)
+                    Text(url.lastPathComponent).font(TypeScale.heading).lineLimit(1).truncationMode(.middle)
+                    Text(isProfile ? "An OpenVPN profile. The next step asks for its name and sign-in."
+                                   : (Self.recognized(fileText ?? "") ?? "A file of servers"))
+                        .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                    Button("Choose Another…") { choosing = true }.buttonStyle(OutlineButtonStyle()).padding(.top, 4)
+                } else {
+                    Image(systemName: "arrow.down.doc").font(.system(size: 30, weight: .light))
+                        .foregroundStyle(dropping ? Accent.color : Palette.inkSecondary.color)
+                    Text("Drop a file here").font(TypeScale.heading)
+                    Text("A subscription, a list of share links, a sing-box configuration (.json) or an OpenVPN profile (.ovpn)")
+                        .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color).multilineTextAlignment(.center)
+                    Button("Choose File…") { choosing = true }.buttonStyle(OutlineButtonStyle()).padding(.top, 4)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 170)
+            .padding(Space.l)
+            .background(dropping ? Accent.color.opacity(0.10) : Glass.fill, in: RoundedRectangle(cornerRadius: Radius.row))
+            .overlay(RoundedRectangle(cornerRadius: Radius.row)
+                .strokeBorder(dropping ? Accent.color : Glass.stroke, style: StrokeStyle(lineWidth: 1.5, dash: fileURL == nil ? [6, 5] : []))) 
+            .animation(.easeOut(duration: 0.15), value: dropping)
+            .onDrop(of: [.fileURL], isTargeted: $dropping) { providers in
+                guard let p = providers.first else { return false }
+                _ = p.loadObject(ofClass: URL.self) { url, _ in
+                    if let url { DispatchQueue.main.async { load(url) } }
+                }
+                return true
+            }
+            if let fileError { NoteLine(.error, fileError) }
+        }
+    }
+
+    private func load(_ url: URL) {
+        fileError = nil
+        fileText = nil
+        fileURL = url
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        if url.pathExtension.lowercased() == "ovpn" { return } // read by the OpenVPN steps
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size <= Self.maxFile else {
+            fileError = "This file is \(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)); the limit is 4 MB."
+            return
+        }
+        guard let data = try? Data(contentsOf: url), let s = String(data: data, encoding: .utf8) else {
+            fileError = "This isn't a text file (UTF-8)."
+            return
+        }
+        fileText = s
+    }
+
+    private func primary() {
+        if isProfile { openProfile(fileURL); return }
+        Task { await add() }
     }
 
     /// What an address means: it becomes a group, and the address is private.
@@ -106,8 +245,8 @@ struct ImportTunnelsSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: Space.s) {
                     Text("Group name").font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
-                    TextField(URL(string: trimmed)?.host ?? "Subscription", text: $group)
-                        .textFieldStyle(.roundedBorder).labelsHidden()
+                    TextField(URL(string: trimmed)?.host ?? "Subscription", text: $group, prompt: Text(URL(string: trimmed)?.host ?? "Subscription"))
+                        .labelsHidden().fieldBox().frame(maxWidth: 260)
                         .accessibilityLabel("Group name")
                 }
             }
@@ -145,7 +284,8 @@ struct ImportTunnelsSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading).padding(Space.m)
             }
             .frame(maxHeight: 180)
-            .background(Palette.ground.color, in: RoundedRectangle(cornerRadius: Radius.control))
+            .background(Glass.fill, in: RoundedRectangle(cornerRadius: Radius.row))
+            .overlay(RoundedRectangle(cornerRadius: Radius.row).stroke(Glass.stroke, lineWidth: 1))
         }
         HStack {
             Spacer()
@@ -173,7 +313,7 @@ struct ImportTunnelsSheet: View {
         error = nil
         working = true
         let name = group.trimmingCharacters(in: .whitespaces)
-        let r = await model.addTunnels(text: isAddress ? nil : text, url: isAddress ? trimmed : nil, name: name)
+        let r = await model.addTunnels(text: isAddress ? nil : payload, url: isAddress ? trimmed : nil, name: name)
         working = false
         switch r {
         case .success(let res): result = res

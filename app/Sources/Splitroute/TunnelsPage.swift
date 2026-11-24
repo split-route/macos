@@ -7,6 +7,8 @@ import SwiftUI
 struct TunnelsPage: View {
     @EnvironmentObject private var model: AppModel
     @State private var importing = false
+    /// An OpenVPN profile chosen in the Add servers dialog, handed to the profile dialog.
+    @State private var profileFile: URL?
     @State private var adding = false
     @State private var promptFor: Tunnel?
     @State private var renaming: Tunnel?
@@ -79,16 +81,17 @@ struct TunnelsPage: View {
             }
         }
         .sheet(isPresented: $importing) {
-            ImportTunnelsSheet(openProfile: {
+            ImportTunnelsSheet(openProfile: { file in
+                profileFile = file
                 importing = false
                 DispatchQueue.main.async { adding = true }
-            }).environmentObject(model)
+            }).environmentObject(model).glassSheet()
         }
-        .sheet(isPresented: $adding) { AddTunnelSheet().environmentObject(model) }
-        .sheet(item: $promptFor) { t in CredentialsSheet(tunnel: t).environmentObject(model) }
-        .sheet(item: $renaming) { t in RenameTunnelSheet(tunnel: t).environmentObject(model) }
-        .sheet(item: $logsFor) { t in TunnelLogSheet(tunnel: t).environmentObject(model) }
-        .sheet(item: $editingGroup) { g in SubscriptionEditSheet(subscription: g).environmentObject(model) }
+        .sheet(isPresented: $adding, onDismiss: { profileFile = nil }) { AddTunnelSheet(initialFile: profileFile).environmentObject(model).glassSheet() }
+        .sheet(item: $promptFor) { t in EditServerSheet(tunnel: t).environmentObject(model).glassSheet() }
+        .sheet(item: $renaming) { t in RenameTunnelSheet(tunnel: t).environmentObject(model).glassSheet() }
+        .sheet(item: $logsFor) { t in TunnelLogSheet(tunnel: t).environmentObject(model).glassSheet() }
+        .sheet(item: $editingGroup) { g in SubscriptionEditSheet(subscription: g).environmentObject(model).glassSheet() }
         .confirmationDialog("Remove \(confirmRemove?.name ?? "")?", isPresented: Binding(
             get: { confirmRemove != nil }, set: { if !$0 { confirmRemove = nil } }
         ), presenting: confirmRemove) { t in
@@ -359,8 +362,7 @@ struct TunnelsPage: View {
                 .accessibilityHint("Use this server for all traffic that no list names")
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
                 Menu {
-                    Button("Credentials…") { promptFor = t }
-                        .disabled(!t.needsAuth && !t.keyEncrypted)
+                    if t.protocolName == "openvpn" { Button("Edit…") { promptFor = t } }
                     Button("Show Log…") { logsFor = t }
                     Button("Rename…") { renaming = t }
                     Divider()
@@ -404,7 +406,7 @@ struct TunnelsPage: View {
     private func detail(_ t: Tunnel) -> String {
         // Like Shadowrocket: the protocol and its transport, not the server's address. OpenVPN keeps its remote.
         let base = t.protocolName == "openvpn"
-            ? [t.protocolLabel, t.remotes?.first].compactMap { $0 }.joined(separator: ", ")
+            ? [t.protocolLabel, t.serverOverride.nilIfEmpty ?? t.remotes?.first].compactMap { $0 }.joined(separator: ", ")
             : [t.protocolLabel, t.transport].compactMap { $0 }.joined(separator: " / ")
         switch t.state {
         case .needsAuth: return t.need == "key" ? "Needs the private key password" : "Needs a username and password"
@@ -421,56 +423,99 @@ struct TunnelsPage: View {
     }
 }
 
-/// Asks for a tunnel's username, password and private key password, and optionally
-/// keeps them in the Keychain. Connects when confirmed (or just saves, if already running).
-struct CredentialsSheet: View {
+/// Edits an OpenVPN server: its sign-in (username, password, private key password, saved in the Keychain if asked) and
+/// the server it connects to in place of the profile's, like the server override of OpenVPN's own app. It is also what
+/// opens when a server needs its credentials to connect.
+struct EditServerSheet: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     let tunnel: Tunnel
     @State private var secrets = TunnelSecrets()
     @State private var remember = true
+    @State private var server = ""
+    @State private var error: String?
+    @State private var working = false
+
+    private var asksForCredentials: Bool { tunnel.needsAuth || tunnel.keyEncrypted || tunnel.need == "key" }
+    /// Connecting needs the credentials the profile asks for.
+    private var canConnect: Bool { !working && (!asksForCredentials || !secrets.isEmpty) }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                Section {
-                    if tunnel.needsAuth {
-                        TextField("Username", text: $secrets.username)
-                        SecureField("Password", text: $secrets.password)
+        VStack(alignment: .leading, spacing: Space.l) {
+            header
+            Panel {
+                if tunnel.needsAuth {
+                    FormRow("Username") { TextField("Username", text: $secrets.username).labelsHidden().fieldBox().frame(maxWidth: 280) }
+                    Hairline()
+                    FormRow("Password") { SecureField("Password", text: $secrets.password).labelsHidden().fieldBox().frame(maxWidth: 280) }
+                    Hairline()
+                }
+                if tunnel.keyEncrypted || tunnel.need == "key" {
+                    FormRow("Key password", detail: "Opens the profile's private key.") {
+                        SecureField("Private key password", text: $secrets.keyPassword).labelsHidden().fieldBox().frame(maxWidth: 280)
                     }
-                    if tunnel.keyEncrypted || tunnel.need == "key" {
-                        SecureField("Private key password", text: $secrets.keyPassword)
+                    Hairline()
+                }
+                FormRow("Server", detail: "Replaces the server in the profile. Leave it empty to use the profile's.") {
+                    TextField("Server", text: $server, prompt: Text(tunnel.remotes?.first ?? "host:port")).labelsHidden()
+                        .font(.system(size: 12.5, design: .monospaced)).fieldBox().frame(maxWidth: 280)
+                        .accessibilityLabel("Server override")
+                }
+                if asksForCredentials {
+                    Hairline()
+                    FormRow("Save in the Keychain") {
+                        Toggle("Save in the Keychain", isOn: $remember).labelsHidden().toggleStyle(.switch).tint(Accent.color)
                     }
-                    Toggle("Save in the Keychain", isOn: $remember)
-                } header: {
-                    Text("Credentials for \(tunnel.name)").font(.headline)
-                } footer: {
-                    Text("Sent to the service to connect and kept in its memory only while the server is on.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            .formStyle(.grouped)
-            SheetButtons {
-                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(tunnel.isActive ? "Save" : "Connect") {
-                    let s = secrets
-                    let r = remember
-                    Task {
-                        if tunnel.isActive {
-                            await model.answerCredentials(tunnel, secrets: s, remember: r)
-                        } else {
-                            await model.connectTunnel(tunnel, secrets: s, remember: r)
-                        }
-                    }
-                    dismiss()
+            if asksForCredentials {
+                Label("Credentials are sent to the service to connect and kept in its memory only while the server is on.", systemImage: "lock.fill")
+                    .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color).fixedSize(horizontal: false, vertical: true)
+            }
+            if let error { NoteLine(.error, error) }
+            HStack(spacing: Space.s) {
+                Spacer()
+                Button("Cancel") { dismiss() }.buttonStyle(OutlineButtonStyle()).keyboardShortcut(.cancelAction)
+                if !tunnel.isActive {
+                    Button("Save") { Task { await save(connect: false) } }.buttonStyle(OutlineButtonStyle()).disabled(working)
                 }
-                .keyboardShortcut(.defaultAction)
-                .prominent()
-                .disabled(secrets.isEmpty)
+                Button(tunnel.isActive ? "Save" : "Connect") { Task { await save(connect: !tunnel.isActive) } }
+                    .buttonStyle(SolidButtonStyle()).keyboardShortcut(.defaultAction)
+                    .opacity(tunnel.isActive || canConnect ? 1 : 0.45).disabled(!tunnel.isActive && !canConnect || working)
             }
         }
-        .frame(width: 440)
-        .onAppear { secrets = TunnelKeychain.load(tunnel.name) ?? TunnelSecrets() }
+        .padding(Space.xl)
+        .frame(width: 520)
+        .font(TypeScale.body)
+        .foregroundStyle(Palette.ink.color)
+        .onAppear {
+            secrets = TunnelKeychain.load(tunnel.name) ?? TunnelSecrets()
+            server = tunnel.serverOverride
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: Space.m) {
+            ZStack {
+                AccentSurface(RoundedRectangle(cornerRadius: Radius.row + 2, style: .continuous))
+                Image(systemName: "lock.shield").font(.system(size: 19, weight: .medium)).foregroundStyle(Color.white)
+            }
+            .frame(width: 42, height: 42)
+            .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Edit \(tunnel.name)").font(TypeScale.title).lineLimit(1)
+                Text("OpenVPN, \(tunnel.serverOverride.nilIfEmpty ?? tunnel.remotes?.first ?? "no server")")
+                    .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color).lineLimit(1)
+            }
+        }
+    }
+
+    private func save(connect: Bool) async {
+        working = true
+        defer { working = false }
+        let s: TunnelSecrets? = asksForCredentials && !secrets.isEmpty ? secrets : nil
+        error = await model.saveServerEdit(tunnel, secrets: s, remember: remember, serverOverride: server, connect: connect)
+        if error == nil { dismiss() }
     }
 }
 
@@ -559,31 +604,44 @@ struct SubscriptionEditSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                TextField("Name", text: $name)
-                TextField("Address", text: $url, prompt: Text(savedURL == nil ? "Reading…" : "https://"), axis: .vertical)
-                    .lineLimit(1...4).disabled(savedURL == nil)
-                    .accessibilityLabel("Subscription address")
+        VStack(alignment: .leading, spacing: Space.l) {
+            header
+            VStack(alignment: .leading, spacing: Space.m) {
+                labeled("Name") {
+                    TextField("Name", text: $name, prompt: Text("Subscription")).labelsHidden().fieldBox()
+                        .accessibilityLabel("Name")
+                }
+                labeled("Address", trailing: AnyView(
+                    Button { copyAddress() } label: { Label("Copy", systemImage: "doc.on.doc").font(TypeScale.secondary) }
+                        .buttonStyle(.plain).foregroundStyle(Palette.inkSecondary.color)
+                        .disabled(savedURL == nil).accessibilityLabel("Copy the address")
+                )) {
+                    TextField("Address", text: $url, prompt: Text(savedURL == nil ? "Reading…" : "https://"), axis: .vertical)
+                        .labelsHidden().lineLimit(3...6).font(.system(size: 12, design: .monospaced))
+                        .fieldBox().disabled(savedURL == nil)
+                        .accessibilityLabel("Subscription address")
+                }
                 if trimmedURL.hasPrefix("http://") {
                     NoteLine(.error, "Subscriptions must use https://, because the address carries your token.")
-                }
-                Text("The address stays on this Mac. Saving it does not download anything: use the update button.")
-                    .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
-                Section {
-                    Button("Remove subscription…", role: .destructive) { confirmRemove = true }
-                        .disabled(working)
+                } else {
+                    Label("The address carries your token. It stays on this Mac, where only the service can read it, and saving it downloads nothing: use the update button.", systemImage: "lock.fill")
+                        .labelStyle(NoteLabelStyle())
                 }
             }
-            .formStyle(.grouped)
-            SheetButtons(error: error) {
-                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+            dangerZone
+            if let error { NoteLine(.error, error) }
+            HStack(spacing: Space.s) {
+                Spacer()
+                Button("Cancel") { dismiss() }.buttonStyle(OutlineButtonStyle()).keyboardShortcut(.cancelAction)
                 Button("Save") { Task { await save() } }
-                    .keyboardShortcut(.defaultAction).prominent()
-                    .disabled(!changed || trimmedName.isEmpty || trimmedURL.isEmpty || working)
+                    .buttonStyle(SolidButtonStyle()).keyboardShortcut(.defaultAction)
+                    .opacity(canSave ? 1 : 0.45).disabled(!canSave)
             }
         }
-        .frame(width: 480)
+        .padding(Space.xl)
+        .frame(width: 520)
+        .font(TypeScale.body)
+        .foregroundStyle(Palette.ink.color)
         .task {
             name = subscription.name
             switch await model.groupURL(subscription.name) {
@@ -596,6 +654,56 @@ struct SubscriptionEditSheet: View {
         } message: {
             Text("Its \(plural(subscription.tunnels, "server")) and the saved address are deleted. A list that uses one of them must be moved to another server first.")
         }
+    }
+
+    private var canSave: Bool { changed && !trimmedName.isEmpty && !trimmedURL.isEmpty && !working }
+
+    private var header: some View {
+        HStack(spacing: Space.m) {
+            ZStack {
+                AccentSurface(RoundedRectangle(cornerRadius: Radius.row + 2, style: .continuous))
+                Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 18, weight: .medium)).foregroundStyle(Color.white)
+            }
+            .frame(width: 42, height: 42)
+            .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Edit subscription").font(TypeScale.title)
+                Text(subtitle).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color).lineLimit(1)
+            }
+        }
+    }
+
+    /// "15 servers, updated 2 hours ago".
+    private var subtitle: String {
+        var parts = [plural(subscription.tunnels, "server")]
+        if let d = parseGoTime(subscription.updatedAt) { parts.append("updated \(relative(d))") }
+        return parts.joined(separator: ", ")
+    }
+
+    private func labeled<C: View>(_ title: String, trailing: AnyView? = nil, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title).font(TypeScale.bodyStrong)
+                Spacer()
+                if let trailing { trailing }
+            }
+            content()
+        }
+    }
+
+    /// Removing is apart from the fields, in its own panel, and asks again.
+    private var dangerZone: some View {
+        Panel {
+            FormRow("Remove subscription", detail: "Deletes its \(plural(subscription.tunnels, "server")) and the saved address.") {
+                Button("Remove…", role: .destructive) { confirmRemove = true }
+                    .buttonStyle(OutlineButtonStyle()).foregroundStyle(Palette.danger.color).disabled(working)
+            }
+        }
+    }
+
+    private func copyAddress() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
     }
 
     private func save() async {
@@ -612,5 +720,16 @@ struct SubscriptionEditSheet: View {
         defer { working = false }
         error = await model.removeGroup(subscription.name)
         if error == nil { dismiss() }
+    }
+}
+
+
+/// A line of small print with its icon at the start.
+private struct NoteLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            configuration.icon.font(.system(size: 10)).foregroundStyle(Palette.inkSecondary.color)
+            configuration.title.font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color).fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

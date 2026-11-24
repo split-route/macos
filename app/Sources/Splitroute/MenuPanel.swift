@@ -1,4 +1,5 @@
 import AppKit
+import Design
 import SwiftUI
 
 /// The menu bar icon's panel. Not an NSPopover: a popover can't be made to appear over an app in full screen and its
@@ -28,7 +29,6 @@ final class MenuBarPanel: NSObject {
         panel.hasShadow = true
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.appearance = NSAppearance(named: .darkAqua)
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         // Every Space, and over a full-screen app's Space too.
@@ -36,7 +36,7 @@ final class MenuBarPanel: NSObject {
         let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
         let root = content { [weak self] size in self?.resize(to: size) }
             .clipShape(shape)
-            .overlay(shape.stroke(Color.white.opacity(0.12), lineWidth: 1))
+            .overlay(shape.stroke(Glass.stroke, lineWidth: 1))
         panel.contentView = NSHostingView(rootView: root)
     }
 

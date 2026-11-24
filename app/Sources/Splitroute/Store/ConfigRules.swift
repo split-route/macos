@@ -66,7 +66,7 @@ extension Config {
                Config.releaseName.firstMatch(in: n, range: NSRange(n.startIndex..., in: n)) == nil {
                 throw StoreError("Invalid list name \"\(n)\".")
             }
-            if !l.custom && !l.entries.isEmpty { throw StoreError("List \"\(n)\": only custom lists have entries.") }
+            if !l.custom && !l.rules.isEmpty { throw StoreError("List \"\(n)\": only custom lists have rules of their own.") }
             if let t = l.tunnel, !t.isEmpty {
                 if l.action != .tunnel { throw StoreError("List \"\(n)\": only a server list can name a server.") }
                 if t.utf8.count > Config.maxNameLength || t.trimmingCharacters(in: .whitespaces) != t {
@@ -79,9 +79,6 @@ extension Config {
                 if let h = im.refreshHours, h < 0 || h > Config.maxRefreshHours {
                     throw StoreError("List \"\(n)\": refresh must be 1-\(Config.maxRefreshHours) hours.")
                 }
-            }
-            if l.entries.count > Config.maxEntries {
-                throw StoreError("List \"\(n)\" has \(l.entries.count) lines; the limit is \(Config.maxEntries) entries.")
             }
         }
     }
@@ -187,79 +184,14 @@ extension Config {
         return i
     }
 
-    /// Appends canonical lines to a custom list. Entries already there are skipped; "#" lines are notes for the entry
-    /// after them.
-    func addingEntries(_ name: String, _ lines: [String]) throws -> (Config, EntryEdit) {
+    /// Sets a custom list's rule. The service checks every value when the list is applied, and the editor asks it before
+    /// saving, so what reaches here is already known good.
+    func settingRules(_ name: String, _ spec: RuleSpec) throws -> Config {
         let i = try customIndex(name)
-        var ed = EntryEdit()
-        var have = Set(lists[i].entries.filter { !$0.hasPrefix("#") && !$0.isEmpty })
-        var entries = lists[i].entries
-        var notes: [String] = []
-        var added = 0, dups = 0
-        for raw in lines {
-            let l = raw.trimmingCharacters(in: .whitespaces)
-            if l.isEmpty { continue }
-            if l.hasPrefix("#") { notes.append(l); continue }
-            if !have.insert(l).inserted { dups += 1; notes = []; continue }
-            entries += notes + [l]
-            notes = []
-            added += 1
-        }
-        if have.count > Config.maxEntries {
-            throw StoreError("List \"\(name)\" would have \(have.count) entries; the limit is \(Config.maxEntries) (use an import for big lists).")
-        }
-        ed.added = added == 0 ? nil : added
-        ed.duplicates = dups == 0 ? nil : dups
         var c = self
-        c.lists[i].entries = entries
+        c.lists[i].rules = spec
         try c.validate()
-        return (c, ed)
-    }
-
-    /// Replaces a custom list's entries as adding them to an empty list would. "#" notes after the last entry are kept.
-    func settingEntries(_ name: String, _ lines: [String]) throws -> (Config, EntryEdit) {
-        let i = try customIndex(name)
-        var c = self
-        c.lists[i].entries = []
-        var (out, ed) = try c.addingEntries(name, lines)
-        var tail: [String] = []
-        for raw in lines.reversed() {
-            let l = raw.trimmingCharacters(in: .whitespaces)
-            if l.isEmpty { continue }
-            if !l.hasPrefix("#") { break }
-            tail.insert(l, at: 0)
-        }
-        out.lists[i].entries += tail
-        ed.skipped = nil
-        return (out, ed)
-    }
-
-    /// Removes canonical lines from a custom list, with the "#" notes just before them.
-    func removingEntries(_ name: String, _ lines: [String]) throws -> (Config, EntryEdit) {
-        let i = try customIndex(name)
-        var ed = EntryEdit()
-        var drop: [String: String] = [:]
-        for raw in lines {
-            let l = raw.trimmingCharacters(in: .whitespaces)
-            if l.isEmpty || l.hasPrefix("#") { continue }
-            drop[l] = l
-        }
-        var out: [String] = [], notes: [String] = []
-        var removed = 0
-        for l in lists[i].entries {
-            let t = l.trimmingCharacters(in: .whitespaces)
-            if t.hasPrefix("#") || t.isEmpty { notes.append(l); continue }
-            if drop.removeValue(forKey: t) != nil { removed += 1; notes = []; continue }
-            out += notes + [l]
-            notes = []
-        }
-        out += notes
-        ed.removed = removed == 0 ? nil : removed
-        ed.notFound = drop.isEmpty ? nil : drop.values.sorted()
-        var c = self
-        c.lists[i].entries = out
-        try c.validate()
-        return (c, ed)
+        return c
     }
 }
 
@@ -271,9 +203,15 @@ enum Entries {
 
     private static let ipv4 = try! NSRegularExpression(pattern: #"^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$"#)
 
-    /// The kind of a canonical entry line: `full:name`, `AS123`, an address or range, or a domain with its subdomains.
+    /// The typed entries: the line starts with its kind, and the stored value is what follows.
+    private static let typed: [(prefix: String, kind: String)] = [
+        ("full:", "domain"), ("keyword:", "keyword"), ("regexp:", "regex"), ("port:", "port"), ("app:", "app"), ("process:", "process"),
+    ]
+
+    /// The kind of a canonical entry line: a typed entry (`full:`, `keyword:`, `regexp:`, `port:`, `app:`, `process:`),
+    /// `AS123`, an address or range, or a domain with its subdomains.
     static func kind(_ line: String) -> String {
-        if line.hasPrefix("full:") { return "domain" }
+        if let t = typed.first(where: { line.hasPrefix($0.prefix) }) { return t.kind }
         if line.hasPrefix("AS"), line.dropFirst(2).allSatisfy(\.isNumber), line.count > 2 { return "asn" }
         if line.contains(":") || ipv4.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil { return "cidr" }
         return "domain_suffix"
@@ -281,20 +219,15 @@ enum Entries {
 
     /// The stored value: the line without its kind marker.
     static func value(_ line: String) -> String {
-        switch kind(line) {
-        case "domain": return String(line.dropFirst(5))
-        case "asn": return String(line.dropFirst(2))
-        default: return line
-        }
+        if let t = typed.first(where: { line.hasPrefix($0.prefix) }) { return String(line.dropFirst(t.prefix.count)) }
+        if kind(line) == "asn" { return String(line.dropFirst(2)) }
+        return line
     }
 
     /// The line a stored entry reads back as.
     static func text(kind: String, value: String) -> String {
-        switch kind {
-        case "domain": return "full:" + value
-        case "asn": return "AS" + value
-        default: return value
-        }
+        if let t = typed.first(where: { $0.kind == kind }) { return t.prefix + value }
+        return kind == "asn" ? "AS" + value : value
     }
 
     static func noteLines(_ note: String) -> [String] {
@@ -315,7 +248,7 @@ enum Entries {
                 continue
             }
             let k = kind(l), v = value(l)
-            guard v.utf8.count >= 1, v.utf8.count <= 253 else { throw StoreError("\"\(l)\" is not a valid entry.") }
+            guard v.utf8.count >= 1, v.utf8.count <= 1024 else { throw StoreError("\"\(l)\" is not a valid entry.") }
             if seen.insert(k + " " + v).inserted {
                 out.append(Row(kind: k, value: v, note: pending.joined(separator: "\n")))
                 pending = []

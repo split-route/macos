@@ -105,24 +105,24 @@ public enum Contrast {
     }
 }
 
-/// The dark glass look: panels are a faint light over the backdrop with a bright edge, not solid fills. Light
-/// appearance keeps solid surfaces.
+/// The glass look: panels are a faint tint over the backdrop with an edge, not solid fills. Dark: a faint light on
+/// a dark backdrop. Light: a milky white on a light backdrop, with dark rules.
 public enum Glass {
     private static func dynamic(light: NSColor, dark: NSColor) -> Color {
         Color(nsColor: NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light })
     }
     /// A panel's fill.
-    public static var fill: Color { dynamic(light: NSColor(hex: 0xFFFFFF), dark: NSColor.white.withAlphaComponent(0.06)) }
+    public static var fill: Color { dynamic(light: NSColor.white.withAlphaComponent(0.55), dark: NSColor.white.withAlphaComponent(0.06)) }
     /// A panel's edge.
-    public static var stroke: Color { dynamic(light: NSColor(hex: 0xD5DAE1), dark: NSColor.white.withAlphaComponent(0.11)) }
+    public static var stroke: Color { dynamic(light: NSColor.black.withAlphaComponent(0.10), dark: NSColor.white.withAlphaComponent(0.11)) }
     /// A small control on a panel (the round buttons).
-    public static var control: Color { dynamic(light: NSColor(hex: 0xEDF0F3), dark: NSColor.white.withAlphaComponent(0.09)) }
+    public static var control: Color { dynamic(light: NSColor.black.withAlphaComponent(0.06), dark: NSColor.white.withAlphaComponent(0.09)) }
     /// A rule between rows: neutral, so it never tints the glass.
-    public static var divider: Color { dynamic(light: NSColor(hex: 0xD5DAE1), dark: NSColor.white.withAlphaComponent(0.09)) }
+    public static var divider: Color { dynamic(light: NSColor.black.withAlphaComponent(0.08), dark: NSColor.white.withAlphaComponent(0.09)) }
     /// A header row inside a panel.
-    public static var header: Color { dynamic(light: NSColor(hex: 0xEDF0F3), dark: NSColor.white.withAlphaComponent(0.04)) }
+    public static var header: Color { dynamic(light: NSColor.black.withAlphaComponent(0.04), dark: NSColor.white.withAlphaComponent(0.04)) }
     /// The sidebar's fill.
-    public static var sidebar: Color { dynamic(light: NSColor(hex: 0xEDF0F3), dark: NSColor.white.withAlphaComponent(0.03)) }
+    public static var sidebar: Color { dynamic(light: NSColor.white.withAlphaComponent(0.25), dark: NSColor.white.withAlphaComponent(0.03)) }
 }
 
 /// The accent color (SwiftUI's "tint"): selected things, switches, primary buttons. A clear blue.
@@ -172,18 +172,20 @@ public struct LiquidSelection<S: InsettableShape>: View {
     }
 }
 
-/// A glass layer: the desktop behind the window, blurred by `material`, then darkened by `darkness`. The window must
+/// A glass layer: the desktop behind the window, blurred by `material`, then darkened (frosted in light) by `darkness`. The window must
 /// be non-opaque. A bluer wallpaper tints it a little; nothing behind it can be read at the content's setting.
 public struct Backdrop: View {
     let material: NSVisualEffectView.Material
     let darkness: Double
+    @Environment(\.colorScheme) private var scheme
     public init(material: NSVisualEffectView.Material = .hudWindow, darkness: Double = 0.45) {
         self.material = material; self.darkness = darkness
     }
     public var body: some View {
         ZStack {
             VisualEffect(material: material)
-            Color.black.opacity(darkness)
+            // Dark: shade it. Light: frost it, a little less than the shade so the wallpaper still tints it.
+            if scheme == .dark { Color.black.opacity(darkness) } else { Color.white.opacity(darkness * 0.7) }
         }
         .ignoresSafeArea()
         .accessibilityHidden(true)
@@ -198,7 +200,6 @@ struct VisualEffect: NSViewRepresentable {
         v.material = material
         v.blendingMode = .behindWindow
         v.state = .active
-        v.appearance = NSAppearance(named: .darkAqua)
         return v
     }
 

@@ -98,4 +98,76 @@ enum OvpnProfile {
         if has { out.append(cur) }
         return out
     }
+
+    // MARK: Server override
+
+    /// A server as typed: "host", "host:port" or "[v6 address]:port". The port is nil when none was given.
+    struct Server: Equatable {
+        var host: String
+        var port: Int?
+    }
+
+    /// Reads a server override, or says what is wrong with it. Empty is no override (nil).
+    static func parseServer(_ spec: String) throws -> Server? {
+        let s = spec.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.isEmpty { return nil }
+        var host = s
+        var port: Int?
+        if s.hasPrefix("[") {
+            guard let close = s.firstIndex(of: "]") else { throw InlineError(errorDescription: "\"\(s)\": a bracketed IPv6 address needs its closing ].") }
+            host = String(s[s.index(after: s.startIndex)..<close])
+            let rest = s[s.index(after: close)...]
+            if !rest.isEmpty {
+                guard rest.hasPrefix(":"), let p = Int(rest.dropFirst()) else { throw InlineError(errorDescription: "\"\(s)\": write [address]:port.") }
+                port = p
+            }
+        } else if s.filter({ $0 == ":" }).count == 1, let c = s.firstIndex(of: ":") {
+            host = String(s[..<c])
+            guard let p = Int(s[s.index(after: c)...]) else { throw InlineError(errorDescription: "\"\(s)\": the port after the colon must be a number.") }
+            port = p
+        } // more than one colon without brackets is a bare IPv6 address
+        if let p = port, !(1...65535).contains(p) { throw InlineError(errorDescription: "The port must be from 1 to 65535.") }
+        var v6 = in6_addr()
+        let isAddress = host.withCString { inet_pton(AF_INET6, $0, &v6) } == 1
+        let name = try! NSRegularExpression(pattern: #"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$"#)
+        guard isAddress || name.firstMatch(in: host, range: NSRange(host.startIndex..., in: host)) != nil else {
+            throw InlineError(errorDescription: "\"\(host)\" is not a host name or an address.")
+        }
+        return Server(host: host, port: port)
+    }
+
+    /// The profile with its `remote` lines replaced by the one server given, as OpenVPN's own app does it. The port and
+    /// protocol of the profile's first remote are kept when the override has none of its own. The rest is untouched.
+    static func overridingServer(_ profile: String, with spec: String) throws -> String {
+        guard let server = try parseServer(spec) else { return profile }
+        var out: [String] = []
+        var first: [String]?
+        var at: Int?
+        var block: String?
+        for raw in profile.components(separatedBy: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces.union(.init(charactersIn: "\r")))
+            if let b = block {
+                out.append(raw)
+                if line == "</\(b)>" { block = nil }
+                continue
+            }
+            if line.hasPrefix("<"), line.hasSuffix(">"), !line.hasPrefix("</"), line != "<connection>" {
+                block = String(line.dropFirst().dropLast())
+                out.append(raw)
+                continue
+            }
+            let args = tokens(line)
+            if args.first == "remote", !line.hasPrefix("#"), !line.hasPrefix(";") {
+                if first == nil { first = Array(args.dropFirst()); at = out.count }
+                continue // every remote is replaced by the one
+            }
+            out.append(raw)
+        }
+        guard let first else { throw InlineError(errorDescription: "The profile has no remote line to override.") }
+        let port = server.port.map(String.init) ?? (first.count > 1 ? first[1] : "1194")
+        var line = "remote \(server.host) \(port)"
+        if first.count > 2 { line += " \(first[2])" }
+        out.insert(line, at: at ?? 0)
+        return out.joined(separator: "\n")
+    }
 }
