@@ -141,6 +141,21 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(try s.config().blockQUIC)
     }
 
+    /// A proxy server that is not the active one is loaded but idle (the service says disconnected); it still carries a
+    /// list's traffic, so it is not "down". An OpenVPN server that says disconnected is.
+    func testWhichServersCountAsUp() {
+        func server(_ protocolName: String, _ state: TunnelState) -> Tunnel {
+            Tunnel(name: "x", protocolName: protocolName, group: nil, warning: nil, transport: nil, remotes: nil, needsAuth: false,
+                   keyEncrypted: false, autoConnect: false, state: state)
+        }
+        XCTAssertTrue(AppModel.isUp(server("vless", .disconnected), engineRunning: true))
+        XCTAssertFalse(AppModel.isUp(server("vless", .disconnected), engineRunning: false), "no engine, nothing carries traffic")
+        XCTAssertFalse(AppModel.isUp(server("openvpn", .disconnected), engineRunning: true))
+        XCTAssertTrue(AppModel.isUp(server("openvpn", .connected), engineRunning: true))
+        XCTAssertTrue(AppModel.isUp(server("vless", .ready), engineRunning: true))
+        for s in [TunnelState.failed, .needsAuth, .connecting] { XCTAssertFalse(AppModel.isUp(server("vless", s), engineRunning: true)) }
+    }
+
     func testListRulesRefuseWhatTheyMust() throws {
         let c = Config.initial
         XCTAssertThrowsError(try c.enablingRelease("ir-cidr", .direct)) // twice
