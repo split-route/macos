@@ -49,7 +49,9 @@ jobs:
           security import "$RUNNER_TEMP/id.p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign >/dev/null
           security set-key-partition-list -S apple-tool:,apple: -s -k "$pw" "$kc" >/dev/null
           rm -f "$RUNNER_TEMP/id.p12"
-          echo "SIGN_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+          # In the search list, not passed with codesign --keychain: on the macOS 26 runner that finds no identity for a
+          # self-signed certificate (see signing-check), while the search list does.
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | sed 's/"//g')
 
       # The DMG tool's Python environment is the same every time; the image version is in the key because the
       # environment points at the image's Python.
