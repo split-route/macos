@@ -2,7 +2,14 @@ name: ci
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "LICENSE"]
   pull_request:
+    paths-ignore: ["**.md", "LICENSE"]
+
+# A newer push to the same branch or pull request makes the older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   TAGS: with_gvisor,with_quic,with_utls,with_wireguard,with_openvpn
@@ -18,11 +25,23 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: daemon/go.mod
+          # go.sum is in daemon/, not at the root where setup-go looks: without this nothing is cached.
+          cache-dependency-path: daemon/go.sum
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go vet -tags $TAGS ./...
       - run: go test -race ./...
       - run: go test -race -tags $TAGS ./...
+      # The release builds the service exactly like this. Building it here on every push also fills the build cache
+      # (a tag's run can only restore caches made on main), so the release compiles sing-box from cache, not from scratch.
+      - name: Build the release binaries
+        env:
+          CGO_ENABLED: "0"
+          GOOS: darwin
+        run: |
+          for arch in arm64 amd64; do
+            GOARCH=$arch go build -trimpath -tags $TAGS -o /dev/null .
+          done
 
   app:
     # The app uses macOS 26 APIs (Liquid Glass), so it needs the macOS 26 SDK.

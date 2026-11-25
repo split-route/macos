@@ -17,6 +17,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: daemon/go.mod
+          # go.sum is in daemon/, not at the root where setup-go looks: without this nothing is cached. A tag's run restores
+          # the cache that CI filled on main (it builds the service with the same flags).
+          cache-dependency-path: daemon/go.sum
 
       - name: Version
         id: v
@@ -25,12 +28,8 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           case "$version" in *-*) echo "pre=true" >> "$GITHUB_OUTPUT" ;; *) echo "pre=false" >> "$GITHUB_OUTPUT" ;; esac
 
-      # The release builds against the published core (go.mod), never a sibling checkout.
-      - name: Test the service
-        working-directory: daemon
-        env:
-          GOWORK: "off"
-        run: go test -race ./...
+      # No test step: CI already ran the tests on this commit when it was pushed to main. Tag a commit CI has passed.
+      # The build below still uses the published core (go.mod), never a sibling checkout.
 
       # The app is signed with the self-signed certificate from scripts/make-signing-cert.sh, so every release has the same
       # identity (an ad-hoc one changes with every build). Secrets: SIGNING_P12_BASE64 (`base64 -i backup.p12`) and
@@ -51,6 +50,16 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$pw" "$kc" >/dev/null
           rm -f "$RUNNER_TEMP/id.p12"
           echo "SIGN_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+
+      # The DMG tool's Python environment is the same every time; the image version is in the key because the
+      # environment points at the image's Python.
+      - name: Image version
+        id: image
+        run: echo "version=$ImageVersion" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: .build/dmgbuild-venv
+          key: dmgbuild-1.6.7-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}
 
       - name: Build the app and the DMG
         env:
