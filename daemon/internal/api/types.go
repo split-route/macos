@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -226,7 +227,7 @@ type ListCount struct {
 
 // APIRevision is bumped when the app needs something of the service that an older one would silently ignore (a new
 // snapshot field, say). The app compares it with the one it needs and says the service must be restarted.
-const APIRevision = 12 // 12: rules and rule-set lists (check_rules, check_ruleset); 11: keyword, regexp, port, app and process list entries; 10: automatic bootstrap resolver; 9: block QUIC; 8: .srs lists (parse_entries data); 7: key password for an encrypted OpenVPN key; 6: final route; 5: bootstrap resolver; 4: kill switch (3: OpenVPN tunnels are tested by address)
+const APIRevision = 13 // 13: test methods (tcp, icmp, connect with a URL and a timeout); 12: rules and rule-set lists (check_rules, check_ruleset); 11: keyword, regexp, port, app and process list entries; 10: automatic bootstrap resolver; 9: block QUIC; 8: .srs lists (parse_entries data); 7: key password for an encrypted OpenVPN key; 6: final route; 5: bootstrap resolver; 4: kill switch (3: OpenVPN tunnels are tested by address)
 
 // Status is what the control socket returns for `status`.
 type Status struct {
@@ -301,6 +302,53 @@ type Canon struct {
 	Line  string `json:"line"`
 	Entry string `json:"entry,omitempty"`
 	Error string `json:"error,omitempty"`
+}
+
+// Test methods: connect times one request through the tunnel; tcp and icmp time the tunnel's own server, outside it.
+const (
+	TestConnect = "connect"
+	TestTCP     = "tcp"
+	TestICMP    = "icmp"
+)
+
+// TestOptions is how the app wants a test done. The zero value is a connect test to the service's own address.
+type TestOptions struct {
+	Method string // "" is connect
+	// URL is the address a connect test requests; empty is the service's own (an IP address for OpenVPN tunnels, whose
+	// name would be looked up through the selected tunnel). https only: anything else is refused.
+	URL       string
+	TimeoutMS int // 0 is the default; clamped to MinTestTimeout..MaxTestTimeout
+}
+
+const (
+	MinTestTimeout = time.Second
+	MaxTestTimeout = 30 * time.Second
+	maxTestURLLen  = 2048
+)
+
+// Validate refuses a method it doesn't know and an address that isn't plain https.
+func (o TestOptions) Validate() error {
+	switch o.Method {
+	case "", TestConnect, TestTCP, TestICMP:
+	default:
+		return fmt.Errorf("unknown test method %q", o.Method)
+	}
+	if o.URL == "" {
+		return nil
+	}
+	u, err := url.Parse(o.URL)
+	if err != nil || len(o.URL) > maxTestURLLen || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+		return errors.New("the test address must be an https address")
+	}
+	return nil
+}
+
+// Timeout is the time one test may take: def when none was asked, else the request clamped to the allowed range.
+func (o TestOptions) Timeout(def time.Duration) time.Duration {
+	if o.TimeoutMS <= 0 {
+		return def
+	}
+	return min(max(time.Duration(o.TimeoutMS)*time.Millisecond, MinTestTimeout), MaxTestTimeout)
 }
 
 // TestResult is one tunnel's connectivity test: the time of one request through it in

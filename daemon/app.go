@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/split-route/core"
 	"github.com/split-route/core/ruleset"
 	"github.com/split-route/macos/daemon/internal/api"
 )
@@ -41,9 +42,10 @@ type app struct {
 
 	restart chan struct{} // exit, so the service manager starts the updated binary
 
-	applyMu   sync.Mutex // one Apply at a time
-	listsSig  string     // fingerprint of the lists last written, so a repeated snapshot rewrites nothing
-	mu        sync.Mutex // below
+	applyMu   sync.Mutex               // one Apply at a time
+	listsSig  string                   // fingerprint of the lists last written, so a repeated snapshot rewrites nothing
+	mu        sync.Mutex               // below
+	endpoints map[string]core.Endpoint // every tunnel's server by ID, as the last snapshot said (a TCP or ping test needs no engine)
 	counts    []api.ListCount
 	listWarn  []string
 	appliedAt time.Time

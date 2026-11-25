@@ -7,7 +7,7 @@
 //	{"cmd": "status"}                                       → status
 //	{"cmd": "apply", "apply": {...}}                        the desired state (see Snapshot)
 //	{"cmd": "answer", "id": "t3", "username": "…", "password": "…"}   answers a running tunnel's challenge
-//	{"cmd": "test", "ids": ["t1"]}                          → tests (one request through each loaded tunnel)
+//	{"cmd": "test", "ids": ["t1"], "method": "connect|tcp|icmp", "url": "https://…", "timeout_ms": 5000}  → tests (a request through each loaded tunnel, or a connect or ping to its server)
 //	{"cmd": "logs"}                                         → logs (the engine's last lines)
 //	{"cmd": "restart"}                                      the service exits; launchd starts the updated binary
 //
@@ -43,8 +43,9 @@ type Backend interface {
 	Answer(id string, c Credentials) error
 	Logs() []string
 	Restart() error
-	// Test measures each tunnel (by ID) with one request through it. The address is the daemon's, not the socket's.
-	Test(ids []string) map[string]TestResult
+	// Test measures each tunnel (by ID): one request through it, or a TCP connect or ping to its server. The options are
+	// validated before the call (https only for a request's address).
+	Test(ids []string, o TestOptions) map[string]TestResult
 	CheckProfile(text string) (TunnelCheck, error)
 	ParseLinks(text string) (Nodes, error)
 	ParseEntries(text, format string, wantLines bool) (Entries, error)
@@ -71,6 +72,10 @@ type Request struct {
 	WantLines bool           `json:"want_lines,omitempty"`
 	Lines     []string       `json:"lines,omitempty"`
 	IDs       []string       `json:"ids,omitempty"`
+	// Method, URL and TimeoutMS are the options of "test" (see TestOptions).
+	Method    string `json:"method,omitempty"`
+	URL       string `json:"url,omitempty"`
+	TimeoutMS int    `json:"timeout_ms,omitempty"`
 }
 
 type Response struct {
@@ -178,7 +183,10 @@ func Respond(b Backend, req Request) Response {
 		}
 		err = b.Answer(req.ID, Credentials{User: req.Username, Pass: req.Password, HaveAuth: req.Username != "" || req.Password != ""})
 	case "test":
-		r.Tests = b.Test(req.IDs)
+		o := TestOptions{Method: req.Method, URL: req.URL, TimeoutMS: req.TimeoutMS}
+		if err = o.Validate(); err == nil {
+			r.Tests = b.Test(req.IDs, o)
+		}
 	case "logs":
 		r.Logs = b.Logs()
 	case "restart":

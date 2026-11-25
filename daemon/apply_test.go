@@ -396,7 +396,7 @@ func TestTestMeasuresLoadedTunnelsAndTimesOutTheRest(t *testing.T) {
 	a, f := testApp(t)
 	a.host.testTimeout = 200 * time.Millisecond
 	s := api.Snapshot{VPN: true, Selected: "t1", Tunnels: []api.TunnelSpec{proxy("t1", "Alpha"), proxy("t2", "Beta"), ovpn("t3", "Work")}}
-	if got := a.Test([]string{"t1"}); got["t1"].Error != "The VPN is off" {
+	if got := a.Test([]string{"t1"}, api.TestOptions{}); got["t1"].Error != "The VPN is off" {
 		t.Errorf("the VPN is off: %+v", got)
 	}
 	if err := a.Apply(s); err != nil {
@@ -409,7 +409,7 @@ func TestTestMeasuresLoadedTunnelsAndTimesOutTheRest(t *testing.T) {
 	eng.testErrs = map[string]error{"t2": errors.New("dial tcp 203.0.113.9:443: connect: connection refused")}
 	eng.mu.Unlock()
 	a.host.testTimeout = 2 * time.Second
-	got := a.Test([]string{"t1", "t2", "t3", "t9"})
+	got := a.Test([]string{"t1", "t2", "t3", "t9"}, api.TestOptions{})
 	if got["t1"].MS != 120 || got["t1"].Error != "" {
 		t.Errorf("t1 = %+v", got["t1"])
 	}
@@ -474,7 +474,7 @@ func TestTestUsesAnAddressForOpenVPN(t *testing.T) {
 	eng.mu.Lock()
 	eng.tests = map[string]time.Duration{"t1": time.Millisecond, "t3": time.Millisecond}
 	eng.mu.Unlock()
-	a.Test([]string{"t1", "t3"})
+	a.Test([]string{"t1", "t3"}, api.TestOptions{})
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
 	if !strings.Contains(eng.testLinks["t1"], "cloudflare.com") || strings.Contains(eng.testLinks["t3"], "cloudflare.com") || !strings.HasPrefix(eng.testLinks["t3"], "http://1.1.1.1") {

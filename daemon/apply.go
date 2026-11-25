@@ -229,6 +229,7 @@ func entriesOf(format string, entries []string, text string) (rules.Entries, lis
 // off, the desired tunnels while it is on. A tunnel that failed is not tried
 // again here (retrying bad credentials locks accounts); Retry does that.
 func (a *app) reconcile(s api.Snapshot) {
+	a.rememberEndpoints(s.Tunnels)
 	byID := map[string]bool{}
 	for _, t := range s.Tunnels {
 		byID[t.ID] = true
@@ -348,8 +349,13 @@ func checkProfile(text []byte) (openvpn.Profile, error) {
 	return p, nil
 }
 
-// Test measures the tunnels the app names (see host.test).
-func (a *app) Test(ids []string) map[string]api.TestResult { return a.host.test(ids) }
+// Test measures the tunnels the app names: a request through each (host.test) or a connect or ping to its server (probe.go).
+func (a *app) Test(ids []string, o api.TestOptions) map[string]api.TestResult {
+	if o.Method == api.TestTCP || o.Method == api.TestICMP {
+		return a.probe(ids, o)
+	}
+	return a.host.test(ids, o)
+}
 
 // Answer gives a running tunnel the credentials of a challenge it is waiting for.
 func (a *app) Answer(id string, c api.Credentials) error {

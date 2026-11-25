@@ -639,7 +639,8 @@ const (
 // test measures the tunnels the engine has loaded, a few at a time, OpenVPN included
 // (its endpoint dials like an outbound). A tunnel that isn't loaded says so: an OpenVPN
 // tunnel no list names is never started just to be tested, it would open a session.
-func (h *host) test(ids []string) map[string]api.TestResult {
+func (h *host) test(ids []string, o api.TestOptions) map[string]api.TestResult {
+	timeout := o.Timeout(h.testTimeout)
 	h.mu.Lock()
 	eng := h.eng
 	loaded := map[string]string{} // tunnel ID → the address to request
@@ -647,6 +648,9 @@ func (h *host) test(ids []string) map[string]api.TestResult {
 		loaded[w.id] = testURL
 		if w.protocol == "openvpn" {
 			loaded[w.id] = testURLOpenVPN
+		}
+		if o.URL != "" { // validated by the API: https only
+			loaded[w.id] = o.URL
 		}
 	}
 	h.mu.Unlock()
@@ -670,7 +674,7 @@ func (h *host) test(ids []string) map[string]api.TestResult {
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
-			ctx, cancel := context.WithTimeout(context.Background(), h.testTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 			d, err := eng.Test(ctx, id, link)
 			r := api.TestResult{MS: int(d.Milliseconds())}

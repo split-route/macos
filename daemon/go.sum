@@ -328,8 +328,8 @@ github.com/sagernet/ws v0.0.0-20231204124109-acfe8907c854 h1:6uUiZcDRnZSAegryaUG
 github.com/sagernet/ws v0.0.0-20231204124109-acfe8907c854/go.mod h1:LtfoSK3+NG57tvnVEHgcuBW9ujgE8enPSgzgwStwCAA=
 github.com/smallstep/pkcs7 v0.1.1 h1:x+rPdt2W088V9Vkjho4KtoggyktZJlMduZAtRHm68LU=
 github.com/smallstep/pkcs7 v0.1.1/go.mod h1:dL6j5AIz9GHjVEBTXtW+QliALcgM19RtXaTeyxI+AfA=
-github.com/split-route/core v0.4.0 h1:aD1elm92oetVcl/BXx+JuyxjPunvAp0xr7PjHXFNuv0=
-github.com/split-route/core v0.4.0/go.mod h1:QtD1GgVKpgZeP+zihiPRLiZ2CeYqoQOSrYiZ4Ihu6sA=
+github.com/split-route/core v0.5.0 h1:9uEQfv9sKeecAJydsVJpyrXN00T5owWu5F/NcxnCwPg=
+github.com/split-route/core v0.5.0/go.mod h1:QtD1GgVKpgZeP+zihiPRLiZ2CeYqoQOSrYiZ4Ihu6sA=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
 github.com/stretchr/testify v1.12.0 h1:K6Mr6jO9JICuend/5xzTM03ydSV3vdNRYAdPSukj8uI=
