@@ -194,7 +194,7 @@ private struct GlassSidebar: View {
                             .opacity(commandHeld ? 1 : 0)
                             .animation(.easeOut(duration: 0.12), value: commandHeld)
                     }
-                    .padding(.vertical, 11).padding(.horizontal, Space.m)
+                    .padding(.vertical, 7).padding(.horizontal, Space.m)
                     .background {
                         if on {
                             RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Accent.color)

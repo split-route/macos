@@ -79,7 +79,7 @@ public struct SidebarSectionTitle: View {
     public init(_ title: String) { self.title = title }
     public var body: some View {
         Text(title).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
-            .padding(.horizontal, Space.m).padding(.top, Space.m).padding(.bottom, 2)
+            .padding(.horizontal, Space.m).padding(.top, Space.xl).padding(.bottom, 4)
             .accessibilityAddTraits(.isHeader)
     }
 }
@@ -133,7 +133,7 @@ public struct Sidebar: View {
                         Spacer()
                     }
                     .foregroundStyle(on ? Color.white : Palette.inkSecondary.color)
-                    .padding(.vertical, 15).padding(.horizontal, Space.m)
+                    .padding(.vertical, 8).padding(.horizontal, Space.m)
                     .background {
                         if on {
                             // One highlight that moves, not one that disappears and another that appears.
