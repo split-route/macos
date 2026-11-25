@@ -10,9 +10,6 @@ struct SettingsPage: View {
     @AppStorage(Prefs.autoCheckUpdates) private var autoCheck = true
     @AppStorage(Prefs.autoDownloadUpdates) private var autoDownload = true
 
-    private static let repo = URL(string: "https://github.com/split-route/macos")!
-    private static let releases = URL(string: "https://github.com/split-route/macos/releases")!
-    private static let rules = URL(string: "https://github.com/split-route/routing-rules")!
     @AppStorage(Theme.key) private var theme = Theme.system.rawValue
     private static let quitLabels = ["": "Ask", "turnOff": "Disconnect", "keep": "Keep it on"]
 
@@ -41,31 +38,53 @@ struct SettingsPage: View {
 
     private func toggle(_ title: String, isOn: Binding<Bool>) -> some View { settingsSwitch(title, isOn: isOn) }
 
-    /// Check, Download (with its progress) or Install, whichever fits where the update is.
-    @ViewBuilder private var updateAction: some View {
+    /// The newer version: where it is (not downloaded, downloading with its percentage, ready), and the button for the next step.
+    private func newVersionRow(_ r: AppUpdate.Release) -> some View {
         let blocked = model.updateBlockedReason
-        if let r = model.newerRelease, blocked == nil, r.zip != nil {
-            if model.stagedUpdate == r.version {
-                Button("Install…") { model.confirmingInstall = true }.buttonStyle(SolidButtonStyle())
-            } else if case .running(let p)? = model.updateDownload {
+        let ready = model.stagedUpdate == r.version
+        var detail = "Not downloaded yet."
+        var detailColor = Palette.inkSecondary.color
+        if case .failed(let why)? = model.updateDownload { (detail, detailColor) = (why, Palette.danger.color) }
+        else if case .running(let p)? = model.updateDownload { detail = "Downloading… " + (p.map { "\(Int($0 * 100))%" } ?? "") }
+        else if ready { detail = "Downloaded and checked against this app's signature." }
+        else if let blocked { detail = blocked } else if r.zip == nil { detail = "This release has no app archive to download." }
+        return HStack(alignment: .center, spacing: Space.l) {
+            VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text(p.map { "\(Int($0 * 100))%" } ?? "Downloading…").font(TypeScale.secondary).monospacedDigit()
+                    Circle().fill(Palette.success.color).frame(width: 8, height: 8).accessibilityHidden(true)
+                    Text(ready ? "\(r.version) is ready to install" : "\(r.version) is available").font(TypeScale.bodyStrong).foregroundStyle(Palette.success.color)
                 }
-            } else {
-                Button("Download") { Task { await model.downloadUpdate() } }.buttonStyle(SolidButtonStyle())
+                Text(detail).font(TypeScale.secondary).foregroundStyle(detailColor).fixedSize(horizontal: false, vertical: true)
             }
+            Spacer(minLength: Space.m)
+            // One height for every state (a button, a progress bar): the row doesn't jump when the download starts.
+            HStack(spacing: Space.m) {
+                if case .running(let p)? = model.updateDownload {
+                    HStack(spacing: Space.s) {
+                        if let p { ProgressView(value: p).frame(width: 120) } else { ProgressView().controlSize(.small) }
+                        Text(p.map { "\(Int($0 * 100))%" } ?? "").font(TypeScale.secondary).monospacedDigit().frame(width: 36, alignment: .trailing)
+                    }
+                } else {
+                    if blocked != nil || r.zip == nil {
+                        // Nothing to download here: the release page is the way to update.
+                        Link("Open release page", destination: r.page).font(TypeScale.bodyStrong)
+                    } else if ready {
+                        Button("Install…") { model.confirmingInstall = true }.buttonStyle(SolidButtonStyle())
+                    } else {
+                        Button("Download") { Task { await model.downloadUpdate() } }.buttonStyle(SolidButtonStyle())
+                    }
+                }
+            }
+            .frame(height: 40)
         }
-        Button("Check for updates") { Task { await model.checkForUpdate(manual: true) } }
-            .buttonStyle(OutlineButtonStyle()).disabled(model.checkingUpdate)
+        .padding(.vertical, Space.m).padding(.horizontal, Space.l)
     }
 
-    /// What to say under the Version row: why an update can't be installed here, a failure, or the result of a check.
-    private var updateNote: (text: String, error: Bool)? {
-        if case .failed(let why)? = model.updateDownload { return (why, true) }
-        if model.newerRelease != nil, let why = model.updateBlockedReason { return (why, false) }
-        if let n = model.updateCheckNote { return (n, n.hasPrefix("Couldn't")) }
-        return nil
+    /// What the last check came to, beside its button: green for up to date, red for a failure.
+    private var checkResult: (text: String, color: Color)? {
+        guard let n = model.updateCheckNote else { return nil }
+        if n.hasPrefix("Couldn't") { return (n, Palette.danger.color) }
+        return (n, n == "Splitroute is up to date." ? Palette.success.color : Palette.inkSecondary.color)
     }
 
     // MARK: Warnings
@@ -143,25 +162,18 @@ struct SettingsPage: View {
         Panel {
             FormRow("Version", detail: AppModel.appVersion + (model.status.map { $0.version != AppModel.appVersion ? ", service \($0.version)" : "" } ?? "")) {
                 HStack(spacing: Space.m) {
-                    if let r = model.newerRelease {
-                        HStack(spacing: 6) {
-                            Circle().fill(Palette.success.color).frame(width: 8, height: 8)
-                            Link(model.stagedUpdate == r.version ? "\(r.version) is ready" : "\(r.version) is available", destination: r.page)
-                                .font(TypeScale.bodyStrong)
-                        }
-                        .accessibilityElement(children: .combine)
+                    if let r = checkResult {
+                        Text(r.text).font(TypeScale.secondary).foregroundStyle(r.color).lineLimit(2).multilineTextAlignment(.trailing)
+                            .frame(maxWidth: 280, alignment: .trailing).help(r.text)
                     }
                     if model.checkingUpdate { ProgressView().controlSize(.small) }
-                    updateAction
+                    Button("Check for updates") { Task { await model.checkForUpdate(manual: true) } }
+                        .buttonStyle(OutlineButtonStyle()).disabled(model.checkingUpdate)
                 }
             }
-            if let note = updateNote {
-                Group {
-                    if note.error { NoteLine(.error, note.text) } else {
-                        Text(note.text).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Space.l).padding(.bottom, Space.m)
+            if let r = model.newerRelease {
+                Hairline()
+                newVersionRow(r)
             }
             Hairline()
             FormRow("Check for updates automatically", detail: "Once a day, Splitroute asks GitHub for the latest version while it runs.") {
@@ -174,20 +186,6 @@ struct SettingsPage: View {
             FormRow("Download updates automatically", detail: "When the daily check finds a newer version, download it so it is ready to install. It is checked against this app's signature, and nothing is installed until you choose to.") {
                 settingsSwitch("Download updates automatically", isOn: $autoDownload).disabled(!autoCheck)
             }
-            Hairline()
-            FormRow("Updates", detail: "With Homebrew: brew upgrade --cask splitroute. Otherwise download the DMG from the releases page.") {
-                Link("Releases", destination: Self.releases).font(TypeScale.bodyStrong)
-            }
-            Hairline()
-            FormRow("Source code", detail: "github.com/split-route/macos") {
-                Link("Open", destination: Self.repo).font(TypeScale.bodyStrong)
-            }
-            Hairline()
-            FormRow("Lists", detail: "github.com/split-route/routing-rules") {
-                Link("Open", destination: Self.rules).font(TypeScale.bodyStrong)
-            }
-            Hairline()
-            ValueRow("License", "GPL-3.0")
         }
     }
 }

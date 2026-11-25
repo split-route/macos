@@ -168,7 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             w.setContentSize(NSSize(width: 936, height: 630))
             w.center()
             w.setFrameAutosaveName("Settings4") // a new name, so the default size below applies once
-            w.contentMinSize = NSSize(width: 760, height: 500)
+            w.contentMinSize = NSSize(width: 936, height: 630) // the default size: never smaller
             if #available(macOS 26, *) {
                 // A window with a toolbar gets the inset traffic lights of macOS 26 (as on the floating sidebar), placed
                 // and hit-tested by AppKit. The toolbar is empty and invisible: it only changes where the lights sit.

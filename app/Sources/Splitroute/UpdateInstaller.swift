@@ -13,6 +13,9 @@ enum UpdateInstaller {
 
     /// Why this copy of the app can't update itself, or nil when it can.
     static func blockedReason(bundle: URL = Bundle.main.bundleURL) -> String? {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["SPLITROUTE_FAKE_UPDATE"] != nil { return nil } // so the buttons show
+        #endif
         if bundle.path.contains("/AppTranslocation/") { return "Move Splitroute to your Applications folder first." }
         if ["/opt/homebrew/Caskroom/splitroute", "/usr/local/Caskroom/splitroute"].contains(where: { FileManager.default.fileExists(atPath: $0) }) {
             return "Installed with Homebrew: run brew upgrade --cask splitroute."

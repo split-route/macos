@@ -119,6 +119,9 @@ extension AppModel {
 
     /// Asks GitHub for the latest release. A manual check says what it found, including "up to date" and failures.
     func checkForUpdate(manual: Bool) async {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["SPLITROUTE_FAKE_UPDATE"] != nil { return } // keep the fake: a real check would clear it
+        #endif
         guard !checkingUpdate else { return }
         checkingUpdate = true
         updateAttempt = Date()
@@ -151,6 +154,14 @@ extension AppModel {
         if let d = UserDefaults.standard.data(forKey: Self.foundKey), let r = try? JSONDecoder().decode(AppUpdate.Release.self, from: d),
            AppUpdate.isNewer(r.version, than: Self.appVersion) { newerRelease = r } else { rememberRelease(nil) }
         stagedUpdate = UpdateInstaller.ready(current: Self.appVersion)
+        #if DEBUG
+        // SPLITROUTE_FAKE_UPDATE=9.9.9 shows an update as found (and SPLITROUTE_FAKE_STAGED=1 as downloaded), to see the screens.
+        if let v = ProcessInfo.processInfo.environment["SPLITROUTE_FAKE_UPDATE"] {
+            let base = "https://github.com/split-route/macos/releases/download/v\(v)/\(AppUpdate.zipName(v))"
+            newerRelease = AppUpdate.Release(version: v, page: AppUpdate.releasesPage, zip: URL(string: base), zipSHA256: URL(string: base + ".sha256"))
+            if ProcessInfo.processInfo.environment["SPLITROUTE_FAKE_STAGED"] != nil { stagedUpdate = v }
+        }
+        #endif
     }
 
     /// Turning checks off forgets what was found.

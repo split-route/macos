@@ -15,7 +15,7 @@ struct SettingsView: View {
         }
         .font(TypeScale.body)
         .foregroundStyle(Palette.ink.color)
-        .frame(minWidth: 820, minHeight: 520)
+        .frame(minWidth: 936, minHeight: 630)
         .onAppear { if model.settingsVisible { model.traffic.start() } }
         .onChange(of: model.settingsVisible) { _, open in if open { model.traffic.start() } else { model.traffic.stop() } }
     }
