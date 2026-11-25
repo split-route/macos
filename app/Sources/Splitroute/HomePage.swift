@@ -30,6 +30,18 @@ struct HomePage: View {
 
 
 
+    private var serverText: String {
+        guard let t = model.selectedTunnel else { return "None selected" }
+        return (Flags.prefix(for: [t.name, t.group]).map { $0 + " " } ?? "") + t.name
+    }
+
+    /// The address the world sees through the server, with its country's flag; a dash until it is known.
+    private var ipText: String {
+        guard connected else { return "—" }
+        guard let i = model.exitInfo else { return model.exitLookupFailed ? "Unavailable" : "Looking up…" }
+        return (i.code.map { Flags.emoji(code: $0) + " " } ?? "") + i.ip
+    }
+
     private var killSwitch: (text: String, dot: Color) {
         guard model.killSwitchOn else { return ("Off", Palette.inkSecondary.color.opacity(0.5)) }
         return model.killSwitchArmed ? ("Active", Palette.success.color) : ("Not active", Palette.warning.color)
@@ -53,12 +65,11 @@ struct HomePage: View {
                              isOn: Binding(get: { model.killSwitchOn }, set: { on in Task { await model.setKillSwitch(on: on) } }), pending: model.pending.contains("killswitch"), dimmed: !connected, tint: model.killSwitchOn ? killSwitch.dot : nil)
                     }
                     HStack(spacing: Space.m) {
-                        Tile(title: "Server", value: model.selectedTunnel?.name ?? "None selected", symbol: "shield", dot: nil,
+                        Tile(title: "Server", value: serverText, symbol: "shield", dot: nil,
                              open: { go(.tunnels) }, dimmed: !connected, tint: Accent.color)
-                        Tile(title: "Download", value: connected ? speedText(traffic.current?.down ?? 0) : "—", symbol: "arrow.down", dot: nil,
-                             tone: Palette.success.color, dimmed: !connected, tint: Palette.success.color)
-                        Tile(title: "Upload", value: connected ? speedText(traffic.current?.up ?? 0) : "—", symbol: "arrow.up", dot: nil,
-                             tone: Palette.warning.color, dimmed: !connected, tint: Palette.warning.color)
+                        Tile(title: "IP address", value: ipText, symbol: "globe", dot: nil,
+                             dimmed: !connected, tint: Palette.success.color)
+                            .help(model.exitInfo.map { $0.country } ?? "")
                     }
                     SpeedChart(samples: traffic.samples, live: connected)
                 }

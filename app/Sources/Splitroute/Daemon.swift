@@ -44,6 +44,7 @@ struct Snapshot: Encodable {
     var final: WireFinal?
     var blockQuic: Bool?
     var blockStun: Bool?
+    var blockIPv6: Bool?
     var tlsFingerprint: String?
     var retry: [String]?
     var loadAll: Bool?
@@ -54,7 +55,7 @@ struct Snapshot: Encodable {
     var lists: [WireList]
 
     enum CodingKeys: String, CodingKey {
-        case vpn, listsOn = "lists_on", selected, final, blockQuic = "block_quic", blockStun = "block_stun", tlsFingerprint = "tls_fingerprint", retry, loadAll = "load_all", bootstrap, killSwitch = "kill_switch", killSwitchLAN = "kill_switch_lan", tunnels, lists
+        case vpn, listsOn = "lists_on", selected, final, blockQuic = "block_quic", blockStun = "block_stun", blockIPv6 = "block_ipv6", tlsFingerprint = "tls_fingerprint", retry, loadAll = "load_all", bootstrap, killSwitch = "kill_switch", killSwitchLAN = "kill_switch_lan", tunnels, lists
     }
 }
 
@@ -116,6 +117,21 @@ struct WireNode: Decodable {
     var options: JSONValue
     var server: String
     var warning: String?
+}
+
+/// Where a connection to a name or address would go (command route_test).
+struct WireRoute: Decodable, Equatable {
+    var kind: String // "list", "local", "ipv6" or "default"
+    var list: String?
+    var action: Action
+    var tunnel: String? // the server's name; nil is the selected one
+    var notes: [String]?
+}
+
+/// The address the internet sees through the selected server (command exit_ip).
+struct WireExit: Decodable, Equatable {
+    var ip: String
+    var country: String?
 }
 
 struct WireTest: Decodable {
@@ -214,6 +230,8 @@ private struct Response: Decodable {
     var canon: [WireCanon]?
     var legacy: WireLegacy?
     var tests: [String: WireTest]?
+    var route: WireRoute?
+    var exit: WireExit?
 }
 
 enum DaemonError: LocalizedError, Equatable {
@@ -236,7 +254,7 @@ enum DaemonError: LocalizedError, Equatable {
 /// Client for the service's control socket: one JSON request, one JSON response per connection.
 enum Daemon {
     /// The service revision this app needs (Go: api.APIRevision).
-    static let requiredAPIRev = 14
+    static let requiredAPIRev = 15
 
     #if DEBUG
     /// Debug builds: SPLITROUTE_SOCKET points the app at a fake service.
@@ -293,6 +311,18 @@ enum Daemon {
         guard data.count <= maxRuleSet else { throw DaemonError.failed("This rule-set is larger than \(maxRuleSet >> 20) MB.") }
         guard let r = try await send(Request(cmd: "check_ruleset", data: data)).ruleset else { throw outdated }
         return (r.data, r.rules)
+    }
+
+    /// Where a connection to `query` (a name or an address) would go by the lists the service has.
+    static func routeTest(_ query: String) async throws -> WireRoute {
+        guard let r = try await send(Request(cmd: "route_test", text: query)).route else { throw outdated }
+        return r
+    }
+
+    /// The address the internet sees through the selected server, looked up by the service through it.
+    static func exitIP() async throws -> WireExit {
+        guard let e = try await send(Request(cmd: "exit_ip")).exit else { throw outdated }
+        return e
     }
 
     /// Whether the engine can run a rule built from fields; throws the service's message about the first value that is wrong.

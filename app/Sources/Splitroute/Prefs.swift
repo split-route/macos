@@ -9,6 +9,7 @@ enum Prefs {
     // Connection
     static let alwaysOn = "alwaysOn"
     static let disconnectOnSleep = "disconnectOnSleep"
+    static let autoSwitch = "autoSwitch" // move to another server when the active one stops answering (default off)
     static let showDisconnectMessage = "showDisconnectMessage"
     // Updates
     static let autoCheckUpdates = "autoCheckUpdates" // look for a newer app version once a day

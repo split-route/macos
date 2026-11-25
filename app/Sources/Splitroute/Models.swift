@@ -113,13 +113,15 @@ struct Config: Codable, Equatable {
     var blockQUIC = true
     /// Refuse STUN, so a browser can't show the real address (WebRTC) while its traffic goes through a server.
     var blockSTUN = true
+    /// Refuse IPv6: the tunnel carries IPv4 only, so IPv6 would go around it.
+    var blockIPv6 = true
     /// The browser handshake servers that use TLS get when they chose none; "" is each server's own.
     var tlsFingerprint = ""
     static let tlsFingerprints = ["chrome", "firefox", "safari", "edge", "ios", "android", "random"]
 
     enum CodingKeys: String, CodingKey {
         case baseURL = "base_url", disabled, lists, finalAction = "final_action", finalTunnel = "final_tunnel", blockQUIC = "block_quic"
-        case blockSTUN = "block_stun", tlsFingerprint = "tls_fingerprint"
+        case blockSTUN = "block_stun", tlsFingerprint = "tls_fingerprint", blockIPv6 = "block_ipv6"
     }
 
     init() {}
@@ -133,6 +135,7 @@ struct Config: Codable, Equatable {
         finalTunnel = try c.decodeIfPresent(String.self, forKey: .finalTunnel)
         blockQUIC = try c.decodeIfPresent(Bool.self, forKey: .blockQUIC) ?? true
         blockSTUN = try c.decodeIfPresent(Bool.self, forKey: .blockSTUN) ?? true
+        blockIPv6 = try c.decodeIfPresent(Bool.self, forKey: .blockIPv6) ?? true
         tlsFingerprint = try c.decodeIfPresent(String.self, forKey: .tlsFingerprint) ?? ""
     }
 }
@@ -200,6 +203,9 @@ struct Tunnel: Decodable, Identifiable, Equatable {
     var since: String?
     var bytesIn: UInt64?
     var bytesOut: UInt64?
+    /// Set by the person: a favorite (listed first) and a note.
+    var pinned = false
+    var note = ""
     var id: String { name }
 
     enum CodingKeys: String, CodingKey {

@@ -2,20 +2,30 @@ import SwiftUI
 
 public enum Destination: String, CaseIterable, Sendable {
     // The raw values are stored in the user's defaults: keep them when a title changes.
-    // `settings` is General: its raw value predates the settings pages and stays "Settings".
-    case home = "Home", tunnels = "Tunnels", lists = "Lists", settings = "Settings", connection = "Connection", updates = "Updates"
+    // The raw values are stored in the user's defaults (key "settingsPage"): keep them when a title changes, and when one has to
+    // change, map the old value in `migrateStoredPage`.
+    case home = "Home", tunnels = "Tunnels", lists = "Lists", general = "General", network = "Network", advanced = "Advanced", updates = "Updates"
 
     /// The sidebar's top group and its Settings group; the pages of the second are listed under a "Settings" title.
+    /// The raw values these pages had before they were renamed: a saved page with an old value is moved to its new one.
+    private static let renamed = ["Settings": "General", "Connection": "Network"]
+
+    /// Moves a saved page from a name it had to the one it has now (otherwise the app would open on Home once).
+    public static func migrateStoredPage(_ defaults: UserDefaults = .standard, key: String = "settingsPage") {
+        if let v = defaults.string(forKey: key), let n = renamed[v] { defaults.set(n, forKey: key) }
+    }
+
     public static let mainPages: [Destination] = [.home, .tunnels, .lists]
-    public static let settingsPages: [Destination] = [.settings, .connection, .updates]
+    public static let settingsPages: [Destination] = [.general, .network, .advanced, .updates]
 
     public var title: String {
         switch self {
         case .home: return "Home"
         case .tunnels: return "Servers"
         case .lists: return "Routing"
-        case .settings: return "General"
-        case .connection: return "Connection"
+        case .general: return "General"
+        case .network: return "Network"
+        case .advanced: return "Advanced"
         case .updates: return "Updates"
         }
     }
@@ -25,8 +35,9 @@ public enum Destination: String, CaseIterable, Sendable {
         case .home: return "house"
         case .tunnels: return "shield"
         case .lists: return "arrow.triangle.branch"
-        case .settings: return "gearshape"
-        case .connection: return "network"
+        case .general: return "gearshape"
+        case .network: return "network"
+        case .advanced: return "slider.horizontal.3"
         case .updates: return "arrow.triangle.2.circlepath"
         }
     }
@@ -41,8 +52,9 @@ public extension Destination {
         case .home: return Tone(light: 0x2F7BF0, dark: 0x3B86F5)
         case .tunnels: return Tone(light: 0x2FB85A, dark: 0x34C05F)
         case .lists: return Tone(light: 0x9B4FD8, dark: 0xA55CE0)
-        case .settings: return Tone(light: 0x7C7C84, dark: 0x8A8A92)
-        case .connection: return Tone(light: 0x1F9FD8, dark: 0x2BA8E0)
+        case .general: return Tone(light: 0x7C7C84, dark: 0x8A8A92)
+        case .network: return Tone(light: 0x1F9FD8, dark: 0x2BA8E0)
+        case .advanced: return Tone(light: 0x5B5FC7, dark: 0x6A6EDB)
         case .updates: return Tone(light: 0xE88A0C, dark: 0xF2961A)
         }
     }
@@ -437,7 +449,7 @@ public struct AppWindow: View {
                 case .home: TunnelsScreen(tunnels: tunnels)
                 case .tunnels: TunnelsScreen(tunnels: tunnels)
                 case .lists: ListsScreen(lists: $lists, tunnels: tunnels, focusFirst: focusFirstList)
-                case .settings, .connection, .updates: SettingsScreen()
+                case .general, .network, .advanced, .updates: SettingsScreen()
                 }
             }
             .padding(Space.xl)

@@ -30,6 +30,7 @@ type fakeEngine struct {
 	testLinks map[string]string        // tunnel ID → the address its test requested
 	testErrs  map[string]error         // tunnel ID → the error its request fails with
 	tests     map[string]time.Duration // tunnel ID → how long its request takes; absent: no answer
+	fetched   map[string][]byte        // address → the body Fetch returns
 }
 
 func (e *fakeEngine) Start() error {
@@ -63,6 +64,16 @@ func (e *fakeEngine) Test(ctx context.Context, id, link string) (time.Duration, 
 	}
 	<-ctx.Done() // no answer: the host's timeout ends it
 	return 0, ctx.Err()
+}
+
+// Fetch answers with whatever the test set in fetched (keyed by address), or an error.
+func (e *fakeEngine) Fetch(ctx context.Context, link string, max int64) ([]byte, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if b, ok := e.fetched[link]; ok {
+		return b, nil
+	}
+	return nil, errors.New("no answer")
 }
 
 func (e *fakeEngine) Events() <-chan core.Event { return e.events }

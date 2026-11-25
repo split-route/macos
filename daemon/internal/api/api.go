@@ -8,6 +8,8 @@
 //	{"cmd": "apply", "apply": {...}}                        the desired state (see Snapshot)
 //	{"cmd": "answer", "id": "t3", "username": "…", "password": "…"}   answers a running tunnel's challenge
 //	{"cmd": "test", "ids": ["t1"], "method": "connect|tcp|icmp", "url": "https://…", "timeout_ms": 5000}  → tests (a request through each loaded tunnel, or a connect or ping to its server)
+//	{"cmd": "route_test", "text": "example.com"}              → route (where a connection to that name or address would go)
+//	{"cmd": "exit_ip"}                                      → exit (the address the internet sees through the selected server)
 //	{"cmd": "logs"}                                         → logs (the engine's last lines)
 //	{"cmd": "restart"}                                      the service exits; launchd starts the updated binary
 //
@@ -53,6 +55,11 @@ type Backend interface {
 	CheckRules(spec core.RuleSpec) error
 	CanonEntries(lines []string) []Canon
 	LegacyExport() (LegacyState, error)
+	// RouteTest says where a connection to a name or address would go, by the rules the engine has now.
+	RouteTest(query string) (RouteResult, error)
+	// ExitIP asks a fixed address through the selected server for the address the internet sees. The address is the
+	// service's own, never the socket's.
+	ExitIP() (ExitIP, error)
 }
 
 type Request struct {
@@ -91,6 +98,8 @@ type Response struct {
 	Canon   []Canon               `json:"canon,omitempty"`
 	Legacy  *LegacyState          `json:"legacy,omitempty"`
 	Tests   map[string]TestResult `json:"tests,omitempty"`
+	Route   *RouteResult          `json:"route,omitempty"`
+	Exit    *ExitIP               `json:"exit,omitempty"`
 }
 
 const (
@@ -218,6 +227,16 @@ func Respond(b Backend, req Request) Response {
 		}
 	case "canon_entries":
 		r.Canon = b.CanonEntries(req.Lines)
+	case "route_test":
+		var rr RouteResult
+		if rr, err = b.RouteTest(req.Text); err == nil {
+			r.Route = &rr
+		}
+	case "exit_ip":
+		var e ExitIP
+		if e, err = b.ExitIP(); err == nil {
+			r.Exit = &e
+		}
 	case "legacy_export":
 		var l LegacyState
 		if l, err = b.LegacyExport(); err == nil {

@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Destination.migrateStoredPage()
         Fonts.register()
         Theme.stored.apply()
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -62,6 +63,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .store(in: &bag)
         updateIcon()
         installMainMenu()
+        Hotkey.shared.onPress = { [weak self] in
+            guard let self else { return }
+            Task { await self.model.setVPN(!self.model.vpnOn) }
+        }
+        Hotkey.shared.register(Shortcut.stored)
         unfocusFieldsOnOutsideClick()
         // Opened by the user (Spotlight, Finder, `open`): show the window. At login
         // only the menu bar icon appears.

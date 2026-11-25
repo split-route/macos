@@ -7,8 +7,8 @@ func settingsSwitch(_ title: String, isOn: Binding<Bool>) -> some View {
     Toggle(title, isOn: isOn).labelsHidden().toggleStyle(.switch).tint(Accent.color)
 }
 
-/// Settings > Connection: how the connection is made and protected.
-struct ConnectionSettingsPage: View {
+/// Settings > Network (the page keeps its stored name, "Connection"): the kill switch, always on, and how servers are tested.
+struct NetworkSettingsPage: View {
     @EnvironmentObject private var model: AppModel
     @AppStorage(Prefs.alwaysOn) private var alwaysOn = false
     @AppStorage(Prefs.disconnectOnSleep) private var disconnectOnSleep = false
@@ -20,56 +20,17 @@ struct ConnectionSettingsPage: View {
     @AppStorage(Prefs.testURL) private var testURL = Prefs.defaultTestURL
     @AppStorage(Prefs.testCustomURL) private var testCustomURL = ""
     @State private var editingURL = false
-    private static func fingerprintLabel(_ f: String) -> String {
-        ["": "Automatic", "ios": "iOS", "android": "Android"][f] ?? f.prefix(1).uppercased() + f.dropFirst()
-    }
-    private static let bootstrapLabels = ["": "Automatic", "1.1.1.1": "Cloudflare (1.1.1.1)", "8.8.8.8": "Google (8.8.8.8)", "9.9.9.9": "Quad9 (9.9.9.9)", "system": "System resolver"]
 
     var body: some View {
-        PageScaffold("Connection") {
+        PageScaffold("Network") {
             EmptyView()
         } content: {
             if model.status == nil { ServiceUnavailable() }
-            if model.status != nil { connection; killSwitch; alwaysOnSection; testSection }
+            if model.status != nil { killSwitch; ipv6Section; failoverSection; alwaysOnSection; testSection }
         }
     }
 
     private func toggle(_ title: String, isOn: Binding<Bool>) -> some View { settingsSwitch(title, isOn: isOn) }
-
-    @ViewBuilder private var connection: some View {
-        SectionTitle("Connection")
-        Panel {
-            FormRow("Find servers with",
-                    detail: "Automatic asks Cloudflare, Google and Quad9 when you connect and uses the first that answers from your network, because networks block different ones. Pick one yourself if a server still fails with \"connection reset by peer\" or times out. The system resolver can return a blocked network's fake address.",
-                    error: model.error("bootstrap")) {
-                SelectMenu(title: Self.bootstrapLabels[model.bootstrap] ?? model.bootstrap, options: ["", "1.1.1.1", "8.8.8.8", "9.9.9.9", "system"],
-                           label: { Self.bootstrapLabels[$0] ?? $0 }, selected: model.bootstrap) { v in Task { await model.setBootstrap(v) } }
-                    .disabled(model.busy)
-            }
-            Hairline()
-            FormRow("Block QUIC (HTTP/3)",
-                    detail: "A browser can hide a site's name inside QUIC, so a Block list misses it. With this on, QUIC that no list matched is refused and the browser uses regular HTTPS, where the name is visible.",
-                    error: model.error("blockQUIC")) {
-                toggle("Block QUIC", isOn: Binding(get: { model.config?.blockQUIC ?? true },
-                                                   set: { on in Task { await model.setBlockQUIC(on) } }))
-            }
-            Hairline()
-            FormRow("Block STUN (WebRTC)",
-                    detail: "A browser uses STUN to learn your public address. With some traffic going direct and some through a server, it can show the real one. With this on, STUN is refused, so video calls in the browser may need a TURN server.",
-                    error: model.error("blockSTUN")) {
-                toggle("Block STUN", isOn: Binding(get: { model.config?.blockSTUN ?? true },
-                                                   set: { on in Task { await model.setBlockSTUN(on) } }))
-            }
-            Hairline()
-            FormRow("TLS fingerprint",
-                    detail: "Makes servers that use TLS (VLESS, VMess, Trojan) look like this browser to a network that inspects handshakes. A server whose link names a fingerprint keeps it. Automatic leaves every server as it is.",
-                    error: model.error("tlsFingerprint")) {
-                SelectMenu(title: Self.fingerprintLabel(model.config?.tlsFingerprint ?? ""), options: [""] + Config.tlsFingerprints,
-                           label: Self.fingerprintLabel, selected: model.config?.tlsFingerprint ?? "") { v in Task { await model.setTLSFingerprint(v) } }
-                    .disabled(model.busy)
-            }
-        }
-    }
 
     // MARK: Kill switch
 
@@ -91,6 +52,38 @@ struct ConnectionSettingsPage: View {
             NoteLine(.warning, "Programs running as root can still reach the network. The kill switch also stays on after a restart: the network is blocked until the connection is up, so keep the app set to open at login. Uninstalling the service turns it off.")
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(Space.l)
+        }
+    }
+
+    // MARK: IPv6
+
+    @ViewBuilder private var ipv6Section: some View {
+        SectionTitle("IPv6")
+        Panel {
+            FormRow("Block IPv6",
+                    detail: "The tunnel carries IPv4 only, so on a network with IPv6 a site can be reached around it and show your real address. With this on, IPv6 is refused and apps use IPv4. Turn it off only on a network that has nothing else, and then IPv6 does not go through the connection.",
+                    error: model.error("blockIPv6")) {
+                toggle("Block IPv6", isOn: Binding(get: { model.config?.blockIPv6 ?? true }, set: { on in Task { await model.setBlockIPv6(on) } }))
+            }
+        }
+    }
+
+    // MARK: Failover
+
+    @AppStorage(Prefs.autoSwitch) private var autoSwitch = false
+
+    @ViewBuilder private var failoverSection: some View {
+        SectionTitle("Failover")
+        Panel {
+            FormRow("Switch servers automatically",
+                    detail: "While connected, Splitroute checks the active server every 30 seconds. If it stops answering three times in a row, the quickest other server takes over (the same subscription first, never an OpenVPN server). A list or default route that names a server isn't changed: it stays blocked while that server is down. Off by default.") {
+                settingsSwitch("Switch servers automatically", isOn: Binding(get: { autoSwitch }, set: { autoSwitch = $0; model.setAutoSwitch($0) }))
+            }
+            if let note = model.lastFailover {
+                Hairline()
+                Text(note).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(Space.l)
+            }
         }
     }
 

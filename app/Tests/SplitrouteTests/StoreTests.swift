@@ -155,6 +155,34 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(try s.config().tlsFingerprint, "safari", "a refused write changes nothing")
     }
 
+    /// IPv6 is blocked by default.
+    func testBlockIPv6DefaultsOnAndRoundTrips() throws {
+        let s = try newStore()
+        XCTAssertTrue(try s.config().blockIPv6)
+        try s.update { var c = $0; c.blockIPv6 = false; return c }
+        XCTAssertFalse(try s.config().blockIPv6)
+    }
+
+    /// A pin and a note belong to the person: they survive the subscription's update, which rewrites other columns.
+    func testPinsAndNotesSurviveASubscriptionSync() throws {
+        let s = try newStore()
+        let (sub, added) = try s.addTunnels([tunnel("A"), tunnel("B")], subscription: "Provider")
+        let a = added[0]
+        try s.setPinned(a.id, true)
+        try s.setNote(a.id, "  fast\tat night \n")
+        var sy = Store.Sync()
+        var changed = a
+        changed.sha = String(repeating: "b", count: 64)
+        sy.update = [changed]
+        _ = try s.sync(subscription: sub!.id, sy) { _ in }
+        let after = try XCTUnwrap(s.tunnels().first { $0.id == a.id })
+        XCTAssertTrue(after.pinned)
+        XCTAssertEqual(after.note, "fast at night")
+        XCTAssertEqual(after.sha, changed.sha, "the sync did change the row")
+        XCTAssertFalse(try XCTUnwrap(s.tunnels().first { $0.id == added[1].id }).pinned)
+        XCTAssertThrowsError(try s.setNote(a.id, String(repeating: "x", count: 201)))
+    }
+
     /// A proxy server that is not the active one is loaded but idle (the service says disconnected); it still carries a
     /// list's traffic, so it is not "down". An OpenVPN server that says disconnected is.
     func testWhichServersCountAsUp() {

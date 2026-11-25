@@ -43,9 +43,9 @@ struct MenuPopover: View {
             }
             if let v = model.stagedUpdate {
                 // Only once it is downloaded and checked: installing is the next step.
-                MenuItem("Install newer version (\(v))", dot: Palette.success.color) { model.confirmingInstall = true; openApp(.settings) }
+                MenuItem("Install newer version (\(v))", dot: Palette.success.color) { model.confirmingInstall = true; openApp(.general) }
             } else if let r = model.newerRelease {
-                MenuItem("Newer version is available (\(r.version))", dot: Palette.success.color) { openApp(.settings) }
+                MenuItem("Newer version is available (\(r.version))", dot: Palette.success.color) { openApp(.general) }
             }
             MenuItem("Open Splitroute") { openApp(.home) }
             MenuItem("Quit", action: quit)
@@ -97,11 +97,32 @@ struct MenuPopover: View {
         let names = model.tunnelNamesLocalFirst
         let selected = model.tunnelList?.selected
         return row("Server", selected == nil ? "None selected" : "Carries your traffic") {
-            SelectMenu(title: selected ?? "Choose…", options: names, label: { $0 }, selected: selected,
-                       group: { n in model.tunnels.first { $0.name == n }?.group }, maxTitleWidth: Self.controlTitleWidth, compact: true) { n in
-                Task { if let t = model.tunnels.first(where: { $0.name == n }), await model.selectTunnel(t) { openApp(.tunnels) } }
+            HStack(spacing: 6) {
+                SelectMenu(title: selected ?? "Choose…", options: names, label: { serverLabel($0) }, selected: selected,
+                           group: { n in model.tunnels.first { $0.name == n }?.group }, maxTitleWidth: Self.controlTitleWidth, compact: true) { n in
+                    Task { if let t = model.tunnels.first(where: { $0.name == n }), await model.selectTunnel(t) { openApp(.tunnels) } }
+                }
+                .accessibilityLabel("Server")
+                Button { Task { await model.testConnectivity() } } label: {
+                    Group {
+                        if model.testing { ProgressView().controlSize(.small) } else { Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 11, weight: .semibold)) }
+                    }
+                    .foregroundStyle(Palette.ink.color).roundGlass(26)
+                }
+                .buttonStyle(.plain).disabled(model.testing || names.isEmpty)
+                .help("Test every server's latency").accessibilityLabel("Test servers")
             }
-            .accessibilityLabel("Server")
+        }
+    }
+
+    /// A server's name in the list: a flag it points to, and how fast it answered the last test.
+    private func serverLabel(_ name: String) -> String {
+        let t = model.tunnels.first { $0.name == name }
+        let flag = Flags.prefix(for: [name, t?.group]).map { $0 + " " } ?? ""
+        switch model.testResults[name] {
+        case .ms(let ms)?: return "\(flag)\(name)  ·  \(ms) ms"
+        case .failed(let why, _)?: return "\(flag)\(name)  ·  \(why)"
+        case nil: return flag + name
         }
     }
 

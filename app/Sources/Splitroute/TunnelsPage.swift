@@ -12,6 +12,7 @@ struct TunnelsPage: View {
     @State private var profileFile: ProfileChoice?
     @State private var promptFor: Tunnel?
     @State private var renaming: Tunnel?
+    @State private var noting: Tunnel?
     @State private var logsFor: Tunnel?
     @State private var confirmRemove: Tunnel?
     @State private var editingGroup: Subscription?
@@ -31,10 +32,13 @@ struct TunnelsPage: View {
         var id: String { name ?? "" }
     }
 
-    private var searching: Bool { !query.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty }
+    @State private var latency: LatencyFilter = .all
 
-    /// Matches by name, protocol, transport or group.
+    private var searching: Bool { !query.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty || latency != .all }
+
+    /// Matches by name, protocol, transport or group, and by the latency filter once a test has run.
     private func matches(_ t: Tunnel) -> Bool {
+        guard latency.allows(model.testResults[t.name]) else { return false }
         let q = query.wrappedValue.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return true }
         return ([t.name, t.protocolName, t.transport ?? "", t.group ?? ""] + (t.remotes ?? [])).contains { $0.localizedCaseInsensitiveContains(q) }
@@ -56,15 +60,19 @@ struct TunnelsPage: View {
     /// After a connectivity test: the fastest first, the ones that didn't answer last, the rest of the order kept. Only
     /// the display changes; the stored order doesn't. The order goes back when the next test starts or the VPN stops.
     private func ordered(_ ts: [Tunnel]) -> [Tunnel] {
-        guard sortByPing, !model.testing, !model.testResults.isEmpty else { return ts }
-        func rank(_ t: Tunnel) -> Int {
-            if case .ms(let ms)? = model.testResults[t.name] { return ms }
-            return Int.max
+        var out = ts
+        if sortByPing, !model.testing, !model.testResults.isEmpty {
+            func rank(_ t: Tunnel) -> Int {
+                if case .ms(let ms)? = model.testResults[t.name] { return ms }
+                return Int.max
+            }
+            out = ts.enumerated().sorted { a, b in
+                let (x, y) = (rank(a.element), rank(b.element))
+                return x != y ? x < y : a.offset < b.offset
+            }.map(\.element)
         }
-        return ts.enumerated().sorted { a, b in
-            let (x, y) = (rank(a.element), rank(b.element))
-            return x != y ? x < y : a.offset < b.offset
-        }.map(\.element)
+        // Favorites first, each part keeping its order.
+        return out.filter(\.pinned) + out.filter { !$0.pinned }
     }
 
     var body: some View {
@@ -74,6 +82,7 @@ struct TunnelsPage: View {
             ZStack {
                 if showBar {
                     ToolbarGroup {
+                        latencyMenu
                         ToolbarSearch(text: query, prompt: "Search servers…")
                         ToolbarAddButton("Add servers") { importing = true }.disabled(unavailable)
                     }
@@ -115,6 +124,7 @@ struct TunnelsPage: View {
         .sheet(item: $profileFile) { choice in AddTunnelSheet(initialFile: choice.url).environmentObject(model).glassSheet() }
         .sheet(item: $promptFor) { t in EditServerSheet(tunnel: t).environmentObject(model).glassSheet() }
         .sheet(item: $renaming) { t in RenameTunnelSheet(tunnel: t).environmentObject(model).glassSheet() }
+        .sheet(item: $noting) { t in ServerNoteSheet(tunnel: t).environmentObject(model).glassSheet() }
         .sheet(item: $logsFor) { t in TunnelLogSheet(tunnel: t).environmentObject(model).glassSheet() }
         .sheet(item: $editingGroup) { g in SubscriptionEditSheet(subscription: g).environmentObject(model).glassSheet() }
         .confirmationDialog("Remove \(confirmRemove?.name ?? "")?", isPresented: Binding(
@@ -288,7 +298,13 @@ struct TunnelsPage: View {
         HStack(spacing: Space.m) {
             usageItem("arrow.up", Self.bytes(u.upload), "Uploaded")
             usageItem("arrow.down", Self.bytes(u.download), "Downloaded")
-            if let t = u.total, t > 0 { usageItem("chart.pie", Self.bytes(t), "Plan size") }
+            if let t = u.total, t > 0 {
+                switch Self.quota(used: u.upload + u.download, total: t) {
+                case .out: usageItem("chart.pie", "\(Self.bytes(t)) (Used up)", "Plan used up", tone: Palette.danger.color)
+                case .low(let left): usageItem("chart.pie", "\(Self.bytes(t)) (\(left)% left)", "\(left) percent of the plan left", tone: left <= 5 ? Palette.danger.color : Palette.warning.color)
+                case .fine: usageItem("chart.pie", Self.bytes(t), "Plan size")
+                }
+            }
             if let e = expires {
                 let days = Self.daysLeft(e)
                 if days < 0 {
@@ -301,6 +317,17 @@ struct TunnelsPage: View {
             }
         }
         .font(TypeScale.secondary).monospacedDigit().lineLimit(1)
+    }
+
+    enum Quota: Equatable { case fine, low(Int), out }
+
+    /// How much of the plan is left: out at 0, orange under 15 percent, red under 5 (like the expiry date's colors).
+    static func quota(used: Int64, total: Int64) -> Quota {
+        guard total > 0 else { return .fine }
+        let left = total - used
+        if left <= 0 { return .out }
+        let pct = Int((Double(left) / Double(total) * 100).rounded(.up))
+        return pct < 15 ? .low(pct) : .fine
     }
 
     /// Whole days from now to the end of the plan's last day; negative once it has passed.
@@ -341,6 +368,23 @@ struct TunnelsPage: View {
         }
     }
 
+    /// Show only servers that answered a test within a time. Servers with no result yet are hidden while a filter is on.
+    private var latencyMenu: some View {
+        Menu {
+            Picker("Latency", selection: $latency) {
+                ForEach(LatencyFilter.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.inline)
+            if latency != .all && model.testResults.isEmpty { Text("Run a connectivity test first.") }
+        } label: {
+            Image(systemName: "timer").font(.system(size: 15, weight: .medium))
+                .foregroundStyle(latency == .all ? Palette.ink.color : Accent.color)
+                .frame(width: 38, height: 38).glassSurface(Circle())
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help("Filter by latency").accessibilityLabel("Filter by latency")
+    }
+
     private func select(_ t: Tunnel) {
         Task { if await model.selectTunnel(t) { promptFor = t } }
     }
@@ -363,9 +407,15 @@ struct TunnelsPage: View {
                         .frame(width: 22, height: 22)
                         .frame(width: 26)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(t.name).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color).lineLimit(1).help(t.name)
+                            HStack(spacing: 5) {
+                                if t.pinned { Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(Accent.color).accessibilityLabel("Pinned") }
+                                Text((Flags.prefix(for: [t.name, t.group]).map { $0 + " " } ?? "") + t.name).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color).lineLimit(1).help(t.name)
+                            }
                             Text(detail(t)).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                                 .monospacedDigit().lineLimit(2)
+                            if !t.note.isEmpty {
+                                Text(t.note).font(TypeScale.secondary).italic().foregroundStyle(Palette.inkSecondary.color).lineLimit(2).help(t.note)
+                            }
                         }
                         .layoutPriority(-1)
                         Spacer(minLength: Space.m)
@@ -385,9 +435,13 @@ struct TunnelsPage: View {
                 .accessibilityValue(testWords(t) ?? label(t, selected: selected) ?? "")
                 .accessibilityHint("Use this server for all traffic that no list names")
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+                RowButton(symbol: "gauge.with.dots.needle.67percent", help: "Test \(t.name)") { Task { await model.testConnectivity(only: t) } }
+                    .disabled(model.testing)
                 Menu {
                     if t.protocolName == "openvpn" { Button("Edit…") { promptFor = t } }
                     Button("Show Log…") { logsFor = t }
+                    Button(t.pinned ? "Unpin" : "Pin to Top") { model.setPinned(t, !t.pinned) }
+                    Button(t.note.isEmpty ? "Add Note…" : "Edit Note…") { noting = t }
                     Button("Rename…") { renaming = t }
                     Divider()
                     Button("Remove…", role: .destructive) { confirmRemove = t }
@@ -762,4 +816,63 @@ private struct NoteLabelStyle: LabelStyle {
 struct ProfileChoice: Identifiable {
     let id = UUID()
     let url: URL?
+}
+
+/// Which servers the Servers page shows by their last test.
+enum LatencyFilter: String, CaseIterable {
+    case all, answered, under100, under200, under500
+
+    var title: String {
+        switch self {
+        case .all: return "All servers"
+        case .answered: return "Answered the test"
+        case .under100: return "Under 100 ms"
+        case .under200: return "Under 200 ms"
+        case .under500: return "Under 500 ms"
+        }
+    }
+
+    /// `all` lets everything through; the others need a result, and a failed one never passes.
+    func allows(_ r: TunnelTest?) -> Bool {
+        if self == .all { return true }
+        guard case .ms(let ms)? = r else { return false }
+        switch self {
+        case .under100: return ms < 100
+        case .under200: return ms < 200
+        case .under500: return ms < 500
+        default: return true
+        }
+    }
+}
+
+/// Edits a server's note (up to 200 characters).
+struct ServerNoteSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let tunnel: Tunnel
+    @State private var note = ""
+    @State private var error: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: Space.s) {
+                Text("Note for \(tunnel.name)").font(TypeScale.bodyStrong).lineLimit(1)
+                TextField("Note", text: $note, prompt: Text("What this server is for").foregroundColor(.secondary), axis: .vertical)
+                    .labelsHidden().textFieldStyle(.plain).multilineTextAlignment(.leading).lineLimit(1...4).fieldBox().onSubmit(save)
+                Text("\(note.count) of 200").font(TypeScale.secondary).foregroundStyle(note.count > 200 ? Palette.danger.color : Palette.inkSecondary.color).monospacedDigit()
+            }
+            .padding(Space.xl)
+            SheetButtons(error: error) {
+                Button("Cancel", role: .cancel) { dismiss() }.buttonStyle(OutlineButtonStyle()).keyboardShortcut(.cancelAction)
+                Button("Save", action: save).buttonStyle(SolidButtonStyle()).keyboardShortcut(.defaultAction).disabled(note.count > 200)
+            }
+        }
+        .frame(width: 420)
+        .onAppear { note = tunnel.note }
+    }
+
+    private func save() {
+        error = model.setNote(tunnel, note)
+        if error == nil { dismiss() }
+    }
 }

@@ -45,6 +45,7 @@ type app struct {
 	applyMu   sync.Mutex               // one Apply at a time
 	listsSig  string                   // fingerprint of the lists last written, so a repeated snapshot rewrites nothing
 	mu        sync.Mutex               // below
+	routing   routingState             // what the last snapshot said about lists and routes, for route_test
 	endpoints map[string]core.Endpoint // every tunnel's server by ID, as the last snapshot said (a TCP or ping test needs no engine)
 	counts    []api.ListCount
 	listWarn  []string

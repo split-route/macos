@@ -27,8 +27,9 @@ struct SettingsView: View {
             case .home: HomePage(traffic: model.traffic, go: { page = $0 }).transition(.opacity)
             case .tunnels: TunnelsPage().transition(.opacity)
             case .lists: ListsPage().transition(.opacity)
-            case .settings: SettingsPage().transition(.opacity)
-            case .connection: ConnectionSettingsPage().transition(.opacity)
+            case .general: GeneralSettingsPage().transition(.opacity)
+            case .network: NetworkSettingsPage().transition(.opacity)
+            case .advanced: AdvancedSettingsPage().transition(.opacity)
             case .updates: UpdatesSettingsPage().transition(.opacity)
             }
         }
@@ -143,7 +144,10 @@ extension AppModel {
     /// the subscriptions were added. Menus use it so a long subscription never pushes your own servers out of sight.
     var tunnelNamesLocalFirst: [String] {
         let subs = (tunnelList?.subscriptions ?? []).map(\.name)
-        let rank = { (t: Tunnel) -> Int in t.group.flatMap { subs.firstIndex(of: $0) }.map { $0 + 1 } ?? (t.group == nil ? 0 : subs.count + 1) }
+        // Favorites first, then the servers added by hand, then each subscription's.
+        let rank = { (t: Tunnel) -> Int in
+            t.pinned ? -1 : (t.group.flatMap { subs.firstIndex(of: $0) }.map { $0 + 1 } ?? (t.group == nil ? 0 : subs.count + 1))
+        }
         return tunnels.enumerated().sorted { a, b in
             let (x, y) = (rank(a.element), rank(b.element))
             return x != y ? x < y : a.offset < b.offset

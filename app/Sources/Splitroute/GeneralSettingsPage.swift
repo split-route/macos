@@ -3,7 +3,7 @@ import Design
 import SwiftUI
 
 /// Settings > General: theme, login, quitting, the system service and About (the rest is on `ConnectionSettingsPage`).
-struct SettingsPage: View {
+struct GeneralSettingsPage: View {
     @EnvironmentObject private var model: AppModel
     @State private var confirmUninstall = false
     @AppStorage("quitAction") private var quitAction = "" // read by AppDelegate.quit
@@ -120,6 +120,8 @@ struct SettingsPage: View {
             FormRow("Open at login", detail: "Show the connection state in the menu bar after you log in.") {
                 toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
             }
+            Hairline()
+            FormRow("Global shortcut", detail: "Connects or disconnects from any app. None until you record one.") { ShortcutRecorder() }
             Hairline()
             FormRow("When quitting while connected",
                     detail: "The service runs on its own: with Keep it on, quitting only closes the menu bar icon.") {

@@ -294,5 +294,13 @@ ALTER TABLE tunnels ADD COLUMN server_override TEXT NOT NULL DEFAULT '' CHECK (l
 ALTER TABLE settings ADD COLUMN block_stun INTEGER NOT NULL DEFAULT 1 CHECK (block_stun IN (0, 1));
 ALTER TABLE settings ADD COLUMN tls_fingerprint TEXT NOT NULL DEFAULT '' CHECK (tls_fingerprint IN ('', 'chrome', 'firefox', 'safari', 'edge', 'ios', 'android', 'random'));
 """#,
+#"""
+-- Block IPv6: the engine's tun carries IPv4 only, so on a network with IPv6 a browser can reach a site over IPv6 around
+-- the VPN and show the real address. On by default: IPv6 is refused and apps use IPv4. And two things a person sets on a
+-- server: a pin (favorites first) and a short note.
+ALTER TABLE settings ADD COLUMN block_ipv6 INTEGER NOT NULL DEFAULT 1 CHECK (block_ipv6 IN (0, 1));
+ALTER TABLE tunnels ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1));
+ALTER TABLE tunnels ADD COLUMN note TEXT NOT NULL DEFAULT '' CHECK (length(note) <= 200);
+"""#,
     ]
 }

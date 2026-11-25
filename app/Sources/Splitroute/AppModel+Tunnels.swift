@@ -11,7 +11,7 @@ extension TunnelSecrets {
 extension AppModel {
     var tunnels: [Tunnel] { tunnelList?.tunnels ?? [] }
 
-    private func stored(_ name: String) throws -> StoreTunnel {
+    func stored(_ name: String) throws -> StoreTunnel {
         guard let t = try store?.tunnels().first(where: { $0.name == name }) else { throw StoreError("No server named \"\(name)\".") }
         return t
     }
@@ -21,6 +21,20 @@ extension AppModel {
             throw StoreError("No subscription named \"\(name)\".")
         }
         return s
+    }
+
+    // MARK: Pins and notes
+
+    func setPinned(_ t: Tunnel, _ on: Bool) {
+        do { try store?.setPinned(try stored(t.name).id, on) } catch { errors["tunnel:\(t.name)"] = error.localizedDescription }
+        reloadLocal()
+    }
+
+    /// Returns the reason it was refused, or nil.
+    func setNote(_ t: Tunnel, _ note: String) -> String? {
+        do { try store?.setNote(try stored(t.name).id, note) } catch { return error.localizedDescription }
+        reloadLocal()
+        return nil
     }
 
     // MARK: Credentials
@@ -196,17 +210,19 @@ extension AppModel {
     /// on first and leaves it on. OpenVPN tunnels that aren't in use are loaded for the test (their sessions come up,
     /// which takes a few seconds) and put away again after. A tunnel that failed earlier stays failed, with its message:
     /// a test never retries credentials. One that needs a sign-in says so.
-    func testConnectivity() async {
+    func testConnectivity(only one: Tunnel? = nil) async {
         guard !testing else { return }
         errors["test"] = nil
         if serviceOutdated {
             errors["test"] = "The service is older than this app and can't run this test. Restart it (Settings → General → Restart service), or reinstall the app's service."
             return
         }
-        guard let store, let all = try? store.tunnels(), !all.isEmpty, let link else { return }
+        guard let store, let every = try? store.tunnels(), !every.isEmpty, let link else { return }
+        let all = one.map { o in every.filter { $0.name == o.name } } ?? every
+        guard !all.isEmpty else { return }
         testing = true
         defer { testing = false; testedAt = Date() }
-        testResults = [:]
+        if one == nil { testResults = [:] } else { testResults[one!.name] = nil } // one server: the others keep their numbers
         let method = TestMethod(rawValue: UserDefaults.standard.string(forKey: Prefs.testMethod) ?? "") ?? .connect
         let timeout = min(max(Prefs.int(Prefs.testTimeout, 5), Prefs.timeoutRange.lowerBound), Prefs.timeoutRange.upperBound)
         let url = Prefs.validTestURL(UserDefaults.standard.string(forKey: Prefs.testURL) ?? "") ?? Prefs.defaultTestURL

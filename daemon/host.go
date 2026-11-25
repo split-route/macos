@@ -30,6 +30,7 @@ type Engine interface {
 	Events() <-chan core.Event
 	AnswerChallenge(tunnelID string, r core.ChallengeResponse) error
 	Test(ctx context.Context, tunnelID, link string) (time.Duration, error)
+	Fetch(ctx context.Context, link string, max int64) ([]byte, error)
 	Close() error // stops the engine too
 }
 
@@ -95,6 +96,7 @@ type host struct {
 	selected  string          // the core ID of the default tunnel; "" for none
 	blockQUIC bool            // refuse QUIC no list matched
 	blockSTUN bool            // refuse STUN
+	blockIPv6 bool            // refuse IPv6
 	tlsPrint  string          // core.Config.TLSFingerprint
 	final     api.FinalSpec   // where traffic no list matches goes; the tunnel is named, like a list's
 	bootstrap string          // core.DNS.Bootstrap: how proxy tunnels' servers are found by name
@@ -200,6 +202,24 @@ func (h *host) setBlockSTUN(on bool) {
 		return
 	}
 	h.blockSTUN = on
+	h.scheduleLocked()
+}
+
+// listsCopy is the lists the host applies, as the last snapshot set them.
+func (h *host) listsCopy() []hostList {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.lists)
+}
+
+// setBlockIPv6 turns the IPv6 rules on or off; a change restarts the engine.
+func (h *host) setBlockIPv6(on bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.blockIPv6 == on {
+		return
+	}
+	h.blockIPv6 = on
 	h.scheduleLocked()
 }
 
@@ -496,7 +516,7 @@ func (h *host) buildLocked() core.Config {
 	if bootstrap == "" {
 		bootstrap = defaultBootstrap
 	}
-	cfg := core.Config{WorkDir: h.workDir, Default: h.selected, BlockQUIC: h.blockQUIC, BlockSTUN: h.blockSTUN, TLSFingerprint: h.tlsPrint, Inbound: h.inbound, DNS: core.DNS{Bootstrap: bootstrap}, Log: core.Log{Level: "info"}}
+	cfg := core.Config{WorkDir: h.workDir, Default: h.selected, BlockQUIC: h.blockQUIC, BlockSTUN: h.blockSTUN, BlockIPv6: h.blockIPv6, TLSFingerprint: h.tlsPrint, Inbound: h.inbound, DNS: core.DNS{Bootstrap: bootstrap}, Log: core.Log{Level: "info"}}
 	byName := map[string]string{}
 	for _, w := range h.wanted {
 		cfg.Tunnels = append(cfg.Tunnels, core.Tunnel{ID: w.id, Name: w.name, Protocol: w.protocol, Options: w.options})

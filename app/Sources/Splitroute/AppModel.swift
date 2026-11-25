@@ -33,6 +33,11 @@ final class AppModel: ObservableObject {
     @Published var updateDownload: Fetch.DownloadState?
     @Published var stagedUpdate: String?
     @Published var confirmingInstall = false
+    /// The address the internet sees through the active server, and its country; nil until looked up.
+    @Published var exitInfo: ExitInfo?
+    @Published var exitLookupFailed = false
+    /// What the last automatic server switch did, for the Network page.
+    @Published var lastFailover: String?
     @Published var updateCheckNote: String?
     /// Switches whose change is being applied by the service ("vpn", "killswitch", "routing"): a spinner shows beside each.
     @Published var pending: Set<String> = []
@@ -62,6 +67,15 @@ final class AppModel: ObservableObject {
     var testedAt: Date?
     var sleepSuspended = false
     var updateAttempt: Date?
+    var exitKey: String?
+    // Failover (AppModel+Failover.swift)
+    var lastProbe = Date.distantPast
+    var probeFailures = 0
+    var failoverBusy = false
+    var failoverPause: Date?
+    var failedAt: [String: Date] = [:]
+    var switchTimes: [Date] = []
+    var exitTask: Task<Void, Never>?
     var alwaysOnHandled = false
     var automationStarted = false
     private var transports: [String: String?] = [:]
@@ -112,6 +126,8 @@ final class AppModel: ObservableObject {
         }
         if !refreshing { Task { await self.refreshDownloads() } }
         if connError == nil, config != nil { await runAutomation() }
+        followExitIP()
+        await runFailover()
         await autoInstallIfNeeded()
     }
 
@@ -285,6 +301,8 @@ final class AppModel: ObservableObject {
             var tn = Tunnel(name: t.name, protocolName: t.kind, group: t.subscriptionID.flatMap { groups[$0] }, warning: t.warning.nilIfEmpty, transport: transport(of: t),
                             remotes: t.remotes.isEmpty ? nil : t.remotes, serverOverride: t.serverOverride, needsAuth: t.needsAuth, keyEncrypted: t.keyEncrypted,
                             autoConnect: t.autoConnect, state: ws?.state ?? .disconnected)
+            tn.pinned = t.pinned
+            tn.note = t.note
             if let ws { (tn.error, tn.need, tn.localIP, tn.remoteIP, tn.since) = (ws.error?.nilIfEmpty, ws.need?.nilIfEmpty, ws.localIP?.nilIfEmpty, ws.remoteIP?.nilIfEmpty, ws.since) }
             if let why = link.problems[t.coreID] { tn.state = .failed; tn.error = why }
             if t.id == vpn.selected { selected = t.name }
@@ -504,4 +522,9 @@ final class AppModel: ObservableObject {
     }
 }
 
-
+/// The address and country the internet sees through the active server (looked up by the service, through it).
+struct ExitInfo: Equatable {
+    var ip: String
+    var country: String
+    var code: String? // two letters; the flag is drawn from it, never taken from the answer
+}

@@ -145,7 +145,7 @@ final class ServiceLink {
         }
         // Nothing is sent for the default (the selected tunnel): an older snapshot shape stays valid.
         let final = cfg.finalAction == .tunnel && cfg.finalTunnel == nil ? nil : WireFinal(action: cfg.finalAction, tunnel: cfg.finalTunnel)
-        let snap = Snapshot(vpn: vpn.on && !suspended, listsOn: !cfg.disabled, selected: selected, final: final, blockQuic: cfg.blockQUIC ? true : nil, blockStun: cfg.blockSTUN ? true : nil, tlsFingerprint: cfg.tlsFingerprint.nilIfEmpty, retry: retry.isEmpty ? nil : retry.sorted(),
+        let snap = Snapshot(vpn: vpn.on && !suspended, listsOn: !cfg.disabled, selected: selected, final: final, blockQuic: cfg.blockQUIC ? true : nil, blockStun: cfg.blockSTUN ? true : nil, blockIPv6: cfg.blockIPv6 ? true : nil, tlsFingerprint: cfg.tlsFingerprint.nilIfEmpty, retry: retry.isEmpty ? nil : retry.sorted(),
                         loadAll: loadAll ? true : nil, bootstrap: bootstrap.nilIfEmpty, killSwitch: ks.on ? true : nil, killSwitchLAN: ks.on && ks.lan ? true : nil,
                         tunnels: tunnels, lists: lists)
         return Built(snapshot: snap, problems: problems, sent: sent)

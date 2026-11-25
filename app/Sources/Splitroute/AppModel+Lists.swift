@@ -40,6 +40,10 @@ extension AppModel {
         await edit("blockSTUN") { try self.update { var c = $0; c.blockSTUN = on; return c } }
     }
 
+    func setBlockIPv6(_ on: Bool) async {
+        await edit("blockIPv6") { try self.update { var c = $0; c.blockIPv6 = on; return c } }
+    }
+
     func setTLSFingerprint(_ fp: String) async {
         await edit("tlsFingerprint") { try self.update { var c = $0; c.tlsFingerprint = fp; return c } }
     }

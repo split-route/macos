@@ -97,6 +97,7 @@ struct ListsPage: View {
                 ServiceUnavailable()
             } else if lists.isEmpty {
                 routingSwitch
+                RouteTester()
                 Panel {
                     EmptyState(symbol: "arrow.triangle.branch", title: "Choose where traffic goes",
                                message: "A list is a set of sites or address ranges. Send each one direct, block it, or route it through a server.",
@@ -105,6 +106,7 @@ struct ListsPage: View {
             } else {
                 VStack(alignment: .leading, spacing: Space.m) {
                     routingSwitch
+                    RouteTester()
                     if shown.isEmpty {
                         Text("No lists match.").font(TypeScale.body).foregroundStyle(Palette.inkSecondary.color)
                             .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, Space.xl)

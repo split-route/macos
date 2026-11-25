@@ -26,6 +26,8 @@ struct ImportTunnelsSheet: View {
     @State private var fileText: String?
     @State private var fileError: String?
     @State private var choosing = false
+    @State private var choosingImage = false
+    @State private var pasteDropping = false
     @State private var dropping = false
     @State private var group = ""
     @State private var working = false
@@ -92,6 +94,9 @@ struct ImportTunnelsSheet: View {
             }
         }
         .onAppear { editing = true }
+        .fileImporter(isPresented: $choosingImage, allowedContentTypes: [.image]) { r in
+            if case .success(let u) = r { addQR(from: { QRReader.payloads(from: u) }) }
+        }
         .fileImporter(isPresented: $choosing, allowedContentTypes: [.data, .plainText, .json]) { r in
             switch r {
             case .success(let u): load(u)
@@ -137,14 +142,20 @@ struct ImportTunnelsSheet: View {
                 }
             }
             .frame(height: 138)
-            .background(Glass.fill, in: RoundedRectangle(cornerRadius: Radius.row))
+            .background(pasteDropping ? Accent.color.opacity(0.10) : Glass.fill, in: RoundedRectangle(cornerRadius: Radius.row))
+            // A picture with a QR code, or a link, dropped on the box.
+            .onDrop(of: [.fileURL, .url, .plainText], isTargeted: $pasteDropping) { providers in dropOnPaste(providers) }
             .overlay(RoundedRectangle(cornerRadius: Radius.row)
                 .stroke(editing ? Accent.color.opacity(0.9) : Glass.stroke, lineWidth: editing ? 1.5 : 1))
             .animation(.easeOut(duration: 0.15), value: editing)
 
             HStack(spacing: Space.m) {
-                Button { if let s = NSPasteboard.general.string(forType: .string) { text = s } } label: {
+                Button { pasteFromClipboard() } label: {
                     Label("Paste from clipboard", systemImage: "doc.on.clipboard")
+                }
+                .buttonStyle(OutlineButtonStyle())
+                Button { choosingImage = true } label: {
+                    Label("Scan QR image…", systemImage: "qrcode.viewfinder")
                 }
                 .buttonStyle(OutlineButtonStyle())
                 if let seen = Self.recognized(text) {
@@ -158,6 +169,39 @@ struct ImportTunnelsSheet: View {
                 .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// The clipboard's text, or the QR code in an image on it. Read only when the person presses the button.
+    private func pasteFromClipboard() {
+        if let s = NSPasteboard.general.string(forType: .string) { text = s; error = nil; return }
+        addQR(from: { QRReader.payloads(from: .general) })
+    }
+
+    /// Adds what the QR codes in a picture say, one per line; says so when there is none.
+    private func addQR(from read: @escaping () -> [String]) {
+        error = nil
+        Task {
+            let found = await Task.detached { read() }.value
+            guard !found.isEmpty else { error = "No QR code found in that picture."; return }
+            text = ([text.trimmingCharacters(in: .whitespacesAndNewlines)].filter { !$0.isEmpty } + found).joined(separator: "\n")
+        }
+    }
+
+    /// A dropped picture is read for QR codes; a dropped link or text is added as it is.
+    private func dropOnPaste(_ providers: [NSItemProvider]) -> Bool {
+        guard let p = providers.first else { return false }
+        if p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            _ = p.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                DispatchQueue.main.async { addQR(from: { QRReader.payloads(from: url) }) }
+            }
+            return true
+        }
+        _ = p.loadObject(ofClass: String.self) { s, _ in
+            guard let s, !s.isEmpty else { return }
+            DispatchQueue.main.async { text = ([text.trimmingCharacters(in: .whitespacesAndNewlines)].filter { !$0.isEmpty } + [s]).joined(separator: "\n") }
+        }
+        return true
     }
 
     /// What the typed text looks like, said back to the person: a quiet check that the paste worked.

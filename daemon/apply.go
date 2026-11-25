@@ -114,9 +114,11 @@ func (a *app) Apply(s api.Snapshot) error {
 	a.host.setFinal(s.Final)
 	a.host.setBlockQUIC(s.BlockQUIC && s.ListsOn)
 	a.host.setBlockSTUN(s.BlockSTUN) // privacy, not routing: it applies with the lists off too
+	a.host.setBlockIPv6(s.BlockIPv6)
 	a.host.setTLSFingerprint(s.TLSFingerprint)
 	a.host.setVPN(s.VPN)
 	a.reconcile(s)
+	a.rememberRouting(s)
 	a.mu.Lock()
 	a.appliedAt = time.Now().UTC()
 	a.mu.Unlock()

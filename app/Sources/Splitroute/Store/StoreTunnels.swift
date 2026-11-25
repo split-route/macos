@@ -5,7 +5,7 @@ import GRDB
 // options) is a 0600 file (Secrets), checked against `sha` before it is sent to the service.
 
 extension Store {
-    private static let tunnelColumns = "id, name, kind, profile_sha256, remotes, needs_auth, key_encrypted, auto_connect, subscription_id, warning, server_override"
+    private static let tunnelColumns = "id, name, kind, profile_sha256, remotes, needs_auth, key_encrypted, auto_connect, subscription_id, warning, server_override, pinned, note"
 
     private static func tunnel(_ r: Row) -> StoreTunnel {
         let remotes: String = r["remotes"]
@@ -13,11 +13,23 @@ extension Store {
                            remotes: remotes.isEmpty ? [] : remotes.components(separatedBy: "\n"),
                            needsAuth: (r["needs_auth"] as Int) == 1, keyEncrypted: (r["key_encrypted"] as Int) == 1,
                            autoConnect: (r["auto_connect"] as Int) == 1, subscriptionID: r["subscription_id"], warning: r["warning"],
-                           serverOverride: r["server_override"])
+                           serverOverride: r["server_override"], pinned: (r["pinned"] as Int) == 1, note: r["note"])
     }
 
     func tunnels() throws -> [StoreTunnel] {
         try queue.read { db in try Row.fetchAll(db, sql: "SELECT \(Store.tunnelColumns) FROM tunnels ORDER BY position, id").map(Store.tunnel) }
+    }
+
+    /// Pins a server (a favorite, listed first) or unpins it.
+    func setPinned(_ id: Int64, _ on: Bool) throws {
+        try queue.write { try $0.execute(sql: "UPDATE tunnels SET pinned = ? WHERE id = ?", arguments: [on ? 1 : 0, id]) }
+    }
+
+    /// A short note on a server; at most 200 characters, no control characters.
+    func setNote(_ id: Int64, _ note: String) throws {
+        let clean = String(note.unicodeScalars.map { $0.value < 0x20 ? " " : Character($0) }).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard clean.unicodeScalars.count <= 200 else { throw StoreError("A note can be at most 200 characters.") }
+        try queue.write { try $0.execute(sql: "UPDATE tunnels SET note = ? WHERE id = ?", arguments: [clean, id]) }
     }
 
     func subscriptions() throws -> [StoreSubscription] {
