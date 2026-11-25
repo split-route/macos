@@ -25,6 +25,10 @@ final class AppModel: ObservableObject {
     @Published var testResults: [String: TunnelTest] = [:]
     @Published var testing = false
     @Published var busy = false
+    /// Switches whose change is being applied by the service ("vpn", "killswitch", "routing"): a spinner shows beside each.
+    @Published var pending: Set<String> = []
+    /// What is typed in each page's search field ("servers", "lists"): kept while you visit another page.
+    @Published var searches: [String: String] = [:]
     /// Speed through the engine; sampled while the window is open, so Home's chart survives a visit to another page.
     let traffic = TrafficMonitor()
     /// Lists being downloaded now, or whose last download failed; a finished one is removed.

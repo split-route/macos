@@ -22,14 +22,14 @@ struct ListsPage: View {
     }
 
     @State private var route: Route?
-    @State private var query = ""
+    private var query: Binding<String> { Binding(get: { model.searches["lists"] ?? "" }, set: { model.searches["lists"] = $0 }) }
     @State private var confirmRemove: RouteList?
 
     private var lists: [RouteList] { model.config?.lists ?? [] }
 
     /// The lists that match the search: by name, title (a ready-made list's own) or description.
     private var shown: [RouteList] {
-        let q = query.trimmingCharacters(in: .whitespaces)
+        let q = query.wrappedValue.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return lists }
         return lists.filter { l in
             let info = model.info(l.name)
@@ -88,23 +88,30 @@ struct ListsPage: View {
 
     private var listPage: some View {
         PageScaffold("Routing") {
-            if model.ready, !lists.isEmpty {
-                Button("Add list") { route = .add(.ready) }.buttonStyle(SolidButtonStyle())
+            let showBar = model.ready && !lists.isEmpty
+            ZStack {
+                if showBar {
+                    ToolbarGroup {
+                        ToolbarSearch(text: query, prompt: "Search lists…")
+                        ToolbarAddButton("Add list") { route = .add(.ready) }
+                    }
+                    .transition(.opacity)
+                }
             }
+            .animation(.easeOut(duration: 0.2), value: showBar)
         } content: {
             if !model.ready {
                 ServiceUnavailable()
             } else if lists.isEmpty {
                 routingSwitch
                 Panel {
-                    EmptyState(title: "Choose where traffic goes",
+                    EmptyState(symbol: "arrow.triangle.branch", title: "Choose where traffic goes",
                                message: "A list is a set of sites or address ranges. Send each one direct, block it, or route it through a server.",
                                action: "Add a list") { route = .add(.ready) }
                 }
             } else {
                 VStack(alignment: .leading, spacing: Space.m) {
                     routingSwitch
-                    SheetSearch(text: $query, prompt: "Search lists…")
                     if shown.isEmpty {
                         Text("No lists match.").font(TypeScale.body).foregroundStyle(Palette.inkSecondary.color)
                             .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, Space.xl)
@@ -165,13 +172,29 @@ struct ListsPage: View {
     /// The switch for every list at once. The default route is not part of it.
     private var routingSwitch: some View {
         Panel {
-            FormRow("Routing", detail: model.routingOn ? "Each list sends its traffic direct, blocks it or routes it through a server."
-                                                        : "Off: the lists do nothing. Only the default route is applied.",
-                    error: model.error("routing")) {
-                Toggle("Routing", isOn: Binding(get: { model.routingOn }, set: { on in Task { await model.setRoutingOn(on) } }))
-                    .labelsHidden().toggleStyle(.switch).tint(Accent.color)
-                    .accessibilityLabel("Routing")
+            VStack(alignment: .leading, spacing: Space.s) {
+                HStack(spacing: Space.l) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundStyle(model.routingOn ? AnyShapeStyle(Accent.gradient) : AnyShapeStyle(Palette.inkSecondary.color))
+                        .shadow(color: model.routingOn ? Accent.glow : .clear, radius: 6)
+                        .frame(width: 52)
+                        .animation(.easeOut(duration: 0.2), value: model.routingOn)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.routingOn ? "Routing On" : "Routing Off").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
+                        Text(model.routingOn ? "Each list sends its traffic direct, blocks it or routes it through a server."
+                                              : "The lists do nothing. Only the default route is applied.")
+                            .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: Space.m)
+                    PendingToggle("Routing", isOn: Binding(get: { model.routingOn }, set: { on in Task { await model.setRoutingOn(on) } }),
+                                  pending: model.pending.contains("routing"))
+                }
+                if let e = model.error("routing") { NoteLine(.error, e) }
             }
+            .padding(Space.l)
         }
     }
 
@@ -259,7 +282,7 @@ struct ListsPage: View {
 
     private func destinationMenu(_ l: RouteList, title: String) -> some View {
         let current = RouteDestination(l)
-        let names = model.tunnels.map(\.name)
+        let names = model.tunnelNamesLocalFirst
         let named = l.tunnel.map { n in names.contains(n) ? names : names + [n] } ?? names // a missing tunnel stays an option
         let options: [RouteDestination] = [.none, .direct, .block, .selected] + named.map(RouteDestination.tunnel)
         return SelectMenu(title: current.label, options: options, label: \.label, selected: current, dot: \.dot, group: \.group) { d in
@@ -336,6 +359,7 @@ struct DefaultRouteMenu: View {
     @EnvironmentObject private var model: AppModel
     /// How wide the chosen name may get before it is cut with …
     var maxTitleWidth: CGFloat? = 200
+    var compact = false
 
     /// What the stored default route is, as a destination.
     static func current(_ cfg: Config?) -> RouteDestination {
@@ -348,10 +372,10 @@ struct DefaultRouteMenu: View {
 
     var body: some View {
         let current = Self.current(model.config)
-        let names = model.tunnels.map(\.name)
+        let names = model.tunnelNamesLocalFirst
         let named = model.config?.finalTunnel.map { n in names.contains(n) ? names : names + [n] } ?? names
         SelectMenu(title: current.label, options: [.direct, .block, .selected] + named.map(RouteDestination.tunnel),
-                   label: \.label, selected: current, dot: \.dot, group: \.group, maxTitleWidth: maxTitleWidth) { d in
+                   label: \.label, selected: current, dot: \.dot, group: \.group, maxTitleWidth: maxTitleWidth, compact: compact) { d in
             guard d != current else { return }
             Task {
                 switch d {

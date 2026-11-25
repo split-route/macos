@@ -242,24 +242,24 @@ struct CustomListEditor: View {
     @State private var network: Set<String> = []
 
     /// The fields of the rule, grouped, with sing-box's names and a line on what each matches.
-    private typealias FieldInfo = (key: String, title: String, hint: String)
+    private typealias FieldInfo = (key: String, title: String, hint: String, example: String)
     private static let groups: [(title: String, fields: [FieldInfo])] = [
         ("Domain", [
-            ("domain", "Domain", "Exactly this name: www.example.com"),
-            ("domain_suffix", "Domain Suffix", "This name and everything under it: example.com"),
-            ("domain_keyword", "Domain Keyword", "Names that contain the word: google"),
-            ("domain_regex", "Domain Regex", "Names that match the pattern: ^ads[0-9]+\\.example\\.com$"),
+            ("domain", "Domain", "Exactly this name.", "www.example.com"),
+            ("domain_suffix", "Domain Suffix", "This name and everything under it.", "example.com"),
+            ("domain_keyword", "Domain Keyword", "Names that contain the word.", "google"),
+            ("domain_regex", "Domain Regex", "Names that match the pattern.", "^ads[0-9]+\\.example\\.com$"),
         ]),
-        ("Address", [("ip_cidr", "IP CIDR", "An address or a range: 203.0.113.7, 203.0.113.0/24, 2400:cb00::/32")]),
+        ("Address", [("ip_cidr", "IP CIDR", "An address or a range.", "203.0.113.7\n203.0.113.0/24\n2400:cb00::/32")]),
         ("Port", [
-            ("port", "Port", "A destination port: 443"),
-            ("port_range", "Port Range", "A range of destination ports: 8000:9000 (either end may be left out: :1023)"),
+            ("port", "Port", "A destination port.", "443"),
+            ("port_range", "Port Range", "A range of destination ports. Either end may be left out.", "8000:9000\n:1023"),
         ]),
     ]
     private static let programFields: [FieldInfo] = [
-        ("process_name", "Process Name", "The program's name: curl"),
-        ("process_path", "Process Path", "The program's full path: /usr/bin/curl"),
-        ("process_path_regex", "Process Path Regex", "A pattern for the path: ^/opt/tools/"),
+        ("process_name", "Process Name", "The program's name.", "curl"),
+        ("process_path", "Process Path", "The program's full path.", "/usr/bin/curl"),
+        ("process_path_regex", "Process Path Regex", "A pattern for the path.", "^/opt/tools/"),
     ]
     private static let networks = ["tcp", "udp", "icmp"]
 
@@ -334,7 +334,7 @@ struct CustomListEditor: View {
             VStack(alignment: .leading, spacing: Space.l) {
                 Text("Program").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
                 applicationsPanel
-                ForEach(Self.programFields, id: \.key) { field($0.key, $0.title, $0.hint) }
+                ForEach(Self.programFields, id: \.key) { field($0.key, $0.title, $0.hint, $0.example) }
                 SheetNote("The engine looks up which program each connection comes from, which costs a little per connection. It only does so while a list names programs.")
             }
             VStack(alignment: .leading, spacing: Space.l) {
@@ -358,23 +358,46 @@ struct CustomListEditor: View {
     private func section(_ title: String, fields: [FieldInfo]) -> some View {
         VStack(alignment: .leading, spacing: Space.l) {
             Text(title).font(TypeScale.heading).foregroundStyle(Palette.ink.color)
-            ForEach(fields, id: \.key) { field($0.key, $0.title, $0.hint) }
+            ForEach(fields, id: \.key) { field($0.key, $0.title, $0.hint, $0.example) }
         }
     }
 
     /// One field: its title (sing-box's name, written out), a box for its values and what it matches.
-    private func field(_ key: String, _ title: String, _ hint: String) -> some View {
+    private func field(_ key: String, _ title: String, _ hint: String, _ example: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color)
-            TextEditor(text: Binding(get: { texts[key] ?? "" }, set: { texts[key] = $0 }))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color)
+                Text(hint).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+            }
+            // The box grows with its text up to 10 lines, then the text scrolls inside it. A TextEditor has no height of its
+            // own, so an invisible copy of the text (same font, same wrapping, at most 10 lines) sets it.
+            Text(verbatim: (texts[key] ?? "") + "\n") // the last empty line counts, so a new line makes room at once
                 .font(.system(size: 12.5, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .padding(Space.s)
-                .frame(height: 72)
+                .lineLimit(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Space.s + 5).padding(.vertical, Space.s + 1)
+                .frame(minHeight: 72, alignment: .topLeading)
+                .opacity(0)
+                .accessibilityHidden(true)
+                .overlay {
+                    ZStack(alignment: .topLeading) {
+                        TextEditor(text: Binding(get: { texts[key] ?? "" }, set: { texts[key] = $0 }))
+                            .font(.system(size: 12.5, design: .monospaced))
+                            .scrollContentBackground(.hidden)
+                            .padding(Space.s)
+                            .accessibilityLabel(key)
+                        if (texts[key] ?? "").isEmpty {
+                            // The example, inside the box until something is typed. verbatim: no blue links, no markdown.
+                            Text(verbatim: example)
+                                .font(.system(size: 12.5, design: .monospaced))
+                                .foregroundStyle(Palette.inkSecondary.color.opacity(0.7))
+                                .padding(.horizontal, Space.s + 5).padding(.vertical, Space.s + 1)
+                                .allowsHitTesting(false).accessibilityHidden(true)
+                        }
+                    }
+                }
                 .background(Glass.fill, in: RoundedRectangle(cornerRadius: Radius.row))
                 .overlay(RoundedRectangle(cornerRadius: Radius.row).stroke(Glass.stroke, lineWidth: 1))
-                .accessibilityLabel(key)
-            Text(hint).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
         }
     }
 

@@ -112,11 +112,11 @@ public enum Glass {
         Color(nsColor: NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light })
     }
     /// A panel's fill.
-    public static var fill: Color { dynamic(light: NSColor.white.withAlphaComponent(0.55), dark: NSColor.white.withAlphaComponent(0.06)) }
+    public static var fill: Color { dynamic(light: NSColor.white.withAlphaComponent(0.72), dark: NSColor.white.withAlphaComponent(0.06)) }
     /// A panel's edge.
-    public static var stroke: Color { dynamic(light: NSColor.black.withAlphaComponent(0.10), dark: NSColor.white.withAlphaComponent(0.11)) }
+    public static var stroke: Color { dynamic(light: NSColor.black.withAlphaComponent(0.13), dark: NSColor.white.withAlphaComponent(0.11)) }
     /// A small control on a panel (the round buttons).
-    public static var control: Color { dynamic(light: NSColor.black.withAlphaComponent(0.06), dark: NSColor.white.withAlphaComponent(0.09)) }
+    public static var control: Color { dynamic(light: NSColor.black.withAlphaComponent(0.075), dark: NSColor.white.withAlphaComponent(0.09)) }
     /// A rule between rows: neutral, so it never tints the glass.
     public static var divider: Color { dynamic(light: NSColor.black.withAlphaComponent(0.08), dark: NSColor.white.withAlphaComponent(0.09)) }
     /// A header row inside a panel.

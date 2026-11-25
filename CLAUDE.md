@@ -17,8 +17,7 @@ correctness and safety beat features.
 | `daemon/internal/api/` | Control socket: one JSON request and response per connection; wire types and the snapshot's validation |
 | `app/Sources/Splitroute/` | Swift app (SwiftPM, macOS 14+): AppKit status item with a SwiftUI popover (`MenuPopover.swift`), the window (`SettingsView.swift`: Home, Servers, Routing, Settings). `AppModel*.swift` is the model, `ServiceLink.swift` builds and sends the snapshot, `Daemon.swift` is the socket client and wire types, `Fetch.swift` downloads, `LegacyMigration.swift` moves 0.2 data over |
 | `app/Sources/Splitroute/Store/` | The settings database (SQLite via GRDB): `Schema.swift` (migrations), `Store*.swift` (queries, edits), `ConfigRules.swift` (validation, pure list edits, presets, catalog), `Secrets.swift` (0600 files) |
-| `app/Sources/Design/` | The look: tokens (`Tokens.swift`), Inter, controls and rows. The app and `DesignPreview` both use it; `Screens.swift` is the preview's fake-data pages only |
-| `app/Sources/DesignPreview/` | `swift run DesignPreview [--snapshot <dir>]`: every screen and state on fake data, light and dark |
+| `app/Sources/Design/` | The look: tokens (`Tokens.swift`), Inter, controls and rows. The app uses it; `Screens.swift` holds `Destination` and `Sidebar` (used) plus old fake-data screens (unused) |
 | `build-app.sh` | Builds `Splitroute.app` and the DMG; the service binary embeds the engine, nothing else is bundled |
 
 The binary and the launchd label keep their old names (`splitroute`, `io.github.aliraghebi.splitroute`) so an
@@ -111,7 +110,7 @@ updated app finds its service. The `watch` argument starts the service.
   user's defaults, so they stay when a title changes ("Tunnels" is titled "VPN", "Lists" "Routing").
 - UI uses `Design` tokens and components, never raw colors; custom controls need an accessibility label and visible
   keyboard focus. Tunnels have no colors in the app (the selected one has a tick); `Design` still has the line
-  colors for the preview's older screens. The font is registered from
+  colors for its older unused screens. The font is registered from
   `Contents/Resources/Fonts` (`build-app.sh` copies it); never touch `Bundle.module` inside the app.
 - A list's action can be `none` ("No Action"): kept with its entries, never put in the snapshot; a ready-made list with it isn't downloaded. Compare it as `Action.none`: a bare `.none` on an optional reads as `Optional.none`.
 - Lists page downloads: `AppModel.downloads` holds a list's progress or failure; the row shows a ring with a percentage, or a red icon that retries.

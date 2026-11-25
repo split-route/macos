@@ -110,6 +110,8 @@ struct SelectMenu<Value: Hashable>: View {
     var group: ((Value) -> String?)?
     /// The title is one line, cut with … beyond this width: a long server name never makes its row wrap.
     var maxTitleWidth: CGFloat? = 200
+    /// Smaller text and chevron, for the menu bar panel.
+    var compact = false
     let onSelect: (Value) -> Void
 
     @State private var open = false
@@ -121,10 +123,10 @@ struct SelectMenu<Value: Hashable>: View {
     var body: some View {
         Button { open.toggle() } label: {
             HStack(spacing: 6) {
-                if let dot, let selected { Circle().fill(dot(selected)).frame(width: 8, height: 8) }
+                if let dot, let selected { Circle().fill(dot(selected)).frame(width: compact ? 7 : 8, height: compact ? 7 : 8) }
                 titleText
                 Image(systemName: "chevron.down")
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: compact ? 9 : 10, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .rotationEffect(.degrees(open ? 180 : 0))
                     .animation(.easeOut(duration: 0.15), value: open)
@@ -141,7 +143,7 @@ struct SelectMenu<Value: Hashable>: View {
     /// One line that hugs its text, cut with … only when it would be wider than `maxTitleWidth`. (A frame with a maximum
     /// would grow to the maximum and leave a gap between the dot and the words.)
     @ViewBuilder private var titleText: some View {
-        let text = Text(title).lineLimit(1)
+        let text = Text(title).font(compact ? TypeScale.secondary : TypeScale.body).lineLimit(1)
         if let max = maxTitleWidth, Self.estimatedWidth(title) > max {
             // Flexible, and the first to give: when the row is short of room it is this name that is cut, not its neighbors.
             text.truncationMode(.tail).frame(maxWidth: max, alignment: .leading).layoutPriority(-1)

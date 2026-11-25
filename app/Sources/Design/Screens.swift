@@ -59,7 +59,7 @@ public struct Sidebar: View {
                 }
             }
             .padding(.horizontal, Space.s).padding(.top, topInset).padding(.bottom, Space.xl)
-            ForEach(Destination.allCases, id: \.self) { d in
+            ForEach(Array(Destination.allCases.enumerated()), id: \.element) { index, d in
                 let on = selection == d
                 Button {
                     if reduceMotion { selection = d } else { withAnimation(.spring(response: 0.2, dampingFraction: 0.9)) { selection = d } }
@@ -86,6 +86,7 @@ public struct Sidebar: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 .accessibilityAddTraits(on ? .isSelected : [])
             }
             Spacer()

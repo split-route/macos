@@ -26,15 +26,15 @@ extension View {
         textFieldStyle(.plain)
             .font(TypeScale.body)
             .padding(.horizontal, Space.m).padding(.vertical, 7)
-            .background(Glass.control, in: RoundedRectangle(cornerRadius: Radius.control)) // a field inside a panel: one step lighter than the panel
-            .overlay(RoundedRectangle(cornerRadius: Radius.control).stroke(Glass.stroke, lineWidth: 1))
+            .glassSurface(RoundedRectangle(cornerRadius: Radius.control)) // a field inside a panel
     }
 }
 
-/// The tabs at the top of the add dialog.
+/// The tabs at the top of the add dialog: a capsule track with a lighter capsule that slides under the selection.
 struct SheetTabs<T: Hashable & Identifiable & RawRepresentable>: View where T.RawValue == String {
     let options: [T]
     @Binding var selection: T
+    @Namespace private var ns
 
     var body: some View {
         HStack(spacing: 2) {
@@ -42,20 +42,23 @@ struct SheetTabs<T: Hashable & Identifiable & RawRepresentable>: View where T.Ra
                 Text(o.rawValue)
                     .font(selection == o ? TypeScale.bodyStrong : TypeScale.body)
                     .foregroundStyle(selection == o ? Palette.ink.color : Palette.inkSecondary.color)
-                    .padding(.horizontal, 14).padding(.vertical, 5)
+                    .padding(.horizontal, 16).padding(.vertical, 6)
                     .background {
                         if selection == o {
-                            RoundedRectangle(cornerRadius: Radius.control - 2).fill(Glass.fill)
-                                .overlay(RoundedRectangle(cornerRadius: Radius.control - 2).stroke(Glass.stroke, lineWidth: 1))
+                            Capsule().fill(Glass.header.opacity(1)).overlay(Capsule().fill(Glass.control))
+                                .overlay(Capsule().stroke(Glass.stroke, lineWidth: 1))
+                                .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
+                                .matchedGeometryEffect(id: "selection", in: ns)
                         }
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture { selection = o }
+                    .contentShape(Capsule())
+                    .onTapGesture { withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { selection = o } }
                     .accessibilityAddTraits(selection == o ? [.isButton, .isSelected] : .isButton)
             }
         }
         .padding(2)
-        .background(Glass.control, in: RoundedRectangle(cornerRadius: Radius.control))
+        .background(Capsule().fill(Glass.header))
+        .overlay(Capsule().stroke(Glass.stroke, lineWidth: 0.5))
     }
 }
 
@@ -74,8 +77,7 @@ struct SheetSearch: View {
             }
         }
         .padding(.horizontal, Space.m).padding(.vertical, 8)
-        .background(Glass.fill, in: RoundedRectangle(cornerRadius: Radius.row))
-        .overlay(RoundedRectangle(cornerRadius: Radius.row).stroke(Glass.stroke, lineWidth: 1))
+        .glassSurface(Capsule())
     }
 }
 
@@ -212,7 +214,12 @@ private struct GlassSheetBackground: View {
 
 extension View {
     /// A dialog on liquid glass like the window, in the look the app has (light, dark or the system's).
+    @ViewBuilder
     func glassSheet() -> some View {
-        presentationBackground { GlassSheetBackground() }
+        if #available(macOS 26, *) {
+            self // the system's own sheet is Liquid Glass
+        } else {
+            presentationBackground { GlassSheetBackground() }
+        }
     }
 }

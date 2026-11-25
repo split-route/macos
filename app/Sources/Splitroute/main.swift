@@ -152,7 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func show(page: Destination?) {
         if settingsWindow == nil {
             let w = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 920, height: 640),
+                contentRect: NSRect(x: 0, y: 0, width: 936, height: 630),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                 backing: .buffered, defer: false)
             w.title = "Splitroute"
@@ -165,10 +165,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             w.isReleasedWhenClosed = false
             w.delegate = self
             w.contentViewController = NSHostingController(rootView: SettingsView().environmentObject(model))
-            w.setContentSize(NSSize(width: 920, height: 640))
+            w.setContentSize(NSSize(width: 936, height: 630))
             w.center()
-            w.setFrameAutosaveName("Settings2")
-            w.contentMinSize = NSSize(width: 820, height: 520)
+            w.setFrameAutosaveName("Settings4") // a new name, so the default size below applies once
+            w.contentMinSize = NSSize(width: 760, height: 500)
+            if #available(macOS 26, *) {
+                // A window with a toolbar gets the inset traffic lights of macOS 26 (as on the floating sidebar), placed
+                // and hit-tested by AppKit. The toolbar is empty and invisible: it only changes where the lights sit.
+                let bar = NSToolbar(identifier: "SettingsToolbar")
+                bar.showsBaselineSeparator = false
+                w.toolbar = bar
+                w.toolbarStyle = .unified
+                w.titlebarSeparatorStyle = .none
+            }
             settingsWindow = w
         }
         if let page {

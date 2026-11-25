@@ -118,6 +118,8 @@ extension AppModel {
     /// Turns the VPN on or off. Turning it on with no tunnel selected selects the first; with no tunnels it is refused.
     func setVPN(_ on: Bool) async {
         errors["vpn"] = nil
+        pending.insert("vpn")
+        defer { pending.remove("vpn") }
         do {
             guard let store else { throw StoreError("The settings database isn't open.") }
             if on {
@@ -153,6 +155,8 @@ extension AppModel {
 
     func setKillSwitch(on: Bool? = nil, lan: Bool? = nil) async {
         errors["killswitch"] = nil
+        pending.insert("killswitch")
+        defer { pending.remove("killswitch") }
         do {
             guard let store else { throw StoreError("The settings database isn't open.") }
             try store.setKillSwitch(on: on, lan: lan)

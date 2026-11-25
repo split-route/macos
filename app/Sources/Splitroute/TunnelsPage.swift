@@ -7,9 +7,9 @@ import SwiftUI
 struct TunnelsPage: View {
     @EnvironmentObject private var model: AppModel
     @State private var importing = false
+    private var query: Binding<String> { Binding(get: { model.searches["servers"] ?? "" }, set: { model.searches["servers"] = $0 }) }
     /// An OpenVPN profile chosen in the Add servers dialog, handed to the profile dialog.
-    @State private var profileFile: URL?
-    @State private var adding = false
+    @State private var profileFile: ProfileChoice?
     @State private var promptFor: Tunnel?
     @State private var renaming: Tunnel?
     @State private var logsFor: Tunnel?
@@ -30,12 +30,24 @@ struct TunnelsPage: View {
         var id: String { name ?? "" }
     }
 
+    private var searching: Bool { !query.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    /// Matches by name, protocol, transport or group.
+    private func matches(_ t: Tunnel) -> Bool {
+        let q = query.wrappedValue.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return true }
+        return ([t.name, t.protocolName, t.transport ?? "", t.group ?? ""] + (t.remotes ?? [])).contains { $0.localizedCaseInsensitiveContains(q) }
+    }
+
     private var groups: [Group] {
         var out: [Group] = []
-        let def = ordered(model.tunnels.filter { $0.group == nil })
+        let def = ordered(model.tunnels.filter { $0.group == nil && matches($0) })
         if !def.isEmpty { out.append(Group(name: nil, tunnels: def)) }
         for sub in model.tunnelList?.subscriptions ?? [] {
-            out.append(Group(name: sub.name, subscription: sub, tunnels: ordered(model.tunnels.filter { $0.group == sub.name })))
+            let ts = ordered(model.tunnels.filter { $0.group == sub.name && matches($0) })
+            // While searching, a group with no match is hidden; otherwise an empty subscription still shows.
+            if searching && ts.isEmpty { continue }
+            out.append(Group(name: sub.name, subscription: sub, tunnels: ts))
         }
         return out
     }
@@ -56,9 +68,18 @@ struct TunnelsPage: View {
 
     var body: some View {
         PageScaffold("Servers") {
-            if !model.tunnels.isEmpty, model.connError == nil {
-                Button { importing = true } label: { Label("Add servers", systemImage: "plus") }.buttonStyle(SolidButtonStyle()).disabled(unavailable)
+            // The controls fade in and out with the page's state instead of popping.
+            let showBar = !model.tunnels.isEmpty && model.connError == nil
+            ZStack {
+                if showBar {
+                    ToolbarGroup {
+                        ToolbarSearch(text: query, prompt: "Search servers…")
+                        ToolbarAddButton("Add servers") { importing = true }.disabled(unavailable)
+                    }
+                    .transition(.opacity)
+                }
             }
+            .animation(.easeOut(duration: 0.2), value: showBar)
         } content: {
             if model.connError != nil {
                 ServiceUnavailable()
@@ -67,7 +88,7 @@ struct TunnelsPage: View {
                     if let u = model.tunnelList?.unavailable { NoteLine(.warning, u) }
                     if let e = model.error("tunnels") { NoteLine(.error, e) }
                     Panel {
-                        EmptyState(title: "Add your first server",
+                        EmptyState(symbol: "shield", title: "Add your first server",
                                    message: "Paste a share link or a subscription address, or import an OpenVPN profile. Then connect.",
                                    action: "Add servers") { importing = true }
                     }
@@ -76,18 +97,21 @@ struct TunnelsPage: View {
                 VStack(alignment: .leading, spacing: Space.l) {
                     if let u = model.tunnelList?.unavailable { NoteLine(.warning, u) }
                     vpnCard
+                    if searching && groups.isEmpty {
+                        Text("No servers match.").font(TypeScale.body).foregroundStyle(Palette.inkSecondary.color)
+                            .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, Space.xl)
+                    }
                     ForEach(groups) { group in groupView(group, titled: group.name != nil) }
                 }
             }
         }
         .sheet(isPresented: $importing) {
             ImportTunnelsSheet(openProfile: { file in
-                profileFile = file
                 importing = false
-                DispatchQueue.main.async { adding = true }
+                DispatchQueue.main.async { profileFile = ProfileChoice(url: file) }
             }).environmentObject(model).glassSheet()
         }
-        .sheet(isPresented: $adding, onDismiss: { profileFile = nil }) { AddTunnelSheet(initialFile: profileFile).environmentObject(model).glassSheet() }
+        .sheet(item: $profileFile) { choice in AddTunnelSheet(initialFile: choice.url).environmentObject(model).glassSheet() }
         .sheet(item: $promptFor) { t in EditServerSheet(tunnel: t).environmentObject(model).glassSheet() }
         .sheet(item: $renaming) { t in RenameTunnelSheet(tunnel: t).environmentObject(model).glassSheet() }
         .sheet(item: $logsFor) { t in TunnelLogSheet(tunnel: t).environmentObject(model).glassSheet() }
@@ -128,10 +152,9 @@ struct TunnelsPage: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: Space.m)
-                    Toggle("Connection", isOn: Binding(get: { model.vpnOn }, set: { on in Task { await model.setVPN(on) } }))
-                        .labelsHidden().toggleStyle(.switch).tint(Accent.color)
+                    PendingToggle("Connection", isOn: Binding(get: { model.vpnOn }, set: { on in Task { await model.setVPN(on) } }),
+                                  pending: model.pending.contains("vpn"))
                         .disabled(model.tunnels.isEmpty)
-                        .accessibilityLabel("Connection")
                 }
                 if let e = model.error("vpn") { NoteLine(.error, e) }
             }
@@ -227,7 +250,7 @@ struct TunnelsPage: View {
                 Text("\(group.tunnels.count)").font(TypeScale.secondary).monospacedDigit()
                     .foregroundStyle(Palette.inkSecondary.color)
                     .padding(.horizontal, 10).padding(.vertical, 4)
-                    .background(Capsule().fill(Glass.control))
+                    .glassCapsule()
                     .accessibilityLabel(plural(group.tunnels.count, "server"))
                 Button { update(sub.name) } label: {
                     ZStack {
@@ -347,8 +370,8 @@ struct TunnelsPage: View {
                         Spacer(minLength: Space.m)
                         if let r = model.testResults[t.name] {
                             switch r {
-                            case .ms(let ms): Text("\(ms) ms").font(TypeScale.secondary).monospacedDigit().foregroundStyle(Palette.success.color)
-                            case .failed(let why, _): Text(why).font(TypeScale.secondary).foregroundStyle(Palette.danger.color).help(r.explanation)
+                            case .ms(let ms): LatencyPill(ms: ms)
+                            case .failed(let why, _): FailurePill(why).help(r.explanation)
                             }
                         } else if let l = label(t, selected: selected) {
                             Text(l).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
@@ -533,10 +556,9 @@ struct RenameTunnelSheet: View {
             }
             .formStyle(.grouped)
             SheetButtons(error: error) {
-                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel", role: .cancel) { dismiss() }.buttonStyle(OutlineButtonStyle()).keyboardShortcut(.cancelAction)
                 Button("Rename") { Task { await save() } }
-                    .keyboardShortcut(.defaultAction)
-                    .prominent()
+                    .buttonStyle(SolidButtonStyle()).keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || name == tunnel.name)
             }
         }
@@ -571,7 +593,7 @@ struct TunnelLogSheet: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
                 }
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).prominent()
+                Button("Done") { dismiss() }.buttonStyle(SolidButtonStyle()).keyboardShortcut(.defaultAction)
             }
         }
         .frame(width: 640, height: 420)
@@ -732,4 +754,11 @@ private struct NoteLabelStyle: LabelStyle {
             configuration.title.font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color).fixedSize(horizontal: false, vertical: true)
         }
     }
+}
+
+
+/// A chosen .ovpn file, carried with the sheet that imports it.
+struct ProfileChoice: Identifiable {
+    let id = UUID()
+    let url: URL?
 }

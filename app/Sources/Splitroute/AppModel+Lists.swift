@@ -20,6 +20,8 @@ extension AppModel {
     var routingOn: Bool { !(config?.disabled ?? false) }
 
     func setRoutingOn(_ on: Bool) async {
+        pending.insert("routing")
+        defer { pending.remove("routing") }
         await edit("routing") { try self.update { var c = $0; c.disabled = !on; return c } }
     }
 

@@ -141,7 +141,7 @@ struct AddTunnelSheet: View {
     private func chip(_ text: String, _ symbol: String) -> some View {
         Label(text, systemImage: symbol).font(.system(size: 10.5, weight: .medium))
             .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(Glass.control, in: Capsule())
+            .glassCapsule()
             .foregroundStyle(Palette.inkSecondary.color)
     }
 

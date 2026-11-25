@@ -46,19 +46,19 @@ struct HomePage: View {
                     statusCard
                     HStack(spacing: Space.m) {
                         Tile(title: "Routing", value: model.routingOn ? "On" : "Off", symbol: "arrow.triangle.branch", dot: model.routingOn ? Palette.success.color : Palette.inkSecondary.color.opacity(0.5),
-                             isOn: Binding(get: { model.routingOn }, set: { on in Task { await model.setRoutingOn(on) } }), dimmed: !connected)
+                             isOn: Binding(get: { model.routingOn }, set: { on in Task { await model.setRoutingOn(on) } }), pending: model.pending.contains("routing"), dimmed: !connected, tint: model.routingOn ? Palette.success.color : nil)
                         Tile(title: "Default Route", value: finalText, symbol: "arrow.triangle.branch", dot: finalDot,
-                             open: { go(.lists) }, dimmed: !connected)
+                             open: { go(.lists) }, dimmed: !connected, tint: finalDot)
                         Tile(title: "Kill switch", value: killSwitch.text, symbol: "hand.raised", dot: killSwitch.dot,
-                             isOn: Binding(get: { model.killSwitchOn }, set: { on in Task { await model.setKillSwitch(on: on) } }), dimmed: !connected)
+                             isOn: Binding(get: { model.killSwitchOn }, set: { on in Task { await model.setKillSwitch(on: on) } }), pending: model.pending.contains("killswitch"), dimmed: !connected, tint: model.killSwitchOn ? killSwitch.dot : nil)
                     }
                     HStack(spacing: Space.m) {
                         Tile(title: "Server", value: model.selectedTunnel?.name ?? "None selected", symbol: "shield", dot: nil,
-                             open: { go(.tunnels) }, dimmed: !connected)
+                             open: { go(.tunnels) }, dimmed: !connected, tint: Accent.color)
                         Tile(title: "Download", value: connected ? speedText(traffic.current?.down ?? 0) : "—", symbol: "arrow.down", dot: nil,
-                             tone: Palette.success.color, dimmed: !connected)
+                             tone: Palette.success.color, dimmed: !connected, tint: Palette.success.color)
                         Tile(title: "Upload", value: connected ? speedText(traffic.current?.up ?? 0) : "—", symbol: "arrow.up", dot: nil,
-                             tone: Palette.warning.color, dimmed: !connected)
+                             tone: Palette.warning.color, dimmed: !connected, tint: Palette.warning.color)
                     }
                     SpeedChart(samples: traffic.samples, live: connected)
                 }
@@ -90,18 +90,21 @@ struct HomePage: View {
                         .foregroundStyle(Palette.inkSecondary.color).lineLimit(2)
                 }
                 Spacer()
-                Toggle("Connection", isOn: Binding(get: { model.vpnOn }, set: { on in
+                PendingToggle("Connection", isOn: Binding(get: { model.vpnOn }, set: { on in
                     Task {
                         await model.setVPN(on)
                         // The selected server needs a password: the sheet for it is on the Servers page.
                         if on, let t = model.selectedTunnel, t.state == .needsAuth, model.needsCredentialPrompt(t) { go(.tunnels) }
                     }
-                }))
-                .labelsHidden().toggleStyle(.switch).tint(Accent.color)
+                }), pending: model.pending.contains("vpn"))
                 .disabled(model.tunnels.isEmpty)
-                .accessibilityLabel("Connection")
             }
             .padding(Space.l)
+            .background(alignment: .top) {
+                // The same wash the cards below have: the accent while connected, nothing while not.
+                LinearGradient(colors: [Accent.color.opacity(connected ? 0.20 : 0), .clear], startPoint: .top, endPoint: .bottom)
+                    .animation(.easeOut(duration: 0.25), value: connected)
+            }
             if let e = model.status?.error { NoteLine(.error, e).padding([.horizontal, .bottom], Space.l) } // the engine's own problem
             if let e = model.error("vpn") { NoteLine(.error, e).padding([.horizontal, .bottom], Space.l) }
         }
@@ -119,8 +122,12 @@ private struct Tile: View {
     var open: (() -> Void)?
     /// A card with a switch.
     var isOn: Binding<Bool>?
+    /// The switch's change is being applied: it shows a spinner.
+    var pending = false
     /// Not connected: the card stays but is faded and does nothing (no link, no switch), so it's clear to connect first.
     var dimmed = false
+    /// A faint wash of this colour at the card's top, so a card's state reads before its words do.
+    var tint: Color?
 
     var body: some View {
         // Dimmed: no button at all, so the only fading is ours. A disabled button or switch fades itself on top of it,
@@ -148,13 +155,16 @@ private struct Tile: View {
             }
             Spacer(minLength: 0)
             if let isOn {
-                Toggle(title, isOn: isOn).labelsHidden().toggleStyle(.switch).tint(Accent.color).controlSize(.small)
+                PendingToggle(title, isOn: isOn, pending: pending)
                     .allowsHitTesting(!dimmed).focusable(!dimmed)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Space.l)
         .background(Glass.fill)
+        .background(alignment: .top) {
+            if let tint { LinearGradient(colors: [tint.opacity(0.16), .clear], startPoint: .top, endPoint: .center) }
+        }
         .clipShape(RoundedRectangle(cornerRadius: Radius.panel))
         .overlay(RoundedRectangle(cornerRadius: Radius.panel).stroke(Glass.stroke, lineWidth: 1))
         .opacity(dimmed ? 0.45 : 1)
@@ -179,11 +189,27 @@ private struct SpeedChart: View {
 
     private var start: Date { (samples.last?.time ?? Date()).addingTimeInterval(-Double(TrafficMonitor.window)) }
 
+    /// The time under the pointer (the chart's own selection), and the sample nearest to it.
+    @State private var pointer: Date?
+    private var hovered: TrafficMonitor.Sample? {
+        guard live, let pointer else { return nil }
+        return samples.min { abs($0.time.timeIntervalSince(pointer)) < abs($1.time.timeIntervalSince(pointer)) }
+    }
+    /// What the legend shows: the sample under the pointer, else the latest.
+    private var shown: TrafficMonitor.Sample? { hovered ?? samples.last }
+
     var body: some View {
         Panel {
             VStack(alignment: .leading, spacing: Space.m) {
                 Chart {
                     ForEach(live ? samples : []) { s in
+                        // A wash under each line, fading to nothing, so the speed reads as a shape and not only a stroke.
+                        AreaMark(x: .value("Time", s.time), y: .value("Speed", s.down), series: .value("Direction", "Download area"), stacking: .unstacked)
+                            .interpolationMethod(.catmullRom)
+                            .foregroundStyle(LinearGradient(colors: [Palette.success.color.opacity(0.42), Palette.success.color.opacity(0.03)], startPoint: .top, endPoint: .bottom))
+                        AreaMark(x: .value("Time", s.time), y: .value("Speed", s.up), series: .value("Direction", "Upload area"), stacking: .unstacked)
+                            .interpolationMethod(.catmullRom)
+                            .foregroundStyle(LinearGradient(colors: [Palette.warning.color.opacity(0.32), Palette.warning.color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
                         LineMark(x: .value("Time", s.time), y: .value("Speed", s.down), series: .value("Direction", "Download"))
                             .interpolationMethod(.catmullRom).foregroundStyle(Palette.success.color)
                             .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
@@ -192,12 +218,24 @@ private struct SpeedChart: View {
                             .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
                     }
                 }
+                .chartXSelection(value: $pointer)
                 .chartXScale(domain: start...(samples.last?.time ?? Date()))
                 .chartYScale(domain: 0...top)
                 .chartXAxis(.hidden)
                 .chartYAxis {
                     AxisMarks(values: [0, top / 3, top * 2 / 3, top]) { v in
                         AxisGridLine(stroke: StrokeStyle(lineWidth: 1, dash: v.index == 0 ? [] : [4, 4])).foregroundStyle(Glass.divider)
+                    }
+                }
+                .chartOverlay { proxy in
+                    // The guide line at the pointer: drawn here, not as a mark, so it never changes the chart's scale.
+                    GeometryReader { geo in
+                        if let h = hovered, let x = proxy.position(forX: h.time), let frame = proxy.plotFrame {
+                            Rectangle().fill(Palette.inkSecondary.color.opacity(0.45)).frame(width: 1)
+                                .frame(height: geo[frame].height)
+                                .position(x: x + geo[frame].minX, y: geo[frame].midY)
+                                .allowsHitTesting(false)
+                        }
                     }
                 }
                 .overlay(alignment: .topTrailing) {
@@ -207,11 +245,12 @@ private struct SpeedChart: View {
                 .frame(height: 190)
                 .accessibilityLabel("Speed over the last minute")
                 .accessibilityValue(live ? "Download \(speedText(samples.last?.down ?? 0)), upload \(speedText(samples.last?.up ?? 0))" : "Not connected")
+                .animation(nil, value: pointer)
                 HStack(spacing: Space.xl) {
-                    legend("arrow.down.circle", live ? speedText(samples.last?.down ?? 0) : "—", Palette.success.color)
-                    legend("arrow.up.circle", live ? speedText(samples.last?.up ?? 0) : "—", Palette.warning.color)
+                    legend("arrow.down.circle", live ? speedText(shown?.down ?? 0) : "—", Palette.success.color)
+                    legend("arrow.up.circle", live ? speedText(shown?.up ?? 0) : "—", Palette.warning.color)
                     Spacer()
-                    Text("Last minute").font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                    Text(hovered.map { Self.clock.string(from: $0.time) } ?? "Last minute").font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                 }
             }
             .padding(Space.l)
@@ -219,6 +258,10 @@ private struct SpeedChart: View {
         .opacity(live ? 1 : 0.45) // the whole panel, like the cards
         .animation(.easeOut(duration: 0.25), value: live)
     }
+
+    private static let clock: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f
+    }()
 
     private func legend(_ symbol: String, _ text: String, _ color: Color) -> some View {
         HStack(spacing: 6) {

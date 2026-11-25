@@ -28,17 +28,12 @@ struct MenuPopover: View {
                 .frame(maxWidth: .infinity).padding(.vertical, Space.xl)
             } else {
                 connectionRow
-                Hairline()
                 serverRow
-                Hairline()
                 routingRow
-                Hairline()
                 killSwitchRow
-                Hairline()
                 defaultRouteRow
             }
             if model.serviceOutdated {
-                Hairline()
                 HStack {
                     Text("The service is an older version.").font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                     Spacer()
@@ -46,11 +41,10 @@ struct MenuPopover: View {
                 }
                 .padding(.horizontal, Space.l).padding(.vertical, Space.m)
             }
-            Hairline()
             MenuItem("Open Splitroute") { openApp(.home) }
             MenuItem("Quit", action: quit)
         }
-        .frame(width: 360)
+        .frame(width: 320)
         .font(TypeScale.body)
         .background(PanelGlass())
         .background(GeometryReader { g in Color.clear.preference(key: PanelSizeKey.self, value: g.size) })
@@ -59,20 +53,19 @@ struct MenuPopover: View {
 
     // MARK: Rows
 
-    /// A row: a title and a line under it on the left, the control on the right. Tall enough to hit.
+    /// A row: the title on the left, the control on the right. The state line is a tooltip and the accessibility value, not shown.
     private func row<C: View>(_ title: String, _ detail: String, dimmed: Bool = false, @ViewBuilder control: () -> C) -> some View {
         HStack(spacing: Space.m) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color)
-                Text(detail).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
-                    .lineLimit(1).fixedSize(horizontal: true, vertical: false) // one line, never cut: the server name gives way
-            }
-            .layoutPriority(1) // the words get their room first; the control takes what is left
+            Text(title).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color)
+                .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1) // the title gets its room first; the control takes what is left
             Spacer(minLength: Space.s)
             control()
         }
-        .padding(.horizontal, Space.l).padding(.vertical, 14)
-        .frame(minHeight: 56)
+        .padding(.horizontal, Space.l).padding(.vertical, 8)
+        .frame(minHeight: 42)
+        .help(detail)
+        .accessibilityValue(detail)
         .opacity(dimmed ? 0.45 : 1) // one fade for the whole row, like the cards on Home
         .animation(.easeOut(duration: 0.25), value: dimmed)
         .allowsHitTesting(!dimmed)
@@ -81,15 +74,13 @@ struct MenuPopover: View {
     private var connectionRow: some View {
         VStack(alignment: .leading, spacing: 0) {
             row("Connection", model.summary) {
-                Toggle("Connection", isOn: Binding(get: { model.vpnOn }, set: { on in
+                PendingToggle("Connection", isOn: Binding(get: { model.vpnOn }, set: { on in
                     Task {
                         await model.setVPN(on)
                         // The selected OpenVPN server needs a password: the sheet for it is in the app.
                         if on, let t = model.selectedTunnel, t.state == .needsAuth, model.needsCredentialPrompt(t) { openApp(.tunnels) }
                     }
-                }))
-                .labelsHidden().toggleStyle(.switch).tint(Accent.color)
-                .accessibilityLabel("Connection")
+                }), pending: model.pending.contains("vpn"))
             }
             if let e = model.error("vpn") { NoteLine(.error, e).padding(.horizontal, Space.l).padding(.bottom, Space.m) }
         }
@@ -97,11 +88,11 @@ struct MenuPopover: View {
 
     /// The server that carries the traffic, and the way to choose another. Always available, connected or not.
     private var serverRow: some View {
-        let names = model.tunnels.map(\.name)
+        let names = model.tunnelNamesLocalFirst
         let selected = model.tunnelList?.selected
         return row("Server", selected == nil ? "None selected" : "Carries your traffic") {
             SelectMenu(title: selected ?? "Choose…", options: names, label: { $0 }, selected: selected,
-                       group: { n in model.tunnels.first { $0.name == n }?.group }, maxTitleWidth: Self.controlTitleWidth) { n in
+                       group: { n in model.tunnels.first { $0.name == n }?.group }, maxTitleWidth: Self.controlTitleWidth, compact: true) { n in
                 Task { if let t = model.tunnels.first(where: { $0.name == n }), await model.selectTunnel(t) { openApp(.tunnels) } }
             }
             .accessibilityLabel("Server")
@@ -110,23 +101,21 @@ struct MenuPopover: View {
 
     private var routingRow: some View {
         row("Routing", model.routingOn ? "Lists are applied" : "Only the default route is applied", dimmed: !connected) {
-            Toggle("Routing", isOn: Binding(get: { model.routingOn }, set: { on in Task { await model.setRoutingOn(on) } }))
-                .labelsHidden().toggleStyle(.switch).tint(Accent.color)
-                .accessibilityLabel("Routing")
+            PendingToggle("Routing", isOn: Binding(get: { model.routingOn }, set: { on in Task { await model.setRoutingOn(on) } }),
+                          pending: model.pending.contains("routing"))
         }
     }
 
     private var killSwitchRow: some View {
         let detail = model.killSwitchOn ? (model.killSwitchArmed ? "Blocking leaks" : "Not active") : "Off"
         return row("Kill Switch", detail, dimmed: !connected) {
-            Toggle("Kill Switch", isOn: Binding(get: { model.killSwitchOn }, set: { on in Task { await model.setKillSwitch(on: on) } }))
-                .labelsHidden().toggleStyle(.switch).tint(Accent.color)
-                .accessibilityLabel("Kill Switch")
+            PendingToggle("Kill Switch", isOn: Binding(get: { model.killSwitchOn }, set: { on in Task { await model.setKillSwitch(on: on) } }),
+                          pending: model.pending.contains("killswitch"))
         }
     }
 
     private var defaultRouteRow: some View {
-        row("Default Route", "When no list matches", dimmed: !connected) { DefaultRouteMenu(maxTitleWidth: Self.controlTitleWidth) }
+        row("Default Route", "When no list matches", dimmed: !connected) { DefaultRouteMenu(maxTitleWidth: Self.controlTitleWidth, compact: true) }
     }
 
     /// The service can't be reached: the way to fix it, as the old menu offered.
@@ -186,7 +175,7 @@ private struct MenuItem: View {
                 Spacer()
             }
             .padding(.horizontal, Space.l)
-            .frame(height: 44)
+            .frame(height: 38)
             .background(hover ? Color.primary.opacity(0.08) : Color.clear)
             .contentShape(Rectangle())
         }

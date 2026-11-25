@@ -10,31 +10,59 @@ struct SettingsView: View {
 
 
     var body: some View {
+        Group {
+            if #available(macOS 26, *) { nativeBody } else { legacyBody }
+        }
+        .font(TypeScale.body)
+        .foregroundStyle(Palette.ink.color)
+        .frame(minWidth: 820, minHeight: 520)
+        .onAppear { if model.settingsVisible { model.traffic.start() } }
+        .onChange(of: model.settingsVisible) { _, open in if open { model.traffic.start() } else { model.traffic.stop() } }
+    }
+
+    /// The page for the selected destination; the pages cross-fade.
+    private var pages: some View {
+        ZStack {
+            switch page {
+            case .home: HomePage(traffic: model.traffic, go: { page = $0 }).transition(.opacity)
+            case .tunnels: TunnelsPage().transition(.opacity)
+            case .lists: ListsPage().transition(.opacity)
+            case .settings: SettingsPage().transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: page) // the page you leave fades out as the new one fades in
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Home and Servers already show the connection; the other pages get it in the sidebar.
+    private var sidebarStatus: String? {
+        model.connError == nil && page != .home && page != .tunnels ? model.sidebarStatus : nil
+    }
+
+    /// macOS 26+: a floating Liquid Glass sidebar of a fixed width (no divider to drag, nothing to collapse).
+    @available(macOS 26, *)
+    private var nativeBody: some View {
+        HStack(spacing: 0) {
+            GlassSidebar(selection: $page, status: sidebarStatus, statusOn: model.health == .active)
+                .frame(width: 250)
+                .padding(8)
+            pages
+        }
+        .background(Backdrop(material: .hudWindow, darkness: 0.82))
+        .ignoresSafeArea()
+    }
+
+    /// Before macOS 26: the app's own sidebar over a blurred backdrop.
+    private var legacyBody: some View {
         HStack(spacing: 0) {
             // The traffic lights sit over the sidebar's top: the title bar is transparent.
             Sidebar(selection: $page, tunnels: [], title: "Splitroute", subtitle: "Smart VPN & Routing",
                     icon: NSApp.applicationIconImage.map { Image(nsImage: $0) }, topInset: 30,
-                    // Home and Servers already show the connection; the other pages get it here.
-                    status: model.connError == nil && page != .home && page != .tunnels ? model.sidebarStatus : nil, statusOn: model.health == .active)
-            ZStack {
-                switch page {
-                case .home: HomePage(traffic: model.traffic, go: { page = $0 }).transition(.opacity)
-                case .tunnels: TunnelsPage().transition(.opacity)
-                case .lists: ListsPage().transition(.opacity)
-                case .settings: SettingsPage().transition(.opacity)
-                }
-            }
-            .animation(.easeOut(duration: 0.18), value: page) // the page you leave fades out as the new one fades in
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    status: sidebarStatus, statusOn: model.health == .active)
             // The content is the darker, blurrier layer, so focus stays on it; the sidebar is lighter and clearer.
-            .background(Backdrop(material: .hudWindow, darkness: 0.82))
+            pages.background(Backdrop(material: .hudWindow, darkness: 0.82))
         }
-        .font(TypeScale.body)
-        .foregroundStyle(Palette.ink.color)
         .ignoresSafeArea()
-        .frame(minWidth: 820, minHeight: 520)
-        .onAppear { if model.settingsVisible { model.traffic.start() } }
-        .onChange(of: model.settingsVisible) { _, open in if open { model.traffic.start() } else { model.traffic.stop() } }
     }
 }
 
@@ -109,6 +137,103 @@ struct ServiceUnavailable: View {
 }
 
 extension AppModel {
+    /// Server names as the Servers page orders them: the ones added by hand first, then each subscription's in the order
+    /// the subscriptions were added. Menus use it so a long subscription never pushes your own servers out of sight.
+    var tunnelNamesLocalFirst: [String] {
+        let subs = (tunnelList?.subscriptions ?? []).map(\.name)
+        let rank = { (t: Tunnel) -> Int in t.group.flatMap { subs.firstIndex(of: $0) }.map { $0 + 1 } ?? (t.group == nil ? 0 : subs.count + 1) }
+        return tunnels.enumerated().sorted { a, b in
+            let (x, y) = (rank(a.element), rank(b.element))
+            return x != y ? x < y : a.offset < b.offset
+        }.map(\.element.name)
+    }
+
     /// The service answers and its config is loaded.
     var ready: Bool { connError == nil && config != nil }
+}
+
+/// The sidebar on macOS 26+: one glass panel inset from the window edge (the traffic lights sit on it), the app's name,
+/// the pages, and the connection status at the foot.
+@available(macOS 26, *)
+private struct GlassSidebar: View {
+    @Binding var selection: Destination
+    let status: String?
+    let statusOn: Bool
+    @Namespace private var ns
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var scheme
+    @State private var commandHeld = false
+    @State private var flagsMonitor: Any?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: Space.m) {
+                if let icon = NSApp.applicationIconImage {
+                    Image(nsImage: icon).resizable().frame(width: 40, height: 40).accessibilityHidden(true)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Splitroute").font(TypeScale.heading).foregroundStyle(Palette.ink.color).lineLimit(1)
+                    Text("Smart VPN & Routing").font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color).lineLimit(1)
+                }
+            }
+            .padding(.horizontal, Space.s).padding(.top, 38).padding(.bottom, Space.l)
+            ForEach(Array(Destination.allCases.enumerated()), id: \.element) { index, d in
+                let on = selection == d
+                Button {
+                    if reduceMotion { selection = d } else { withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) { selection = d } }
+                } label: {
+                    HStack(spacing: Space.m) {
+                        Image(systemName: d.symbol).font(.system(size: 17, weight: .regular)).frame(width: 26)
+                            .foregroundStyle(on ? Accent.color : Palette.inkSecondary.color)
+                        Text(d.title).font(TypeScale.sidebar).foregroundStyle(on ? Palette.ink.color : Palette.inkSecondary.color)
+                        Spacer(minLength: 0)
+                        // The shortcut shows only while Command is held, like a menu's.
+                        Text("⌘\(index + 1)").font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color.opacity(0.7))
+                            .opacity(commandHeld ? 1 : 0)
+                            .animation(.easeOut(duration: 0.12), value: commandHeld)
+                    }
+                    .padding(.vertical, 11).padding(.horizontal, Space.m)
+                    .background {
+                        if on {
+                            RoundedRectangle(cornerRadius: Radius.row + 2, style: .continuous)
+                                .fill(Color.primary.opacity(0.12))
+                                .matchedGeometryEffect(id: "selection", in: ns)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+            Spacer(minLength: 0)
+            if let status {
+                HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                    Circle().fill(statusOn ? Palette.success.color : .clear)
+                        .overlay(Circle().stroke(Palette.inkSecondary.color, lineWidth: statusOn ? 0 : 1.5))
+                        .frame(width: 9, height: 9)
+                    Text(status).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                        .lineLimit(1).truncationMode(.tail)
+                }
+                .help(status)
+                .padding(.horizontal, Space.m).padding(.bottom, Space.s)
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .padding(Space.s)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .onAppear {
+            flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { e in
+                commandHeld = e.modifierFlags.contains(.command)
+                return e
+            }
+        }
+        .onDisappear { if let m = flagsMonitor { NSEvent.removeMonitor(m); flagsMonitor = nil }; commandHeld = false }
+        // Releasing Command while another app is in front sends no event here, so leaving the app clears it too.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in commandHeld = false }
+        .glassEffect(.regular.tint(scheme == .dark ? Color.black.opacity(0.18) : nil), in: RoundedRectangle(cornerRadius: 22, style: .continuous)) // dark: close to the page behind it
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous)) // cuts the glass's own drop shadow
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Glass.stroke, lineWidth: 0.5))
+        .shadow(color: .black.opacity(scheme == .dark ? 0.30 : 0.10), radius: 7, y: 2) // a soft shadow of our own, lighter than the glass's
+    }
 }

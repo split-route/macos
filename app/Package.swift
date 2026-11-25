@@ -11,10 +11,8 @@ let package = Package(
     targets: [
         .executableTarget(name: "Splitroute", dependencies: ["Design", .product(name: "GRDB", package: "GRDB.swift")], path: "Sources/Splitroute"),
         .testTarget(name: "SplitrouteTests", dependencies: ["Splitroute"], path: "Tests/SplitrouteTests"),
-        // The redesign: tokens, fonts and components (Design), shown on fake data
-        // (DesignPreview) until the real pages move over.
+        // The look: tokens, fonts and components.
         .target(name: "Design", path: "Sources/Design", resources: [.copy("Resources/Fonts")]),
-        .executableTarget(name: "DesignPreview", dependencies: ["Design"], path: "Sources/DesignPreview"),
         .testTarget(name: "DesignTests", dependencies: ["Design"], path: "Tests/DesignTests"),
     ]
 )
