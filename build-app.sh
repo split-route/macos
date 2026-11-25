@@ -1,7 +1,8 @@
 #!/bin/sh
 # Builds build/Splitroute.app: the Swift menu bar app (app/) and the Go service
-# (daemon/, universal) in Contents/Resources, then a DMG. Ad-hoc signed; not
-# notarized. The tunnel engine (sing-box) is inside the service binary: there is
+# (daemon/, universal) in Contents/Resources, then a zip (what the app updates from) and a DMG. Signed with the
+# self-signed certificate from scripts/make-signing-cert.sh when it is in the keychain
+# (a stable identity across builds), ad hoc otherwise; not notarized. The tunnel engine (sing-box) is inside the service binary: there is
 # no separate engine to build, bundle or pin.
 set -eu
 cd "$(dirname "$0")"
@@ -49,8 +50,26 @@ echo "The service embeds sing-box (https://github.com/SagerNet/sing-box) and Spl
 mkdir -p "$APP/Contents/Library/LaunchDaemons"
 cp app/LaunchDaemon.plist "$APP/Contents/Library/LaunchDaemons/io.github.aliraghebi.splitroute.plist"
 
-codesign --force --sign - "$APP/Contents/Resources/splitroute"
-codesign --force --sign - "$APP"
+# A certificate keeps the app's identity the same from build to build (an ad-hoc identity is the build's hash, so
+# every update looks like a new app to the Keychain and to the service's approval). SIGN_KEYCHAIN picks a keychain
+# other than the search list.
+SIGN_IDENTITY=${SIGN_IDENTITY:-Splitroute Signing}
+if security find-identity -p codesigning ${SIGN_KEYCHAIN:+"$SIGN_KEYCHAIN"} 2>/dev/null | grep -q "\"$SIGN_IDENTITY\""; then
+  SIGN=${SIGN_KEYCHAIN:+--keychain "$SIGN_KEYCHAIN"}
+  codesign --force $SIGN --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/splitroute"
+  codesign --force $SIGN --sign "$SIGN_IDENTITY" "$APP"
+  echo "Signed with \"$SIGN_IDENTITY\": $(codesign -dr - "$APP" 2>&1 | sed -n 's/^designated => //p')"
+elif [ "${REQUIRE_SIGNING_CERT:-}" = 1 ]; then
+  echo "error: REQUIRE_SIGNING_CERT is set but there is no \"$SIGN_IDENTITY\" certificate to sign with" >&2
+  exit 1
+else
+  echo "warning: no \"$SIGN_IDENTITY\" certificate found; signing ad hoc (run scripts/make-signing-cert.sh once). An ad-hoc build is a different app to macOS every time." >&2
+  codesign --force --sign - "$APP/Contents/Resources/splitroute"
+  codesign --force --sign - "$APP"
+fi
+
+# The zipped app the app updates itself from (ditto keeps the signature's seal; a plain zip may not).
+ditto -c -k --keepParent "$APP" build/Splitroute.zip
 
 # Drag-to-install disk image with a styled window (app/assets/). dmgbuild writes
 # the Finder layout without driving Finder, so it works headless on CI.
@@ -60,4 +79,4 @@ swift app/assets/background.swift build/background.tiff
 "$VENV/bin/dmgbuild" -s app/assets/dmg-settings.py -D app="$APP" -D background=build/background.tiff \
   Splitroute build/Splitroute.dmg >/dev/null
 rm build/background.tiff
-echo "$APP build/Splitroute.dmg"
+echo "$APP build/Splitroute.dmg build/Splitroute.zip"

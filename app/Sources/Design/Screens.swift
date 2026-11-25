@@ -2,14 +2,21 @@ import SwiftUI
 
 public enum Destination: String, CaseIterable, Sendable {
     // The raw values are stored in the user's defaults: keep them when a title changes.
-    case home = "Home", tunnels = "Tunnels", lists = "Lists", settings = "Settings"
+    // `settings` is General: its raw value predates the settings pages and stays "Settings".
+    case home = "Home", tunnels = "Tunnels", lists = "Lists", settings = "Settings", connection = "Connection", updates = "Updates"
+
+    /// The sidebar's top group and its Settings group; the pages of the second are listed under a "Settings" title.
+    public static let mainPages: [Destination] = [.home, .tunnels, .lists]
+    public static let settingsPages: [Destination] = [.settings, .connection, .updates]
 
     public var title: String {
         switch self {
         case .home: return "Home"
         case .tunnels: return "Servers"
         case .lists: return "Routing"
-        case .settings: return "Settings"
+        case .settings: return "General"
+        case .connection: return "Connection"
+        case .updates: return "Updates"
         }
     }
 
@@ -19,11 +26,63 @@ public enum Destination: String, CaseIterable, Sendable {
         case .tunnels: return "shield"
         case .lists: return "arrow.triangle.branch"
         case .settings: return "gearshape"
+        case .connection: return "network"
+        case .updates: return "arrow.triangle.2.circlepath"
         }
     }
 }
 
 // MARK: Sidebar
+
+public extension Destination {
+    /// The tile behind the page's icon in the sidebar.
+    var tileTone: Tone {
+        switch self {
+        case .home: return Tone(light: 0x2F7BF0, dark: 0x3B86F5)
+        case .tunnels: return Tone(light: 0x2FB85A, dark: 0x34C05F)
+        case .lists: return Tone(light: 0x9B4FD8, dark: 0xA55CE0)
+        case .settings: return Tone(light: 0x7C7C84, dark: 0x8A8A92)
+        case .connection: return Tone(light: 0x1F9FD8, dark: 0x2BA8E0)
+        case .updates: return Tone(light: 0xE88A0C, dark: 0xF2961A)
+        }
+    }
+}
+
+/// A page's sidebar icon: a colored rounded tile with a white glyph, or (UserDefaults "sidebarTiles" off) the plain glyph
+/// in `plain`. Kept switchable to compare the two looks.
+public struct DestinationIcon: View {
+    let destination: Destination
+    let selected: Bool
+    let plain: Color
+    @AppStorage("sidebarTiles") private var tiles = true
+    public init(_ destination: Destination, selected: Bool = false, plain: Color) { self.destination = destination; self.selected = selected; self.plain = plain }
+    public var body: some View {
+        if tiles {
+            let shape = RoundedRectangle(cornerRadius: 7, style: .continuous)
+            // On the selected row (solid blue) the tile turns white and the glyph takes the accent, like Telegram's.
+            Image(systemName: destination.symbol).font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(selected ? Accent.color : Color.white)
+                .frame(width: 28, height: 28)
+                .background(shape.fill(selected ? AnyShapeStyle(Color.white)
+                                                : AnyShapeStyle(LinearGradient(colors: [destination.tileTone.color.opacity(0.85), destination.tileTone.color], startPoint: .top, endPoint: .bottom))))
+                .overlay(shape.strokeBorder(Color.white.opacity(selected ? 0 : 0.18), lineWidth: 0.5))
+                .accessibilityHidden(true)
+        } else {
+            Image(systemName: destination.symbol).font(.system(size: 17, weight: .regular)).frame(width: 28).foregroundStyle(plain)
+        }
+    }
+}
+
+/// The small title over a group of sidebar items.
+public struct SidebarSectionTitle: View {
+    let title: String
+    public init(_ title: String) { self.title = title }
+    public var body: some View {
+        Text(title).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+            .padding(.horizontal, Space.m).padding(.top, Space.m).padding(.bottom, 2)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
 
 public struct Sidebar: View {
     @Namespace private var selectionNamespace
@@ -61,12 +120,12 @@ public struct Sidebar: View {
             .padding(.horizontal, Space.s).padding(.top, topInset).padding(.bottom, Space.xl)
             ForEach(Array(Destination.allCases.enumerated()), id: \.element) { index, d in
                 let on = selection == d
+                if d == Destination.settingsPages.first { SidebarSectionTitle("Settings") }
                 Button {
                     if reduceMotion { selection = d } else { withAnimation(.spring(response: 0.2, dampingFraction: 0.9)) { selection = d } }
                 } label: {
                     HStack(spacing: Space.m) {
-                        Image(systemName: d.symbol).font(.system(size: 18, weight: .regular)).frame(width: 26)
-                            .foregroundStyle(on ? Color.white : Palette.inkSecondary.color)
+                        DestinationIcon(d, selected: on, plain: on ? Color.white : Palette.inkSecondary.color)
                             .shadow(color: on ? Accent.lightTone.color.opacity(0.7) : .clear, radius: 4)
                         // The weight changes with the selection: animating that makes the letters swell and shrink, so the text snaps.
                         Text(d.title).font(on ? TypeScale.sidebarStrong : TypeScale.sidebar)
@@ -78,7 +137,7 @@ public struct Sidebar: View {
                     .background {
                         if on {
                             // One highlight that moves, not one that disappears and another that appears.
-                            LiquidSelection(RoundedRectangle(cornerRadius: Radius.row + 2, style: .continuous))
+                            RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Accent.color)
                                 .matchedGeometryEffect(id: "selection", in: selectionNamespace)
                         }
                     }
@@ -378,7 +437,7 @@ public struct AppWindow: View {
                 case .home: TunnelsScreen(tunnels: tunnels)
                 case .tunnels: TunnelsScreen(tunnels: tunnels)
                 case .lists: ListsScreen(lists: $lists, tunnels: tunnels, focusFirst: focusFirstList)
-                case .settings: SettingsScreen()
+                case .settings, .connection, .updates: SettingsScreen()
                 }
             }
             .padding(Space.xl)

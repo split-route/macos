@@ -192,8 +192,12 @@ private struct Request: Encodable {
     var wantLines: Bool?
     var lines: [String]?
     var ids: [String]?
+    /// Options of "test": "connect", "tcp" or "icmp"; an https address for connect; the time one test may take.
+    var method: String?
+    var url: String?
+    var timeoutMS: Int?
 
-    enum CodingKeys: String, CodingKey { case cmd, apply, id, username, password, text, data, rules, format, wantLines = "want_lines", lines, ids }
+    enum CodingKeys: String, CodingKey { case cmd, apply, id, username, password, text, data, rules, format, wantLines = "want_lines", lines, ids, method, url, timeoutMS = "timeout_ms" }
 }
 
 private struct Response: Decodable {
@@ -230,7 +234,7 @@ enum DaemonError: LocalizedError, Equatable {
 /// Client for the service's control socket: one JSON request, one JSON response per connection.
 enum Daemon {
     /// The service revision this app needs (Go: api.APIRevision).
-    static let requiredAPIRev = 12
+    static let requiredAPIRev = 13
 
     #if DEBUG
     /// Debug builds: SPLITROUTE_SOCKET points the app at a fake service.
@@ -253,8 +257,10 @@ enum Daemon {
 
     /// One request through each named tunnel, measured by the service: milliseconds, or why it failed.
     /// The service allows 60 s per call. The app asks for one tunnel per call so results show as they arrive.
-    static func test(_ ids: [String]) async throws -> [String: WireTest] {
-        guard let t = try await send(Request(cmd: "test", ids: ids)).tests else { throw outdated }
+    /// `method` is connect (a request through the tunnel to `url`, or the service's own address when nil), tcp or icmp
+    /// (the tunnel's own server, outside it).
+    static func test(_ ids: [String], method: String = "connect", url: String? = nil, timeout: Int? = nil) async throws -> [String: WireTest] {
+        guard let t = try await send(Request(cmd: "test", ids: ids, method: method, url: url, timeoutMS: timeout.map { $0 * 1000 })).tests else { throw outdated }
         return t
     }
 

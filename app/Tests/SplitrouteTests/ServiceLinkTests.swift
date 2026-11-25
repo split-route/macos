@@ -27,6 +27,20 @@ final class ServiceLinkTests: XCTestCase {
         return t
     }
 
+    /// Disconnect on sleep: the snapshot says the VPN is off while the saved switch stays on.
+    func testSuspendedSnapshotSaysVPNIsOffAndTheSavedSwitchStaysOn() throws {
+        let (s, files, link) = try make()
+        let proxy = try add(s, files, "Proxy", kind: "vless", source: #"{"type":"vless","server":"example.com","server_port":443}"#)
+        try s.setSelected(proxy.id)
+        try s.setVPN(on: true)
+        XCTAssertTrue(try link.snapshot().vpn)
+        link.suspended = true
+        XCTAssertFalse(try link.snapshot().vpn)
+        XCTAssertTrue(try s.vpn().on, "the saved switch is the user's: sleep never writes it")
+        link.suspended = false
+        XCTAssertTrue(try link.snapshot().vpn)
+    }
+
     func testSnapshotMatchesTheServicesContract() throws {
         let (s, files, link) = try make()
         let proxy = try add(s, files, "Proxy", kind: "vless", source: #"{"type":"vless","server":"example.com","server_port":443}"#)

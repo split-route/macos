@@ -9,7 +9,7 @@ enum Fetch {
     static let maxSubscription = 8 << 20   // a subscription body is a few hundred KB at most
 
     /// Redirects only to https without credentials (URLSession stops long chains itself).
-    private final class HTTPSOnly: NSObject, URLSessionTaskDelegate {
+    final class HTTPSOnly: NSObject, URLSessionTaskDelegate {
         func urlSession(_ s: URLSession, task: URLSessionTask, willPerformHTTPRedirection r: HTTPURLResponse, newRequest req: URLRequest,
                         completionHandler done: @escaping (URLRequest?) -> Void) {
             done(req.url?.scheme == "https" && req.url?.user == nil ? req : nil)
@@ -184,5 +184,47 @@ enum Fetch {
             warnings.append("\(file): \(why)" + (files.releaseText(n) != nil ? "; using the saved copy" : "; no saved copy"))
         }
         return (replaced, warnings)
+    }
+
+    // MARK: Big files
+
+    /// Downloads one https file to `dest` (an app update: tens of MB, so it goes to disk, not memory, and gets minutes,
+    /// not the 60 s the small downloads get). A file over `limit` is an error. `progress` is a fraction, nil when unknown.
+    static func downloadFile(_ url: URL, to dest: URL, limit: Int, progress: @escaping @Sendable (Double?) -> Void) async throws {
+        let c = URLSessionConfiguration.ephemeral
+        c.httpCookieStorage = nil
+        c.httpShouldSetCookies = false
+        c.timeoutIntervalForRequest = 60
+        c.timeoutIntervalForResource = 20 * 60
+        c.urlCache = nil
+        let session = URLSession(configuration: c, delegate: HTTPSOnly(), delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        var req = URLRequest(url: url)
+        req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        let host = url.host ?? "the server"
+        try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
+            let task = session.downloadTask(with: req) { tmp, resp, err in
+                if let err { return done.resume(throwing: StoreError("Could not download from \(host): \((err as NSError).localizedDescription)")) }
+                guard let tmp, let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+                    return done.resume(throwing: StoreError("\(host) answered HTTP \((resp as? HTTPURLResponse)?.statusCode ?? 0)."))
+                }
+                let size = (try? FileManager.default.attributesOfItem(atPath: tmp.path)[.size] as? Int) ?? 0
+                guard size > 0, size <= limit else { return done.resume(throwing: StoreError("The file from \(host) is not the size expected.")) }
+                do {
+                    try? FileManager.default.removeItem(at: dest)
+                    try FileManager.default.moveItem(at: tmp, to: dest)
+                    done.resume()
+                } catch { done.resume(throwing: error) }
+            }
+            let watch = task.progress.observe(\.fractionCompleted) { p, _ in
+                if task.countOfBytesExpectedToReceive > Int64(limit) { task.cancel() }
+                progress(task.countOfBytesExpectedToReceive > 0 ? p.fractionCompleted : nil)
+            }
+            task.resume()
+            Task { // keep the observer alive until the task ends
+                while task.state == .running || task.state == .suspended { try? await Task.sleep(nanoseconds: 300_000_000) }
+                watch.invalidate()
+            }
+        }
     }
 }

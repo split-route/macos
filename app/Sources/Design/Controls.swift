@@ -339,15 +339,99 @@ public struct Panel<Content: View>: View {
 
 public struct PageHeader<Trailing: View>: View {
     let title: String
+    let back: (() -> Void)?
     let trailing: Trailing
-    public init(_ title: String, @ViewBuilder trailing: () -> Trailing) {
-        self.title = title; self.trailing = trailing()
+    public init(_ title: String, back: (() -> Void)? = nil, @ViewBuilder trailing: () -> Trailing) {
+        self.title = title; self.back = back; self.trailing = trailing()
     }
     public var body: some View {
-        HStack(alignment: .top, spacing: Space.l) {
+        HStack(alignment: .center, spacing: Space.l) {
+            if let back { BackButton(action: back) }
             Text(title).font(TypeScale.title).foregroundStyle(Palette.ink.color)
             Spacer(minLength: Space.l)
             trailing
+        }
+    }
+}
+
+/// A round liquid button that leaves an inner page, left of its title.
+public struct BackButton: View {
+    let size: CGFloat
+    let action: () -> Void
+    public init(size: CGFloat = 38, action: @escaping () -> Void) { self.size = size; self.action = action }
+    public var body: some View {
+        Button(action: action) {
+            Image(systemName: "chevron.left").font(.system(size: size * 0.4, weight: .semibold)).foregroundStyle(Palette.ink.color)
+                .frame(width: size, height: size).contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .modifier(ToolbarGlass(shape: Circle(), interactive: true))
+        .keyboardShortcut("[", modifiers: .command)
+        .help("Back (⌘[)").accessibilityLabel("Back")
+    }
+}
+
+/// The bar that floats over a page's top once it scrolls: a round Liquid Glass box inset from the page's edges, like the
+/// sidebar's panel, with the back button (inner pages), the title and the page's own controls in it. Content scrolls
+/// underneath and shows through.
+public struct FloatingBar<Trailing: View>: View {
+    public static var height: CGFloat { 48 }
+    let title: String
+    let back: (() -> Void)?
+    let visible: Bool
+    let trailing: Trailing
+    @Environment(\.colorScheme) private var scheme
+    public init(_ title: String, back: (() -> Void)? = nil, visible: Bool = true, @ViewBuilder trailing: () -> Trailing) {
+        self.title = title; self.back = back; self.visible = visible; self.trailing = trailing()
+    }
+
+    public var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+        HStack(spacing: Space.l) {
+            if let back { BackButton(size: 32, action: back) }
+            Text(title).font(TypeScale.heading).foregroundStyle(Palette.ink.color).lineLimit(1)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: Space.l)
+            trailing.scaleEffect(0.84, anchor: .trailing)
+        }
+        .padding(.horizontal, Space.m)
+        .frame(height: Self.height).frame(maxWidth: .infinity)
+        .modifier(BarGlass(shape: shape, scheme: scheme))
+        .padding(.horizontal, Space.l).padding(.top, Space.s)
+        .opacity(visible ? 1 : 0)
+        .offset(y: visible ? 0 : -8)
+        .allowsHitTesting(visible)
+        .animation(.easeOut(duration: 0.18), value: visible)
+    }
+}
+
+/// The box's surface: Liquid Glass on macOS 26+ like the sidebar's panel, a material before; a hairline and a soft shadow.
+private struct BarGlass: ViewModifier {
+    let shape: RoundedRectangle
+    let scheme: ColorScheme
+    func body(content: Content) -> some View {
+        Group {
+            if #available(macOS 26, *) {
+                content.glassEffect(.regular.tint(scheme == .dark ? Color.black.opacity(0.18) : nil), in: shape)
+            } else {
+                content.background(.regularMaterial, in: shape)
+            }
+        }
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(Glass.stroke, lineWidth: 0.5))
+        .shadow(color: .black.opacity(scheme == .dark ? 0.30 : 0.10), radius: 7, y: 2)
+    }
+}
+
+/// Reports a ScrollView's offset: past a few points it is "scrolled" and the page's floating bar shows.
+public struct ScrollTracker: ViewModifier {
+    let report: (Bool) -> Void
+    public init(report: @escaping (Bool) -> Void) { self.report = report }
+    public func body(content: Content) -> some View {
+        if #available(macOS 15, *) {
+            content.onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y > 16 } action: { _, now in report(now) }
+        } else {
+            content
         }
     }
 }

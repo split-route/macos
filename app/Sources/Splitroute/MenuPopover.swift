@@ -42,6 +42,12 @@ struct MenuPopover: View {
                 .padding(.horizontal, Space.l).padding(.vertical, Space.m)
             }
             MenuItem("Open Splitroute") { openApp(.home) }
+            if let v = model.stagedUpdate {
+                // Only once it is downloaded and checked: installing is the next step.
+                MenuItem("Install newer version (\(v))", dot: Palette.success.color) { model.confirmingInstall = true; openApp(.settings) }
+            } else if let r = model.newerRelease {
+                MenuItem("Newer version is available (\(r.version))", dot: Palette.success.color) { openApp(.settings) }
+            }
             MenuItem("Quit", action: quit)
         }
         .frame(width: 320)
@@ -163,14 +169,16 @@ private struct PanelSizeKey: PreferenceKey {
 /// A full-width item under the rows: the whole line is the button, with a highlight under the pointer.
 private struct MenuItem: View {
     let title: String
+    var dot: Color?
     let action: () -> Void
     @State private var hover = false
 
-    init(_ title: String, action: @escaping () -> Void) { self.title = title; self.action = action }
+    init(_ title: String, dot: Color? = nil, action: @escaping () -> Void) { self.title = title; self.dot = dot; self.action = action }
 
     var body: some View {
         Button(action: action) {
-            HStack {
+            HStack(spacing: Space.s) {
+                if let dot { Circle().fill(dot).frame(width: 8, height: 8).accessibilityHidden(true) }
                 Text(title).font(TypeScale.body).foregroundStyle(Palette.ink.color)
                 Spacer()
             }

@@ -159,7 +159,8 @@ struct SelectMenu<Value: Hashable>: View {
 
     private var matches: [Value] {
         let q = query.trimmingCharacters(in: .whitespaces)
-        return q.isEmpty ? options : options.filter { label($0).localizedCaseInsensitiveContains(q) }
+        // A group's title matches too, so typing a subscription's name lists its servers.
+        return q.isEmpty ? options : options.filter { label($0).localizedCaseInsensitiveContains(q) || (group?($0)?.localizedCaseInsensitiveContains(q) ?? false) }
     }
 
     private func pick(_ v: Value) {

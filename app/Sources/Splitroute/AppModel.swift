@@ -25,6 +25,15 @@ final class AppModel: ObservableObject {
     @Published var testResults: [String: TunnelTest] = [:]
     @Published var testing = false
     @Published var busy = false
+    /// A newer release of the app than this one, once a check found it; and the state of a check the user asked for.
+    @Published var newerRelease: AppUpdate.Release?
+    @Published var checkingUpdate = false
+    /// The update's download: a fraction or the reason it failed; nil when none is running. `stagedUpdate` is the version
+    /// downloaded, checked and waiting to be installed. `confirmingInstall` asks the General page to confirm installing it.
+    @Published var updateDownload: Fetch.DownloadState?
+    @Published var stagedUpdate: String?
+    @Published var confirmingInstall = false
+    @Published var updateCheckNote: String?
     /// Switches whose change is being applied by the service ("vpn", "killswitch", "routing"): a spinner shows beside each.
     @Published var pending: Set<String> = []
     /// What is typed in each page's search field ("servers", "lists"): kept while you visit another page.
@@ -45,6 +54,16 @@ final class AppModel: ObservableObject {
     var releaseWarnings: [String] = []
     var lastRelease: Date? = UserDefaults.standard.object(forKey: "releaseFetchedAt") as? Date
     var refreshing = false
+    /// The first refresh after launch is the "update on open" one.
+    var listsOpenHandled = false
+    var subsOpenHandled = false
+    /// When each subscription was last tried by the schedule, so a failing one isn't hammered.
+    var subsAttempt: [Int64: Date] = [:]
+    var testedAt: Date?
+    var sleepSuspended = false
+    var updateAttempt: Date?
+    var alwaysOnHandled = false
+    var automationStarted = false
     private var transports: [String: String?] = [:]
     /// Credentials the user typed without saving them: kept for this run only.
     var sessionSecrets: [String: TunnelSecrets] = [:]
@@ -53,7 +72,8 @@ final class AppModel: ObservableObject {
     var credentialsRefused: Set<String> = []
 
     private static let pollInterval: UInt64 = 5_000_000_000
-    static let releaseEvery: TimeInterval = 24 * 3600
+    /// How old the release lists may get before the next refresh (Settings > Connection).
+    static var releaseEvery: TimeInterval { TimeInterval(Prefs.int(Prefs.listsIntervalHours, 24)) * 3600 }
 
     init(files: AppFiles = .standard) {
         self.files = files
@@ -69,6 +89,7 @@ final class AppModel: ObservableObject {
                 return self.sessionSecrets[name] ?? TunnelKeychain.load(name)
             }
             reloadLocal()
+            restoreUpdateState()
         } catch {
             actionError = "Splitroute's settings can't be opened: \(error.localizedDescription)"
         }
@@ -90,6 +111,7 @@ final class AppModel: ObservableObject {
             await supplyTunnelCredentials()
         }
         if !refreshing { Task { await self.refreshDownloads() } }
+        if connError == nil, config != nil { await runAutomation() }
         await autoInstallIfNeeded()
     }
 

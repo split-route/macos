@@ -15,6 +15,7 @@ struct TunnelsPage: View {
     @State private var logsFor: Tunnel?
     @State private var confirmRemove: Tunnel?
     @State private var editingGroup: Subscription?
+    @AppStorage(Prefs.sortByPing) private var sortByPing = true
 
     private var unavailable: Bool { model.connError != nil || model.tunnelList?.unavailable != nil }
     private var selectedName: String? { model.tunnelList?.selected }
@@ -55,7 +56,7 @@ struct TunnelsPage: View {
     /// After a connectivity test: the fastest first, the ones that didn't answer last, the rest of the order kept. Only
     /// the display changes; the stored order doesn't. The order goes back when the next test starts or the VPN stops.
     private func ordered(_ ts: [Tunnel]) -> [Tunnel] {
-        guard !model.testing, !model.testResults.isEmpty else { return ts }
+        guard sortByPing, !model.testing, !model.testResults.isEmpty else { return ts }
         func rank(_ t: Tunnel) -> Int {
             if case .ms(let ms)? = model.testResults[t.name] { return ms }
             return Int.max

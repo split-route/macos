@@ -79,26 +79,47 @@ public struct SectionTitle: View {
     }
 }
 
-/// A page: header on top, content below, scrolling when it is long.
+/// How far a page has scrolled.
+private struct ScrollOffsetKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+/// A page: header on top, content below, scrolling when it is long. Once it scrolls, a blue Liquid Glass bar floats at the
+/// top with the title (and the page's controls) on it. An inner page passes `back` and gets a round back button left of
+/// its title.
 public struct PageScaffold<Trailing: View, Content: View>: View {
     let title: String
+    let back: (() -> Void)?
     let trailing: Trailing
     let content: Content
-    public init(_ title: String, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) {
-        self.title = title; self.trailing = trailing(); self.content = content()
+    @State private var scrolled = false
+    public init(_ title: String, back: (() -> Void)? = nil, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) {
+        self.title = title; self.back = back; self.trailing = trailing(); self.content = content()
     }
     public var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Space.xl) {
-                PageHeader(title) { trailing }
-                // A section title sits close to its panel; the gap above it separates sections.
-                VStack(alignment: .leading, spacing: Space.s) { content }
+        ZStack(alignment: .top) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Space.xl) {
+                    PageHeader(title, back: back) { trailing }
+                        .opacity(scrolled ? 0 : 1).allowsHitTesting(!scrolled) // the bar carries them now
+                        .animation(.easeOut(duration: 0.18), value: scrolled)
+                    // A section title sits close to its panel; the gap above it separates sections.
+                    VStack(alignment: .leading, spacing: Space.s) { content }
+                }
+                .padding(Space.xl)
+                .padding(.top, Space.m)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: ScrollOffsetKey.self, value: -g.frame(in: .named("page")).minY)
+                })
             }
-            .padding(Space.xl)
-            .padding(.top, Space.m)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .coordinateSpace(name: "page")
+            .onPreferenceChange(ScrollOffsetKey.self) { scrolled = $0 > 16 }
+            .modifier(ScrollTracker { scrolled = $0 })
+            .scrollIndicators(.never)
+            FloatingBar(title, back: back, visible: scrolled) { trailing }
         }
-        .scrollIndicators(.never)
     }
 }
 

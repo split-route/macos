@@ -2,18 +2,19 @@ import AppKit
 import Design
 import SwiftUI
 
-/// Settings by category: General, Connection, Kill switch, System service and About.
+/// Settings > General: theme, login, quitting, the system service and About (the rest is on `ConnectionSettingsPage`).
 struct SettingsPage: View {
     @EnvironmentObject private var model: AppModel
     @State private var confirmUninstall = false
     @AppStorage("quitAction") private var quitAction = "" // read by AppDelegate.quit
+    @AppStorage(Prefs.autoCheckUpdates) private var autoCheck = true
+    @AppStorage(Prefs.autoDownloadUpdates) private var autoDownload = true
 
     private static let repo = URL(string: "https://github.com/split-route/macos")!
     private static let releases = URL(string: "https://github.com/split-route/macos/releases")!
     private static let rules = URL(string: "https://github.com/split-route/routing-rules")!
     @AppStorage(Theme.key) private var theme = Theme.system.rawValue
     private static let quitLabels = ["": "Ask", "turnOff": "Disconnect", "keep": "Keep it on"]
-    private static let bootstrapLabels = ["": "Automatic", "1.1.1.1": "Cloudflare (1.1.1.1)", "8.8.8.8": "Google (8.8.8.8)", "9.9.9.9": "Quad9 (9.9.9.9)", "system": "System resolver"]
 
     var body: some View {
         PageScaffold("Settings") {
@@ -22,9 +23,14 @@ struct SettingsPage: View {
             if model.status == nil { ServiceUnavailable() }
             warnings
             general
-            if model.status != nil { connection; killSwitch }
             service
             about
+        }
+        .confirmationDialog("Install Splitroute \(model.stagedUpdate ?? "")?", isPresented: $model.confirmingInstall) {
+            Button("Install and Restart") { model.installUpdate() }
+        } message: {
+            Text("Splitroute quits and opens again. The connection stays on, but may drop for a few seconds while the service restarts."
+                 + (model.killSwitchOn && model.vpnOn ? " The kill switch is on, so the network stays blocked until the new version has reconnected." : ""))
         }
         .confirmationDialog("Uninstall the Splitroute service?", isPresented: $confirmUninstall) {
             Button("Uninstall", role: .destructive) { Task { await model.uninstallService() } }
@@ -33,8 +39,33 @@ struct SettingsPage: View {
         }
     }
 
-    private func toggle(_ title: String, isOn: Binding<Bool>) -> some View {
-        Toggle(title, isOn: isOn).labelsHidden().toggleStyle(.switch).tint(Accent.color)
+    private func toggle(_ title: String, isOn: Binding<Bool>) -> some View { settingsSwitch(title, isOn: isOn) }
+
+    /// Check, Download (with its progress) or Install, whichever fits where the update is.
+    @ViewBuilder private var updateAction: some View {
+        let blocked = model.updateBlockedReason
+        if let r = model.newerRelease, blocked == nil, r.zip != nil {
+            if model.stagedUpdate == r.version {
+                Button("Install…") { model.confirmingInstall = true }.buttonStyle(SolidButtonStyle())
+            } else if case .running(let p)? = model.updateDownload {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(p.map { "\(Int($0 * 100))%" } ?? "Downloading…").font(TypeScale.secondary).monospacedDigit()
+                }
+            } else {
+                Button("Download") { Task { await model.downloadUpdate() } }.buttonStyle(SolidButtonStyle())
+            }
+        }
+        Button("Check for updates") { Task { await model.checkForUpdate(manual: true) } }
+            .buttonStyle(OutlineButtonStyle()).disabled(model.checkingUpdate)
+    }
+
+    /// What to say under the Version row: why an update can't be installed here, a failure, or the result of a check.
+    private var updateNote: (text: String, error: Bool)? {
+        if case .failed(let why)? = model.updateDownload { return (why, true) }
+        if model.newerRelease != nil, let why = model.updateBlockedReason { return (why, false) }
+        if let n = model.updateCheckNote { return (n, n.hasPrefix("Couldn't")) }
+        return nil
     }
 
     // MARK: Warnings
@@ -79,51 +110,6 @@ struct SettingsPage: View {
         }
     }
 
-    // MARK: Connection
-
-    @ViewBuilder private var connection: some View {
-        SectionTitle("Connection")
-        Panel {
-            FormRow("Find servers with",
-                    detail: "Automatic asks Cloudflare, Google and Quad9 when you connect and uses the first that answers from your network, because networks block different ones. Pick one yourself if a server still fails with \"connection reset by peer\" or times out. The system resolver can return a blocked network's fake address.",
-                    error: model.error("bootstrap")) {
-                SelectMenu(title: Self.bootstrapLabels[model.bootstrap] ?? model.bootstrap, options: ["", "1.1.1.1", "8.8.8.8", "9.9.9.9", "system"],
-                           label: { Self.bootstrapLabels[$0] ?? $0 }, selected: model.bootstrap) { v in Task { await model.setBootstrap(v) } }
-                    .disabled(model.busy)
-            }
-            Hairline()
-            FormRow("Block QUIC (HTTP/3)",
-                    detail: "A browser can hide a site's name inside QUIC, so a Block list misses it. With this on, QUIC that no list matched is refused and the browser uses regular HTTPS, where the name is visible.",
-                    error: model.error("blockQUIC")) {
-                toggle("Block QUIC", isOn: Binding(get: { model.config?.blockQUIC ?? true },
-                                                   set: { on in Task { await model.setBlockQUIC(on) } }))
-            }
-        }
-    }
-
-    // MARK: Kill switch
-
-    @ViewBuilder private var killSwitch: some View {
-        SectionTitle("Kill switch")
-        Panel {
-            FormRow("Block traffic if the connection drops",
-                    detail: "While connected, only your servers' own connections can leave this Mac. If the server fails, the network stops instead of using your normal connection.",
-                    error: model.error("killswitch")) {
-                toggle("Block traffic if the connection drops", isOn: Binding(get: { model.killSwitchOn }, set: { on in Task { await model.setKillSwitch(on: on) } }))
-                    .disabled(model.busy)
-            }
-            Hairline()
-            FormRow("Allow the local network", detail: "Printers, file shares and your router stay reachable while traffic is blocked.") {
-                toggle("Allow the local network", isOn: Binding(get: { model.killSwitchLAN }, set: { on in Task { await model.setKillSwitch(lan: on) } }))
-                    .disabled(model.busy || !model.killSwitchOn)
-            }
-            Hairline()
-            NoteLine(.warning, "Programs running as root can still reach the network. The kill switch also stays on after a restart: the network is blocked until the connection is up, so keep the app set to open at login. Uninstalling the service turns it off.")
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(Space.l)
-        }
-    }
-
     // MARK: System service
 
     @ViewBuilder private var service: some View {
@@ -155,7 +141,39 @@ struct SettingsPage: View {
     @ViewBuilder private var about: some View {
         SectionTitle("About")
         Panel {
-            ValueRow("Version", AppModel.appVersion + (model.status.map { $0.version != AppModel.appVersion ? ", service \($0.version)" : "" } ?? ""))
+            FormRow("Version", detail: AppModel.appVersion + (model.status.map { $0.version != AppModel.appVersion ? ", service \($0.version)" : "" } ?? "")) {
+                HStack(spacing: Space.m) {
+                    if let r = model.newerRelease {
+                        HStack(spacing: 6) {
+                            Circle().fill(Palette.success.color).frame(width: 8, height: 8)
+                            Link(model.stagedUpdate == r.version ? "\(r.version) is ready" : "\(r.version) is available", destination: r.page)
+                                .font(TypeScale.bodyStrong)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                    if model.checkingUpdate { ProgressView().controlSize(.small) }
+                    updateAction
+                }
+            }
+            if let note = updateNote {
+                Group {
+                    if note.error { NoteLine(.error, note.text) } else {
+                        Text(note.text).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Space.l).padding(.bottom, Space.m)
+            }
+            Hairline()
+            FormRow("Check for updates automatically", detail: "Once a day, Splitroute asks GitHub for the latest version while it runs.") {
+                settingsSwitch("Check for updates automatically", isOn: Binding(get: { autoCheck }, set: { on in
+                    autoCheck = on
+                    if on { Task { await model.checkForUpdate(manual: false) } } else { model.forgetRelease() }
+                }))
+            }
+            Hairline()
+            FormRow("Download updates automatically", detail: "When the daily check finds a newer version, download it so it is ready to install. It is checked against this app's signature, and nothing is installed until you choose to.") {
+                settingsSwitch("Download updates automatically", isOn: $autoDownload).disabled(!autoCheck)
+            }
             Hairline()
             FormRow("Updates", detail: "With Homebrew: brew upgrade --cask splitroute. Otherwise download the DMG from the releases page.") {
                 Link("Releases", destination: Self.releases).font(TypeScale.bodyStrong)

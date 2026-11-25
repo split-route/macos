@@ -116,7 +116,8 @@ extension AppModel {
     }
 
     /// Turns the VPN on or off. Turning it on with no tunnel selected selects the first; with no tunnels it is refused.
-    func setVPN(_ on: Bool) async {
+    /// `automatic` is the app turning it on by itself (Always on): it never lets a failed server try again.
+    func setVPN(_ on: Bool, automatic: Bool = false) async {
         errors["vpn"] = nil
         pending.insert("vpn")
         defer { pending.remove("vpn") }
@@ -126,7 +127,7 @@ extension AppModel {
                 let ts = try store.tunnels()
                 guard !ts.isEmpty else { throw StoreError("Add a server first.") }
                 if try store.vpn().selected == nil { try store.setSelected(ts[0].id) }
-                link?.retry("*") // the user asked: tunnels that failed may be tried again
+                if !automatic { link?.retry("*") } // the user asked: tunnels that failed may be tried again
             }
             try store.setVPN(on: on)
             if !on { testResults = [:] } // the tunnels stop running: the numbers no longer mean anything
@@ -199,41 +200,52 @@ extension AppModel {
         guard !testing else { return }
         errors["test"] = nil
         if serviceOutdated {
-            errors["test"] = "The service is older than this app and can't run this test. Restart it (Settings → Advanced → Restart service), or reinstall the app's service."
+            errors["test"] = "The service is older than this app and can't run this test. Restart it (Settings → General → Restart service), or reinstall the app's service."
             return
         }
         guard let store, let all = try? store.tunnels(), !all.isEmpty, let link else { return }
         testing = true
-        defer { testing = false }
+        defer { testing = false; testedAt = Date() }
         testResults = [:]
-        if !vpnOn {
-            await setVPN(true)
-            if let e = errors["vpn"] { errors["test"] = e; return }
-            // The engine starts after the settle time; wait until it runs.
-            for _ in 0..<20 where service?.running != true {
-                try? await Task.sleep(nanoseconds: 400_000_000)
+        let method = TestMethod(rawValue: UserDefaults.standard.string(forKey: Prefs.testMethod) ?? "") ?? .connect
+        let timeout = min(max(Prefs.int(Prefs.testTimeout, 5), Prefs.timeoutRange.lowerBound), Prefs.timeoutRange.upperBound)
+        let url = Prefs.validTestURL(UserDefaults.standard.string(forKey: Prefs.testURL) ?? "") ?? Prefs.defaultTestURL
+        let presets = Prefs.testURLPresets.map(\.url)
+        let isOpenVPN = Dictionary(uniqueKeysWithValues: all.map { ($0.coreID, $0.isOpenVPN) })
+        let byID = Dictionary(uniqueKeysWithValues: all.map { ($0.coreID, $0.name) })
+        // TCP and ping time the server itself, outside the tunnel: no engine, no sessions, nothing to switch on.
+        let direct = method != .connect
+        if !direct {
+            if !vpnOn {
+                await setVPN(true)
+                if let e = errors["vpn"] { errors["test"] = e; return }
+                // The engine starts after the settle time; wait until it runs.
+                for _ in 0..<20 where service?.running != true {
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    await refreshStatus()
+                }
+                guard service?.running == true else {
+                    errors["test"] = "It didn't connect, so there is nothing to test. See the server's message."
+                    return
+                }
+            }
+            let openVPN = all.filter(\.isOpenVPN)
+            link.loadAll = true
+            await changed()
+            // Wait for each OpenVPN session to come up, fail or ask for a sign-in.
+            for _ in 0..<50 where openVPN.contains(where: { ![.connected, .failed, .needsAuth].contains(service?.tunnels[$0.coreID]?.state) }) {
+                try? await Task.sleep(nanoseconds: 500_000_000)
                 await refreshStatus()
             }
-            guard service?.running == true else {
-                errors["test"] = "It didn't connect, so there is nothing to test. See the server's message."
-                return
-            }
         }
-        let openVPN = all.filter(\.isOpenVPN)
-        link.loadAll = true
-        await changed()
-        defer { Task { link.loadAll = false; await changed() } } // the extra sessions go away
-        // Wait for each OpenVPN session to come up, fail or ask for a sign-in.
-        for _ in 0..<50 where openVPN.contains(where: { ![.connected, .failed, .needsAuth].contains(service?.tunnels[$0.coreID]?.state) }) {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            await refreshStatus()
-        }
-        let byID = Dictionary(uniqueKeysWithValues: all.map { ($0.coreID, $0.name) })
+        defer { if !direct { Task { link.loadAll = false; await changed() } } } // the extra sessions go away
         // One call per tunnel, a few at a time (the service's own width), so each result shows when it is in
-        // instead of when the slowest one is.
+        // instead of when the slowest one is. A preset address goes to OpenVPN tunnels as "none": the service then uses
+        // an IP address, because a name would be looked up through the selected tunnel.
         var ids = all.map(\.coreID).makeIterator()
         let one: @Sendable (String) async -> (String, WireTest?, Error?) = { id in
-            do { return (id, try await Daemon.test([id])[id], nil) } catch { return (id, nil, error) }
+            let address = (isOpenVPN[id] == true && presets.contains(url)) ? nil : url
+            do { return (id, try await Daemon.test([id], method: method.rawValue, url: address, timeout: timeout)[id], nil) } catch { return (id, nil, error) }
         }
         await withTaskGroup(of: (String, WireTest?, Error?).self) { group in
             for _ in 0..<8 { if let id = ids.next() { group.addTask { await one(id) } } }
@@ -244,7 +256,7 @@ extension AppModel {
                     break
                 }
                 if let r, let name = byID[id] {
-                    switch service?.tunnels[id]?.state {
+                    switch direct ? nil : service?.tunnels[id]?.state {
                     case .failed?: testResults[name] = .failed("Failed", detail: service?.tunnels[id]?.error?.nilIfEmpty)
                     case .needsAuth?: testResults[name] = .failed("Needs sign-in", detail: nil)
                     default: testResults[name] = r.error.map { .failed($0, detail: r.detail?.nilIfEmpty) } ?? .ms(r.ms ?? 0)

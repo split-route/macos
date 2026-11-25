@@ -32,17 +32,46 @@ jobs:
           GOWORK: "off"
         run: go test -race ./...
 
+      # The app is signed with the self-signed certificate from scripts/make-signing-cert.sh, so every release has the same
+      # identity (an ad-hoc one changes with every build). Secrets: SIGNING_P12_BASE64 (`base64 -i backup.p12`) and
+      # SIGNING_P12_PASSWORD (its passphrase).
+      - name: Import the signing certificate
+        env:
+          P12: ${{ secrets.SIGNING_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.SIGNING_P12_PASSWORD }}
+        run: |
+          [ -n "$P12" ] && [ -n "$P12_PASSWORD" ] || { echo "SIGNING_P12_BASE64 and SIGNING_P12_PASSWORD must be set" >&2; exit 1; }
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          pw=$(uuidgen)
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/id.p12"
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          security import "$RUNNER_TEMP/id.p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign >/dev/null
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pw" "$kc" >/dev/null
+          rm -f "$RUNNER_TEMP/id.p12"
+          echo "SIGN_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+
       - name: Build the app and the DMG
         env:
           VERSION: ${{ steps.v.outputs.version }}
           GOWORK: "off"
+          REQUIRE_SIGNING_CERT: "1" # a release is never signed ad hoc: that would change the app's identity
         run: ./build-app.sh
 
-      - name: Name the DMG and checksum it
+      - name: Remove the signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+      - name: Name the DMG and the zip and checksum them
         id: dmg
         run: |
           dmg="Splitroute_${{ steps.v.outputs.version }}_macos.dmg"
+          zip="Splitroute_${{ steps.v.outputs.version }}_macos.zip"
           mv build/Splitroute.dmg "build/$dmg"
+          mv build/Splitroute.zip "build/$zip"
+          (cd build && shasum -a 256 "$zip" > "$zip.sha256")
+          echo "zip=build/$zip" >> "$GITHUB_OUTPUT"
           (cd build && shasum -a 256 "$dmg" > "$dmg.sha256")
           echo "file=build/$dmg" >> "$GITHUB_OUTPUT"
           echo "sha=$(cut -d' ' -f1 "build/$dmg.sha256")" >> "$GITHUB_OUTPUT"
@@ -68,7 +97,8 @@ jobs:
           [ "${{ steps.v.outputs.pre }}" = true ] && flags="--prerelease"
           gh release create "$GITHUB_REF_NAME" $flags --title "Split Route ${{ steps.v.outputs.version }}" \
             --notes-file notes.md --generate-notes \
-            "${{ steps.dmg.outputs.file }}" "${{ steps.dmg.outputs.file }}.sha256"
+            "${{ steps.dmg.outputs.file }}" "${{ steps.dmg.outputs.file }}.sha256" \
+            "${{ steps.dmg.outputs.zip }}" "${{ steps.dmg.outputs.zip }}.sha256"
 
       - name: Update the Homebrew cask
         if: steps.v.outputs.pre == 'false'

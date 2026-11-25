@@ -56,19 +56,11 @@ struct ListsPage: View {
         case .edit(let t): title = t.list.map { "Edit \($0.name)" } ?? "New list"
         case .editImport(let l): title = "Edit \(l.name)"
         }
-        return VStack(alignment: .leading, spacing: 0) {
-            Button { route = nil } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.left").font(.system(size: 12, weight: .semibold))
-                    Text("Routing").font(TypeScale.bodyStrong)
-                }
-                .foregroundStyle(Palette.inkSecondary.color)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, Space.xl).padding(.top, Space.xl)
-            Text(title).font(TypeScale.title).foregroundStyle(Palette.ink.color).lineLimit(1)
-                .padding(.horizontal, Space.xl).padding(.top, Space.s).padding(.bottom, Space.m)
+        return ZStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 0) {
+                // The list scrolls inside this page, so the title stays put: no floating bar here.
+                PageHeader(title, back: { route = nil }) { EmptyView() }
+                    .padding(.horizontal, Space.xl).padding(.top, Space.m).padding(.bottom, Space.s)
             Group {
                 switch r {
                 case .add(let tab):
@@ -82,6 +74,7 @@ struct ListsPage: View {
                 }
             }
             .environment(\.closePage, { route = nil })
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }

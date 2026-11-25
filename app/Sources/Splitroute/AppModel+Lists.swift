@@ -182,10 +182,14 @@ extension AppModel {
         refreshing = true
         defer { refreshing = false }
         var changedAny = false
-        let due = only == nil ? ((try? store.imports()) ?? []).filter { $0.isDue() } : []
+        let auto = Prefs.bool(Prefs.listsAutoUpdate, true)
+        let onOpen = !listsOpenHandled && Prefs.bool(Prefs.listsUpdateOnOpen, false)
+        listsOpenHandled = true
+        // With auto update off, only what the user asked for (or never tried) downloads.
+        let due = only == nil ? ((try? store.imports()) ?? []).filter { onOpen || (auto ? $0.isDue() : ($0.force || $0.checkedAt.isEmpty)) } : []
         let names = cfg.lists.filter { !$0.custom && $0.importSource == nil && $0.action != .none && (only == nil || $0.name == only) }.map(\.name)
         let missing = names.contains { files.releaseText($0) == nil }
-        let fetchRelease = !names.isEmpty && (force || missing || lastRelease.map { Date().timeIntervalSince($0) >= Self.releaseEvery } ?? true)
+        let fetchRelease = !names.isEmpty && (force || missing || onOpen || (auto && (lastRelease.map { Date().timeIntervalSince($0) >= Self.releaseEvery } ?? true)))
         // Every list about to download shows as started at once, before the first byte.
         for st in due { downloads[st.name] = .running(nil) }
         // A daily refresh of a saved list stays quiet; one the user asked for shows its progress.

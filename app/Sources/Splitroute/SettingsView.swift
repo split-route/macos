@@ -28,6 +28,8 @@ struct SettingsView: View {
             case .tunnels: TunnelsPage().transition(.opacity)
             case .lists: ListsPage().transition(.opacity)
             case .settings: SettingsPage().transition(.opacity)
+            case .connection: ConnectionSettingsPage().transition(.opacity)
+            case .updates: UpdatesSettingsPage().transition(.opacity)
             }
         }
         .animation(.easeOut(duration: 0.18), value: page) // the page you leave fades out as the new one fades in
@@ -179,24 +181,23 @@ private struct GlassSidebar: View {
             .padding(.horizontal, Space.s).padding(.top, 38).padding(.bottom, Space.l)
             ForEach(Array(Destination.allCases.enumerated()), id: \.element) { index, d in
                 let on = selection == d
+                if d == Destination.settingsPages.first { SidebarSectionTitle("Settings") }
                 Button {
                     if reduceMotion { selection = d } else { withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) { selection = d } }
                 } label: {
                     HStack(spacing: Space.m) {
-                        Image(systemName: d.symbol).font(.system(size: 17, weight: .regular)).frame(width: 26)
-                            .foregroundStyle(on ? Accent.color : Palette.inkSecondary.color)
-                        Text(d.title).font(TypeScale.sidebar).foregroundStyle(on ? Palette.ink.color : Palette.inkSecondary.color)
+                        DestinationIcon(d, selected: on, plain: on ? Color.white : Palette.inkSecondary.color)
+                        Text(d.title).font(TypeScale.sidebar).foregroundStyle(on ? Color.white : Palette.inkSecondary.color)
                         Spacer(minLength: 0)
                         // The shortcut shows only while Command is held, like a menu's.
-                        Text("⌘\(index + 1)").font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color.opacity(0.7))
+                        Text("⌘\(index + 1)").font(TypeScale.secondary).foregroundStyle(on ? Color.white.opacity(0.8) : Palette.inkSecondary.color.opacity(0.7))
                             .opacity(commandHeld ? 1 : 0)
                             .animation(.easeOut(duration: 0.12), value: commandHeld)
                     }
                     .padding(.vertical, 11).padding(.horizontal, Space.m)
                     .background {
                         if on {
-                            RoundedRectangle(cornerRadius: Radius.row + 2, style: .continuous)
-                                .fill(Color.primary.opacity(0.12))
+                            RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Accent.color)
                                 .matchedGeometryEffect(id: "selection", in: ns)
                         }
                     }
