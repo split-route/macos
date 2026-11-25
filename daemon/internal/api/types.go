@@ -59,6 +59,12 @@ type Snapshot struct {
 	Final FinalSpec `json:"final,omitempty"`
 	// BlockQUIC refuses QUIC that no list matched, so browsers use TCP, where names can be read. Ignored while ListsOn is false.
 	BlockQUIC bool `json:"block_quic,omitempty"`
+	// BlockSTUN refuses STUN (WebRTC's way of learning a public address), so a browser can't show the real address
+	// while its traffic goes through a tunnel. It applies whether or not the lists do.
+	BlockSTUN bool `json:"block_stun,omitempty"`
+	// TLSFingerprint makes vless, vmess and trojan tunnels' TLS handshake look like this browser's (core.TLSFingerprints);
+	// a tunnel that chose one keeps it. Empty: each tunnel's own.
+	TLSFingerprint string `json:"tls_fingerprint,omitempty"`
 	// Retry names tunnels that failed and may be tried again because the user
 	// asked: IDs, or "*" for all. A failed tunnel is never retried without it
 	// (retrying bad credentials locks accounts).
@@ -140,6 +146,9 @@ var idRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 // Validate refuses what the engine must never be asked: odd IDs (they become
 // tags and file names), duplicates, and shapes that don't belong together.
 func (s Snapshot) Validate() error {
+	if !core.ValidTLSFingerprint(s.TLSFingerprint) {
+		return fmt.Errorf("tls fingerprint %q is not one of %s", s.TLSFingerprint, strings.Join(core.TLSFingerprints, ", "))
+	}
 	if b := s.Bootstrap; b != "" && b != "system" {
 		if _, err := netip.ParseAddr(b); err != nil {
 			return fmt.Errorf("bootstrap %q must be an IP address or \"system\"", b)
@@ -227,7 +236,7 @@ type ListCount struct {
 
 // APIRevision is bumped when the app needs something of the service that an older one would silently ignore (a new
 // snapshot field, say). The app compares it with the one it needs and says the service must be restarted.
-const APIRevision = 13 // 13: test methods (tcp, icmp, connect with a URL and a timeout); 12: rules and rule-set lists (check_rules, check_ruleset); 11: keyword, regexp, port, app and process list entries; 10: automatic bootstrap resolver; 9: block QUIC; 8: .srs lists (parse_entries data); 7: key password for an encrypted OpenVPN key; 6: final route; 5: bootstrap resolver; 4: kill switch (3: OpenVPN tunnels are tested by address)
+const APIRevision = 14 // 14: block STUN and a default TLS fingerprint; 13: test methods (tcp, icmp, connect with a URL and a timeout); 12: rules and rule-set lists (check_rules, check_ruleset); 11: keyword, regexp, port, app and process list entries; 10: automatic bootstrap resolver; 9: block QUIC; 8: .srs lists (parse_entries data); 7: key password for an encrypted OpenVPN key; 6: final route; 5: bootstrap resolver; 4: kill switch (3: OpenVPN tunnels are tested by address)
 
 // Status is what the control socket returns for `status`.
 type Status struct {

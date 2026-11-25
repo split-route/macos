@@ -443,6 +443,7 @@ extension AppModel {
     /// on, which keeps them. A download that fails or has no usable node changes nothing and is recorded as the error.
     func updateGroup(_ name: String) async {
         guard !updatingGroups.contains(name) else { return }
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Prefs.subsLastAttempt)
         updatingGroups.insert(name)
         errors["group:\(name)"] = nil
         groupResults[name] = nil

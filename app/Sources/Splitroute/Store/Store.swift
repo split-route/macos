@@ -179,7 +179,7 @@ final class Store {
 
     static func read(_ db: Database) throws -> Config {
         guard let s = try Row.fetchOne(db, sql: """
-            SELECT s.base_url, s.disabled, s.final_action, s.block_quic, t.name AS final_tunnel
+            SELECT s.base_url, s.disabled, s.final_action, s.block_quic, s.block_stun, s.tls_fingerprint, t.name AS final_tunnel
             FROM settings s LEFT JOIN tunnels t ON t.id = s.final_tunnel_id WHERE s.id = 1
             """) else {
             throw StoreError("The settings database has no settings.")
@@ -191,6 +191,8 @@ final class Store {
         cfg.finalAction = Action(rawValue: s["final_action"]) ?? .tunnel
         cfg.finalTunnel = s["final_tunnel"]
         cfg.blockQUIC = (s["block_quic"] as Int) == 1
+        cfg.blockSTUN = (s["block_stun"] as Int) == 1
+        cfg.tlsFingerprint = s["tls_fingerprint"]
         let rows = try Row.fetchAll(db, sql: """
             SELECT l.id, l.name, l.source, l.action, t.name AS tunnel, l.description, l.builder, (l.ruleset IS NOT NULL) AS has_ruleset,
                    i.url, i.refresh_hours
@@ -228,8 +230,8 @@ final class Store {
             }
             finalID = id
         }
-        try db.execute(sql: "UPDATE settings SET base_url = ?, disabled = ?, final_action = ?, final_tunnel_id = ?, block_quic = ? WHERE id = 1",
-                       arguments: [cfg.baseURL ?? "", cfg.disabled ? 1 : 0, cfg.finalAction.rawValue, finalID, cfg.blockQUIC ? 1 : 0])
+        try db.execute(sql: "UPDATE settings SET base_url = ?, disabled = ?, final_action = ?, final_tunnel_id = ?, block_quic = ?, block_stun = ?, tls_fingerprint = ? WHERE id = 1",
+                       arguments: [cfg.baseURL ?? "", cfg.disabled ? 1 : 0, cfg.finalAction.rawValue, finalID, cfg.blockQUIC ? 1 : 0, cfg.blockSTUN ? 1 : 0, cfg.tlsFingerprint])
         var existing: [String: (id: Int64, source: String)] = [:]
         for r in try Row.fetchAll(db, sql: "SELECT id, name, source FROM lists") { existing[r["name"]] = (r["id"], r["source"]) }
         for (pos, l) in cfg.lists.enumerated() {

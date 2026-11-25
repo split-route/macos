@@ -41,13 +41,13 @@ struct MenuPopover: View {
                 }
                 .padding(.horizontal, Space.l).padding(.vertical, Space.m)
             }
-            MenuItem("Open Splitroute") { openApp(.home) }
             if let v = model.stagedUpdate {
                 // Only once it is downloaded and checked: installing is the next step.
                 MenuItem("Install newer version (\(v))", dot: Palette.success.color) { model.confirmingInstall = true; openApp(.settings) }
             } else if let r = model.newerRelease {
                 MenuItem("Newer version is available (\(r.version))", dot: Palette.success.color) { openApp(.settings) }
             }
+            MenuItem("Open Splitroute") { openApp(.home) }
             MenuItem("Quit", action: quit)
         }
         .frame(width: 320)

@@ -43,6 +43,8 @@ struct Snapshot: Encodable {
     /// Where traffic no list matches goes; nil is the selected tunnel.
     var final: WireFinal?
     var blockQuic: Bool?
+    var blockStun: Bool?
+    var tlsFingerprint: String?
     var retry: [String]?
     var loadAll: Bool?
     var bootstrap: String?
@@ -52,7 +54,7 @@ struct Snapshot: Encodable {
     var lists: [WireList]
 
     enum CodingKeys: String, CodingKey {
-        case vpn, listsOn = "lists_on", selected, final, blockQuic = "block_quic", retry, loadAll = "load_all", bootstrap, killSwitch = "kill_switch", killSwitchLAN = "kill_switch_lan", tunnels, lists
+        case vpn, listsOn = "lists_on", selected, final, blockQuic = "block_quic", blockStun = "block_stun", tlsFingerprint = "tls_fingerprint", retry, loadAll = "load_all", bootstrap, killSwitch = "kill_switch", killSwitchLAN = "kill_switch_lan", tunnels, lists
     }
 }
 
@@ -234,7 +236,7 @@ enum DaemonError: LocalizedError, Equatable {
 /// Client for the service's control socket: one JSON request, one JSON response per connection.
 enum Daemon {
     /// The service revision this app needs (Go: api.APIRevision).
-    static let requiredAPIRev = 13
+    static let requiredAPIRev = 14
 
     #if DEBUG
     /// Debug builds: SPLITROUTE_SOCKET points the app at a fake service.

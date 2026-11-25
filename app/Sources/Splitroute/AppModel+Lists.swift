@@ -36,6 +36,14 @@ extension AppModel {
         await edit("blockQUIC") { try self.update { var c = $0; c.blockQUIC = on; return c } }
     }
 
+    func setBlockSTUN(_ on: Bool) async {
+        await edit("blockSTUN") { try self.update { var c = $0; c.blockSTUN = on; return c } }
+    }
+
+    func setTLSFingerprint(_ fp: String) async {
+        await edit("tlsFingerprint") { try self.update { var c = $0; c.tlsFingerprint = fp; return c } }
+    }
+
     /// Where traffic that matches no list goes; `tunnel` names a tunnel for the tunnel action (nil: the selected one).
     func setFinal(_ a: Action, tunnel: String? = nil) async {
         await edit("final") { try self.update { try $0.settingFinal(a, tunnel: tunnel) } }
@@ -190,6 +198,7 @@ extension AppModel {
         let names = cfg.lists.filter { !$0.custom && $0.importSource == nil && $0.action != .none && (only == nil || $0.name == only) }.map(\.name)
         let missing = names.contains { files.releaseText($0) == nil }
         let fetchRelease = !names.isEmpty && (force || missing || onOpen || (auto && (lastRelease.map { Date().timeIntervalSince($0) >= Self.releaseEvery } ?? true)))
+        if !due.isEmpty || fetchRelease { UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Prefs.listsLastAttempt) }
         // Every list about to download shows as started at once, before the first byte.
         for st in due { downloads[st.name] = .running(nil) }
         // A daily refresh of a saved list stays quiet; one the user asked for shows its progress.

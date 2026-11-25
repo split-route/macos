@@ -43,6 +43,7 @@ extension Config {
     func validate() throws {
         if let b = baseURL, !b.isEmpty, !b.hasPrefix("https://") { throw StoreError("The release address must be https.") }
         if finalAction == .none { throw StoreError("The default route must go direct, be blocked or use a server.") }
+        if !tlsFingerprint.isEmpty && !Config.tlsFingerprints.contains(tlsFingerprint) { throw StoreError("\"\(tlsFingerprint)\" is not a known TLS fingerprint.") }
         if let t = finalTunnel, !t.isEmpty {
             if finalAction != .tunnel { throw StoreError("Only the server action can name a server.") }
             if t.utf8.count > Config.maxNameLength || t.trimmingCharacters(in: .whitespaces) != t {

@@ -94,6 +94,8 @@ type host struct {
 	vpnOn     bool
 	selected  string          // the core ID of the default tunnel; "" for none
 	blockQUIC bool            // refuse QUIC no list matched
+	blockSTUN bool            // refuse STUN
+	tlsPrint  string          // core.Config.TLSFingerprint
 	final     api.FinalSpec   // where traffic no list matches goes; the tunnel is named, like a list's
 	bootstrap string          // core.DNS.Bootstrap: how proxy tunnels' servers are found by name
 	wanted    []*wantedTunnel // the tunnels the engine loads
@@ -187,6 +189,28 @@ func (h *host) setBlockQUIC(on bool) {
 		return
 	}
 	h.blockQUIC = on
+	h.scheduleLocked()
+}
+
+// setBlockSTUN turns the STUN rule on or off; a change restarts the engine.
+func (h *host) setBlockSTUN(on bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.blockSTUN == on {
+		return
+	}
+	h.blockSTUN = on
+	h.scheduleLocked()
+}
+
+// setTLSFingerprint chooses the default browser handshake for TLS tunnels ("" is each tunnel's own); a change restarts the engine.
+func (h *host) setTLSFingerprint(fp string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.tlsPrint == fp {
+		return
+	}
+	h.tlsPrint = fp
 	h.scheduleLocked()
 }
 
@@ -472,7 +496,7 @@ func (h *host) buildLocked() core.Config {
 	if bootstrap == "" {
 		bootstrap = defaultBootstrap
 	}
-	cfg := core.Config{WorkDir: h.workDir, Default: h.selected, BlockQUIC: h.blockQUIC, Inbound: h.inbound, DNS: core.DNS{Bootstrap: bootstrap}, Log: core.Log{Level: "info"}}
+	cfg := core.Config{WorkDir: h.workDir, Default: h.selected, BlockQUIC: h.blockQUIC, BlockSTUN: h.blockSTUN, TLSFingerprint: h.tlsPrint, Inbound: h.inbound, DNS: core.DNS{Bootstrap: bootstrap}, Log: core.Log{Level: "info"}}
 	byName := map[string]string{}
 	for _, w := range h.wanted {
 		cfg.Tunnels = append(cfg.Tunnels, core.Tunnel{ID: w.id, Name: w.name, Protocol: w.protocol, Options: w.options})

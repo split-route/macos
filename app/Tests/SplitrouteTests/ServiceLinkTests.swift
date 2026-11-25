@@ -10,7 +10,7 @@ final class ServiceLinkTests: XCTestCase {
     override func setUp() { dir = FileManager.default.temporaryDirectory.appendingPathComponent("sr-\(UUID().uuidString)") }
     override func tearDown() { try? FileManager.default.removeItem(at: dir) }
 
-    static let goldenSnapshot = ##"{"block_quic":true,"lists":[{"action":"direct","format":"rules","name":"Office","rules":{"domain_suffix":["example.com"],"ip_cidr":["8.8.8.0\/24"]}},{"action":"block","name":"malware"},{"action":"tunnel","format":"rules","name":"Work list","rules":{"domain":["a.example.com"],"mode":"and","port":[443]},"tunnel":"Work"}],"lists_on":true,"retry":["*"],"selected":"t1","tunnels":[{"id":"t1","name":"Proxy","needs_auth":false,"options":{"server":"example.com","server_port":443,"type":"vless"},"protocol":"vless"},{"id":"t2","name":"Work","needs_auth":true,"password":"pw","profile":"client\n","protocol":"openvpn","username":"alice"}],"vpn":true}"##
+    static let goldenSnapshot = ##"{"block_quic":true,"block_stun":true,"lists":[{"action":"direct","format":"rules","name":"Office","rules":{"domain_suffix":["example.com"],"ip_cidr":["8.8.8.0\/24"]}},{"action":"block","name":"malware"},{"action":"tunnel","format":"rules","name":"Work list","rules":{"domain":["a.example.com"],"mode":"and","port":[443]},"tunnel":"Work"}],"lists_on":true,"retry":["*"],"selected":"t1","tunnels":[{"id":"t1","name":"Proxy","needs_auth":false,"options":{"server":"example.com","server_port":443,"type":"vless"},"protocol":"vless"},{"id":"t2","name":"Work","needs_auth":true,"password":"pw","profile":"client\n","protocol":"openvpn","username":"alice"}],"vpn":true}"##
 
     func make() throws -> (Store, AppFiles, ServiceLink) {
         let files = AppFiles(root: dir)

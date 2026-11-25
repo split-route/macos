@@ -143,6 +143,18 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(try s.config().blockQUIC)
     }
 
+    /// STUN is blocked by default; the fingerprint is "each server's own". Both survive a write, and an unknown name is refused.
+    func testBlockSTUNAndTLSFingerprintDefaultsAndRoundTrip() throws {
+        let s = try newStore()
+        XCTAssertTrue(try s.config().blockSTUN)
+        XCTAssertEqual(try s.config().tlsFingerprint, "")
+        try s.update { var c = $0; c.blockSTUN = false; c.tlsFingerprint = "safari"; return c }
+        XCTAssertFalse(try s.config().blockSTUN)
+        XCTAssertEqual(try s.config().tlsFingerprint, "safari")
+        XCTAssertThrowsError(try s.update { var c = $0; c.tlsFingerprint = "netscape"; return c })
+        XCTAssertEqual(try s.config().tlsFingerprint, "safari", "a refused write changes nothing")
+    }
+
     /// A proxy server that is not the active one is loaded but idle (the service says disconnected); it still carries a
     /// list's traffic, so it is not "down". An OpenVPN server that says disconnected is.
     func testWhichServersCountAsUp() {

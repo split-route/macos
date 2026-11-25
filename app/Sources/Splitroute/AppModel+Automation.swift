@@ -85,7 +85,7 @@ extension AppModel {
         await checkForUpdateIfDue()
     }
 
-    var subscriptionInterval: TimeInterval { TimeInterval(Prefs.int(Prefs.subsIntervalHours, 12)) * 3600 }
+    var subscriptionInterval: TimeInterval { TimeInterval(Prefs.int(Prefs.subsIntervalHours, 24)) * 3600 }
 
     /// Updates subscriptions that are due: the first pass after launch when "Update on open" is on, and any whose last
     /// good update is older than the interval when the schedule is on. A failed one waits before it is tried again, so a
@@ -93,7 +93,7 @@ extension AppModel {
     private func updateDueSubscriptions() async {
         let onOpen = !subsOpenHandled && Prefs.bool(Prefs.subsUpdateOnOpen, false)
         subsOpenHandled = true
-        let auto = Prefs.bool(Prefs.subsAutoUpdate, false)
+        let auto = Prefs.bool(Prefs.subsAutoUpdate, true)
         guard onOpen || auto, let subs = try? store?.subscriptions(), !subs.isEmpty else { return }
         let every = subscriptionInterval
         let now = Date()

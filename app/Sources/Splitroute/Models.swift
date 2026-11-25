@@ -111,9 +111,15 @@ struct Config: Codable, Equatable {
     var finalTunnel: String?
     /// Refuse QUIC no list matched (browsers then use TCP, where names can be read).
     var blockQUIC = true
+    /// Refuse STUN, so a browser can't show the real address (WebRTC) while its traffic goes through a server.
+    var blockSTUN = true
+    /// The browser handshake servers that use TLS get when they chose none; "" is each server's own.
+    var tlsFingerprint = ""
+    static let tlsFingerprints = ["chrome", "firefox", "safari", "edge", "ios", "android", "random"]
 
     enum CodingKeys: String, CodingKey {
         case baseURL = "base_url", disabled, lists, finalAction = "final_action", finalTunnel = "final_tunnel", blockQUIC = "block_quic"
+        case blockSTUN = "block_stun", tlsFingerprint = "tls_fingerprint"
     }
 
     init() {}
@@ -126,6 +132,8 @@ struct Config: Codable, Equatable {
         finalAction = try c.decodeIfPresent(Action.self, forKey: .finalAction) ?? .tunnel
         finalTunnel = try c.decodeIfPresent(String.self, forKey: .finalTunnel)
         blockQUIC = try c.decodeIfPresent(Bool.self, forKey: .blockQUIC) ?? true
+        blockSTUN = try c.decodeIfPresent(Bool.self, forKey: .blockSTUN) ?? true
+        tlsFingerprint = try c.decodeIfPresent(String.self, forKey: .tlsFingerprint) ?? ""
     }
 }
 

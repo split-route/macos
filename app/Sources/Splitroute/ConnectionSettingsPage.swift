@@ -20,6 +20,9 @@ struct ConnectionSettingsPage: View {
     @AppStorage(Prefs.testURL) private var testURL = Prefs.defaultTestURL
     @AppStorage(Prefs.testCustomURL) private var testCustomURL = ""
     @State private var editingURL = false
+    private static func fingerprintLabel(_ f: String) -> String {
+        ["": "Automatic", "ios": "iOS", "android": "Android"][f] ?? f.prefix(1).uppercased() + f.dropFirst()
+    }
     private static let bootstrapLabels = ["": "Automatic", "1.1.1.1": "Cloudflare (1.1.1.1)", "8.8.8.8": "Google (8.8.8.8)", "9.9.9.9": "Quad9 (9.9.9.9)", "system": "System resolver"]
 
     var body: some View {
@@ -49,6 +52,21 @@ struct ConnectionSettingsPage: View {
                     error: model.error("blockQUIC")) {
                 toggle("Block QUIC", isOn: Binding(get: { model.config?.blockQUIC ?? true },
                                                    set: { on in Task { await model.setBlockQUIC(on) } }))
+            }
+            Hairline()
+            FormRow("Block STUN (WebRTC)",
+                    detail: "A browser uses STUN to learn your public address. With some traffic going direct and some through a server, it can show the real one. With this on, STUN is refused, so video calls in the browser may need a TURN server.",
+                    error: model.error("blockSTUN")) {
+                toggle("Block STUN", isOn: Binding(get: { model.config?.blockSTUN ?? true },
+                                                   set: { on in Task { await model.setBlockSTUN(on) } }))
+            }
+            Hairline()
+            FormRow("TLS fingerprint",
+                    detail: "Makes servers that use TLS (VLESS, VMess, Trojan) look like this browser to a network that inspects handshakes. A server whose link names a fingerprint keeps it. Automatic leaves every server as it is.",
+                    error: model.error("tlsFingerprint")) {
+                SelectMenu(title: Self.fingerprintLabel(model.config?.tlsFingerprint ?? ""), options: [""] + Config.tlsFingerprints,
+                           label: Self.fingerprintLabel, selected: model.config?.tlsFingerprint ?? "") { v in Task { await model.setTLSFingerprint(v) } }
+                    .disabled(model.busy)
             }
         }
     }

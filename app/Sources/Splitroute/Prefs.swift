@@ -19,6 +19,8 @@ enum Prefs {
     static let listsAutoUpdate = "listsAutoUpdate"
     static let listsUpdateOnOpen = "listsUpdateOnOpen"
     static let listsIntervalHours = "listsIntervalHours"
+    static let subsLastAttempt = "subsLastAttempt" // when subscriptions were last tried (seconds since 1970), success or not
+    static let listsLastAttempt = "listsLastAttempt"
     // Connectivity test
     static let testMethod = "testMethod"
     static let testTimeout = "testTimeout"

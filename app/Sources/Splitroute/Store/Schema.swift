@@ -287,5 +287,12 @@ UPDATE lists SET note = '' WHERE source = 'custom';
 -- profile's remote lines. Empty: the profile's. The profile file itself is never changed.
 ALTER TABLE tunnels ADD COLUMN server_override TEXT NOT NULL DEFAULT '' CHECK (length(server_override) <= 300);
 """#,
+#"""
+-- Refuse STUN, the probe WebRTC uses to learn a public address, so a browser can't show the real address while its
+-- traffic goes through a server. On by default. And a default browser TLS fingerprint for servers that use TLS and chose
+-- none: empty (each server's own) is the safe default; the names are the engine's (core.TLSFingerprints).
+ALTER TABLE settings ADD COLUMN block_stun INTEGER NOT NULL DEFAULT 1 CHECK (block_stun IN (0, 1));
+ALTER TABLE settings ADD COLUMN tls_fingerprint TEXT NOT NULL DEFAULT '' CHECK (tls_fingerprint IN ('', 'chrome', 'firefox', 'safari', 'edge', 'ios', 'android', 'random'));
+"""#,
     ]
 }
