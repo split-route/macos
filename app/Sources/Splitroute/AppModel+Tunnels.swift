@@ -233,11 +233,7 @@ extension AppModel {
                 await setVPN(true)
                 if let e = errors["vpn"] { errors["test"] = e; return }
                 // The engine starts after the settle time; wait until it runs.
-                for _ in 0..<20 where service?.running != true {
-                    try? await Task.sleep(nanoseconds: 400_000_000)
-                    await refreshStatus()
-                }
-                guard service?.running == true else {
+                guard await awaitEngine() else {
                     errors["test"] = "It didn't connect, so there is nothing to test. See the server's message."
                     return
                 }
@@ -278,6 +274,7 @@ extension AppModel {
                 if let next = ids.next() { group.addTask { await one(next) } }
             }
         }
+        if one == nil, errors["test"] == nil { Task { await self.smartApplyAfterTest() } } // Smart Select: move to the fastest
     }
 
     // MARK: Adding

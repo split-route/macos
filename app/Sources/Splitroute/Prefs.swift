@@ -9,7 +9,15 @@ enum Prefs {
     // Connection
     static let alwaysOn = "alwaysOn"
     static let disconnectOnSleep = "disconnectOnSleep"
-    static let autoSwitch = "autoSwitch" // move to another server when the active one stops answering (default off)
+    // Smart Select (AppModel+SmartSelect.swift). The key keeps its old name: it was "Switch servers automatically".
+    static let smartSelect = "autoSwitch" // keep the active server the best one (default off)
+    static let smartInterval = "smartInterval" // seconds between full latency checks; 0 never
+    static let smartHealth = "smartHealth" // seconds between requests through the active server; 0 never
+    static let smartTolerance = "smartTolerance" // ms a server must be faster by before it replaces the active one
+    static let smartGroupOnly = "smartGroupOnly" // choose only among the active server's group
+    static let smartPool = "smartPool" // most servers measured in one check
+    static let smartOnNetwork = "smartOnNetwork" // check again when the Mac changes network
+    static let smartAfterTest = "smartAfterTest" // move to the fastest server after a manual test
     static let showDisconnectMessage = "showDisconnectMessage"
     // Updates
     static let autoCheckUpdates = "autoCheckUpdates" // look for a newer app version once a day
@@ -40,6 +48,10 @@ enum Prefs {
         ("GNOME", "https://nmcheck.gnome.org/check_network_status.txt"),
     ]
     static let timeoutRange = 1...30
+    static let smartIntervals = [0, 900, 1800, 3600, 10800, 28800] // seconds
+    static let smartHealths = [0, 15, 30, 60, 300]
+    static let smartTolerances = [0, 25, 50, 100, 200]
+    static let smartPools = [8, 16, 24, 48, 100]
     static let subsIntervals = [1, 3, 6, 12, 24, 48, 168] // hours
     static let listsIntervals = [6, 12, 24, 48, 168]
 

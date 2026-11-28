@@ -174,30 +174,46 @@ struct TunnelsPage: View {
         }
     }
 
+    @State private var smartOn = Prefs.bool(Prefs.smartSelect, false)
+
+    /// What Smart Select is doing, or what it does.
+    private var smartDetail: String {
+        if !smartOn { return "Use the fastest server automatically." }
+        if model.smartChecking { return "Checking servers…" }
+        return model.smartNote ?? "Checks servers when connected and keeps the best one."
+    }
+
     /// What the connection is doing; with it off, the tunnel that will carry the traffic once it is on.
     private var vpnSubtitle: String {
         if !model.vpnOn { return model.selectedTunnel?.name ?? "Select a server, then connect." }
         return model.summary
     }
 
-    /// Like Shadowrocket's "Connectivity Test": one button, then a time or "Timeout" on each tunnel's row.
+    /// Smart Select, and the Test button before its switch: Test measures every server and shows a time or "Timeout" on each row;
+    /// Smart Select keeps the active server the best one (its rules are in Settings > General).
     private var connectivityRow: some View {
         VStack(alignment: .leading, spacing: Space.s) {
-            Button { Task { await model.testConnectivity() } } label: {
-                HStack(spacing: Space.m) {
-                    Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 14)).frame(width: 18)
-                    Text("Connectivity Test").font(TypeScale.body).foregroundStyle(Palette.ink.color)
-                    Spacer(minLength: Space.m)
-                    if model.testing { ProgressView().controlSize(.small) } else {
-                        Image(systemName: "play.circle").font(.system(size: 16))
+            HStack(spacing: Space.m) {
+                Image(systemName: "sparkles").font(.system(size: 14)).frame(width: 18).foregroundStyle(Palette.inkSecondary.color).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Smart Select").font(TypeScale.body).foregroundStyle(Palette.ink.color)
+                    Text(smartDetail).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color).lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: Space.m)
+                Button { Task { await model.testConnectivity() } } label: {
+                    HStack(spacing: 6) {
+                        if model.testing { ProgressView().controlSize(.small) } else { Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 13)) }
+                        Text("Test")
                     }
                 }
-                .foregroundStyle(Palette.inkSecondary.color)
-                .contentShape(Rectangle())
+                .buttonStyle(OutlineButtonStyle()).disabled(model.testing || unavailable || model.tunnels.isEmpty)
+                .accessibilityLabel("Test")
+                .accessibilityHint("Connects if needed, then measures a request through each running server.")
+                PendingToggle("Smart Select", isOn: Binding(get: { smartOn }, set: { on in smartOn = on; Task { await model.setSmartSelect(on) } }),
+                              pending: model.smartChecking && smartOn)
+                    .disabled(unavailable || model.tunnels.isEmpty)
             }
-            .buttonStyle(.plain).disabled(model.testing || unavailable || model.tunnels.isEmpty)
-            .accessibilityLabel("Connectivity Test")
-            .accessibilityHint("Connects if needed, then measures a request through each running server.")
             if let e = model.error("test") { NoteLine(.warning, e) }
         }
         .padding(.vertical, Space.m).padding(.horizontal, Space.l)

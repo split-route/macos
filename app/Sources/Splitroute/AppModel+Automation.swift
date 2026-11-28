@@ -19,6 +19,7 @@ extension AppModel {
         nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in await self?.didWake() }
         }
+        startNetworkWatch()
     }
 
     /// With the kill switch on, the service blocks all traffic that isn't the VPN's the moment the VPN is off, so a

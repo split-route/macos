@@ -131,7 +131,9 @@ public struct ToolbarSearch: View {
                 .frame(maxHeight: .infinity, alignment: .center) // centered in the capsule, whatever the first layout gave the text
                 .padding(.horizontal, 14).frame(width: 240, height: 38)
                 .modifier(ToolbarGlass(shape: Capsule()))
-                .onAppear { focused = true }
+                // Only a field the person opened takes the focus. The page header and the floating bar each hold a search, and both
+                // expand when text is typed: the one that appears from that must not pull the focus (and select the text).
+                .onAppear { if open { focused = true } }
                 .onChange(of: focused) { _, f in if !f && text.isEmpty { open = false } }
                 .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .trailing)))
             } else {
