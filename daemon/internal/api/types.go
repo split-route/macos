@@ -238,7 +238,7 @@ type ListCount struct {
 
 // APIRevision is bumped when the app needs something of the service that an older one would silently ignore (a new
 // snapshot field, say). The app compares it with the one it needs and says the service must be restarted.
-const APIRevision = 15 // 15: route_test and exit_ip, block IPv6; 14: block STUN and a default TLS fingerprint; 13: test methods (tcp, icmp, connect with a URL and a timeout); 12: rules and rule-set lists (check_rules, check_ruleset); 11: keyword, regexp, port, app and process list entries; 10: automatic bootstrap resolver; 9: block QUIC; 8: .srs lists (parse_entries data); 7: key password for an encrypted OpenVPN key; 6: final route; 5: bootstrap resolver; 4: kill switch (3: OpenVPN tunnels are tested by address)
+const APIRevision = 16 // 16: server_country (the country of each server, offline); 15: route_test and exit_ip, block IPv6; 14: block STUN and a default TLS fingerprint; 13: test methods (tcp, icmp, connect with a URL and a timeout); 12: rules and rule-set lists (check_rules, check_ruleset); 11: keyword, regexp, port, app and process list entries; 10: automatic bootstrap resolver; 9: block QUIC; 8: .srs lists (parse_entries data); 7: key password for an encrypted OpenVPN key; 6: final route; 5: bootstrap resolver; 4: kill switch (3: OpenVPN tunnels are tested by address)
 
 // Status is what the control socket returns for `status`.
 type Status struct {
@@ -372,6 +372,9 @@ type RouteResult struct {
 	Tunnel string       `json:"tunnel,omitempty"`
 	Notes  []string     `json:"notes,omitempty"`
 }
+
+// MaxLocateIDs bounds one server_country request: each name is looked up, a few at a time, within the socket's timeout.
+const MaxLocateIDs = 64
 
 // ExitIP is the address the internet sees through the selected server (command exit_ip): the address and its country's
 // two-letter code, both checked by the service before they are returned.

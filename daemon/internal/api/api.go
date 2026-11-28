@@ -7,6 +7,7 @@
 //	{"cmd": "status"}                                       → status
 //	{"cmd": "apply", "apply": {...}}                        the desired state (see Snapshot)
 //	{"cmd": "answer", "id": "t3", "username": "…", "password": "…"}   answers a running tunnel's challenge
+//	{"cmd": "server_country", "ids": ["t1"]}  → which country each tunnel's server is in (by the address its name resolves to)
 //	{"cmd": "test", "ids": ["t1"], "method": "connect|tcp|icmp", "url": "https://…", "timeout_ms": 5000}  → tests (a request through each loaded tunnel, or a connect or ping to its server)
 //	{"cmd": "route_test", "text": "example.com"}              → route (where a connection to that name or address would go)
 //	{"cmd": "exit_ip"}                                      → exit (the address the internet sees through the selected server)
@@ -60,6 +61,10 @@ type Backend interface {
 	// ExitIP asks a fixed address through the selected server for the address the internet sees. The address is the
 	// service's own, never the socket's.
 	ExitIP() (ExitIP, error)
+	// ServerCountries says which country each tunnel's server is in (by the address its name resolves to, against the
+	// embedded database). An ID is absent when the server's name couldn't be looked up, and "" when it resolved to
+	// something that says nothing (a CDN, a private address, an unknown one). Never more than MaxLocateIDs ids.
+	ServerCountries(ids []string) map[string]string
 }
 
 type Request struct {
@@ -100,6 +105,8 @@ type Response struct {
 	Tests   map[string]TestResult `json:"tests,omitempty"`
 	Route   *RouteResult          `json:"route,omitempty"`
 	Exit    *ExitIP               `json:"exit,omitempty"`
+	// Countries answers server_country: tunnel ID to two-letter code (see Backend.ServerCountries).
+	Countries map[string]string `json:"countries,omitempty"`
 }
 
 const (
@@ -196,6 +203,11 @@ func Respond(b Backend, req Request) Response {
 		if err = o.Validate(); err == nil {
 			r.Tests = b.Test(req.IDs, o)
 		}
+	case "server_country":
+		if len(req.IDs) > MaxLocateIDs {
+			return Response{Error: "server_country takes at most " + strconv.Itoa(MaxLocateIDs) + " ids"}
+		}
+		r.Countries = b.ServerCountries(req.IDs)
 	case "logs":
 		r.Logs = b.Logs()
 	case "restart":
