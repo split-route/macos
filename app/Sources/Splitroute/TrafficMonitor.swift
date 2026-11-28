@@ -44,6 +44,8 @@ final class TrafficMonitor: ObservableObject {
     /// The engine's tun address (core/build.go); the same coupling as `ksTunNet` in the daemon's kill switch.
     static let tunAddress = "172.19.0.1"
     static let window = 60 // seconds the chart shows
+    /// Extra seconds kept beyond the window: the chart runs a moment behind the clock, so its left edge is older than the newest minute.
+    static let overscan = 4
     /// Samples older than this when the window opens are not joined to the new line: more than two polls.
     static let staleAfter: TimeInterval = 12
 
@@ -99,7 +101,7 @@ final class TrafficMonitor: ObservableObject {
             running = false
             last = nil
         }
-        samples = Self.appended(samples, Sample(time: now, down: down, up: up), window: TimeInterval(Self.window))
+        samples = Self.appended(samples, Sample(time: now, down: down, up: up), window: TimeInterval(Self.window + Self.overscan))
     }
 
     /// The samples of the last `window` seconds, with `new` added.

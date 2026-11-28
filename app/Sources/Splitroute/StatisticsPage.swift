@@ -188,7 +188,7 @@ struct StatisticsPage: View {
                 Rectangle().fill(Palette.inkSecondary.color.opacity(0.4)).frame(width: 1, height: frame.height)
                     .position(x: line, y: frame.midY).allowsHitTesting(false)
                 tip(p)
-                    .frame(width: width, alignment: .leading)
+                    .frame(width: width, alignment: right ? .leading : .trailing) // the card hugs the guide line on either side
                     .fixedSize(horizontal: false, vertical: true)
                     .offset(x: right ? line + 12 : line - 12 - width, y: frame.minY + 4)
                     .allowsHitTesting(false)

@@ -233,6 +233,69 @@ private struct SpeedChart: View {
         return out
     }
 
+    /// Where a time is across the chart's width at `now`: the window is the minute ending `lag` ago.
+    private static func x(_ t: Date, now: Date, width: CGFloat) -> CGFloat {
+        let end = now.addingTimeInterval(-lag)
+        return width * CGFloat(1 - end.timeIntervalSince(t) / Double(TrafficMonitor.window))
+    }
+
+    /// The heights eased so far, by sample time: each moves toward its target at its own pace and a new point starts at its target.
+    private final class Easer {
+        var cur: [Date: (down: Double, up: Double)] = [:]
+        var last: Date?
+    }
+    @State private var easer = Easer()
+
+    private func drawChart(_ ctx: inout GraphicsContext, _ size: CGSize, now: Date) {
+        func y(_ v: Double) -> CGFloat { size.height * CGFloat(1 - (v - Self.floor) / (1 - Self.floor)) }
+        // The grid: zero is solid; above it, evenly spaced on the square-root scale, a ninth and four ninths of the top, and the top.
+        for v in [0, 1.0 / 3, 2.0 / 3, 1.0] {
+            var line = Path(); line.move(to: CGPoint(x: 0, y: y(v))); line.addLine(to: CGPoint(x: size.width, y: y(v)))
+            ctx.stroke(line, with: .color(Glass.divider), style: StrokeStyle(lineWidth: 1, dash: v == 0 ? [] : [4, 4]))
+        }
+        guard live, !plotted.isEmpty else { easer.cur = [:]; easer.last = nil; return }
+        let k = easer.last.map { 1 - exp(-now.timeIntervalSince($0) / 0.25) } ?? 1
+        easer.last = now
+        var next: [Date: (down: Double, up: Double)] = [:]
+        let pts = plotted.map { t -> (t: Date, down: Double, up: Double) in
+            let c = easer.cur[t.time] ?? (t.down, t.up)
+            let v = (down: c.down + (t.down - c.down) * k, up: c.up + (t.up - c.up) * k)
+            next[t.time] = v
+            return (t.time, v.down, v.up)
+        }
+        easer.cur = next
+        for download in [true, false] {
+            let color = download ? Palette.success.color : Palette.warning.color
+            let top = download ? 0.42 : 0.32, bottom = download ? 0.03 : 0.02
+            let points = pts.map { CGPoint(x: Self.x($0.t, now: now, width: size.width), y: y(download ? $0.down : $0.up)) }
+            let line = Self.curve(points)
+            var area = line
+            if let f = points.first, let l = points.last {
+                area.addLine(to: CGPoint(x: l.x, y: size.height)); area.addLine(to: CGPoint(x: f.x, y: size.height)); area.closeSubpath()
+            }
+            ctx.fill(area, with: .linearGradient(Gradient(colors: [color.opacity(top), color.opacity(bottom)]),
+                                                 startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 0, y: size.height)))
+            ctx.stroke(line, with: .color(color), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+        }
+    }
+
+    /// A Catmull-Rom curve through the points (each segment a cubic Bezier with the neighbors' slope), the shape Charts drew.
+    private static func curve(_ p: [CGPoint]) -> Path {
+        var path = Path()
+        guard let first = p.first else { return path }
+        path.move(to: first)
+        for i in 0..<max(p.count - 1, 0) {
+            let p0 = p[max(i - 1, 0)], p1 = p[i], p2 = p[i + 1], p3 = p[min(i + 2, p.count - 1)]
+            path.addCurve(to: p2,
+                          control1: CGPoint(x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6),
+                          control2: CGPoint(x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6))
+        }
+        return path
+    }
+
+    /// How far behind the clock the right edge runs: more than a sample's spacing plus jitter, so the newest sample is already there.
+    private static let lag: TimeInterval = 1.5
+
     private var start: Date { (samples.last?.time ?? Date()).addingTimeInterval(-Double(TrafficMonitor.window)) }
 
     /// The time under the pointer (the chart's own selection), and the sample nearest to it.
@@ -247,44 +310,27 @@ private struct SpeedChart: View {
     var body: some View {
         Panel {
             VStack(alignment: .leading, spacing: Space.m) {
-                Chart {
-                    ForEach(live ? plotted : []) { s in
-                        // Zero sits a quarter of the way up: below it is empty room that only the wash reaches, so a quiet line
-                        // is a visible shape and not a stroke on the floor. A wash under each line, fading to nothing.
-                        AreaMark(x: .value("Time", s.time), yStart: .value("Floor", Self.floor), yEnd: .value("Speed", s.down), series: .value("Direction", "Download area"))
-                            .interpolationMethod(.catmullRom)
-                            .foregroundStyle(LinearGradient(colors: [Palette.success.color.opacity(0.42), Palette.success.color.opacity(0.03)], startPoint: .top, endPoint: .bottom))
-                        AreaMark(x: .value("Time", s.time), yStart: .value("Floor", Self.floor), yEnd: .value("Speed", s.up), series: .value("Direction", "Upload area"))
-                            .interpolationMethod(.catmullRom)
-                            .foregroundStyle(LinearGradient(colors: [Palette.warning.color.opacity(0.32), Palette.warning.color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
-                        LineMark(x: .value("Time", s.time), y: .value("Speed", s.down), series: .value("Direction", "Download"))
-                            .interpolationMethod(.catmullRom).foregroundStyle(Palette.success.color)
-                            .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
-                        LineMark(x: .value("Time", s.time), y: .value("Speed", s.up), series: .value("Direction", "Upload"))
-                            .interpolationMethod(.catmullRom).foregroundStyle(Palette.warning.color)
-                            .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
-                    }
-                }
-                .chartXSelection(value: $pointer)
-                .chartXScale(domain: start...(samples.last?.time ?? Date()))
-                .chartYScale(domain: Self.floor...1)
-                // After the scales, so the window sliding along is animated too: one second, linear, so the line scrolls steadily as each sample comes in.
-                .animation(.linear(duration: 1), value: samples)
-                .chartXAxis(.hidden)
-                .chartYAxis {
-                    // Zero is a solid line; above it, evenly spaced on the square-root scale, a ninth and four ninths of the top, and the top.
-                    AxisMarks(values: [0, 1.0 / 3, 2.0 / 3, 1]) { v in
-                        AxisGridLine(stroke: StrokeStyle(lineWidth: 1, dash: v.as(Double.self) == 0 ? [] : [4, 4])).foregroundStyle(Glass.divider)
-                    }
-                }
-                .chartOverlay { proxy in
-                    // The guide line at the pointer: drawn here, not as a mark, so it never changes the chart's scale.
-                    GeometryReader { geo in
-                        if let h = hovered, let x = proxy.position(forX: h.time), let frame = proxy.plotFrame {
-                            Rectangle().fill(Palette.inkSecondary.color.opacity(0.45)).frame(width: 1)
-                                .frame(height: geo[frame].height)
-                                .position(x: x + geo[frame].minX, y: geo[frame].midY)
-                                .allowsHitTesting(false)
+                // Drawn by hand, not with Charts: Charts animates (and so stops and starts) whenever its data changes, and the slide must
+                // never pause. Every frame the window's edges follow the clock, so the whole chart moves left steadily, and each point's
+                // height eases toward its new value on its own clock. The right edge runs `lag` behind, so the newest sample is already there.
+                TimelineView(.animation(paused: !live)) { timeline in
+                    ZStack {
+                        Canvas { ctx, size in drawChart(&ctx, size, now: timeline.date) }
+                        GeometryReader { geo in
+                            if let h = hovered, live {
+                                let x = Self.x(h.time, now: timeline.date, width: geo.size.width)
+                                Rectangle().fill(Palette.inkSecondary.color.opacity(0.45)).frame(width: 1, height: geo.size.height)
+                                    .position(x: x, y: geo.size.height / 2).allowsHitTesting(false)
+                            }
+                            Color.clear.contentShape(Rectangle())
+                                .onContinuousHover { phase in
+                                    switch phase {
+                                    case .active(let at):
+                                        let edge = Date().addingTimeInterval(-Self.lag)
+                                        pointer = edge.addingTimeInterval(-Double(TrafficMonitor.window) * (1 - Double(at.x / max(geo.size.width, 1))))
+                                    case .ended: pointer = nil
+                                    }
+                                }
                         }
                     }
                 }

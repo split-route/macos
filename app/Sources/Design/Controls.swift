@@ -516,9 +516,14 @@ public extension View {
     /// Makes the whole card a switch: a click anywhere on it that no control inside takes (a menu, a button, the switch itself)
     /// turns `isOn` over. Nothing happens while the change is being applied (`pending`) or when the card is not `enabled`.
     func tapToToggle(_ isOn: Binding<Bool>?, pending: Bool = false, enabled: Bool = true) -> some View {
-        contentShape(Rectangle()).onTapGesture {
-            guard let isOn, enabled, !pending else { return }
-            isOn.wrappedValue.toggle()
+        // No switch, no gesture: an empty tap handler would take the click from a button around the card.
+        Group {
+            if let isOn {
+                contentShape(Rectangle()).onTapGesture {
+                    guard enabled, !pending else { return }
+                    isOn.wrappedValue.toggle()
+                }
+            } else { self }
         }
     }
 }
