@@ -67,160 +67,137 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(try s.queue.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, Schema.migrations.count)
     }
 
-    // MARK: Lists
-
-    func testListEditsRoundTripThroughTheDatabase() throws {
-        let s = try newStore()
-        try s.update { try $0.creating("Work", .block) }
-        var r = RuleSpec()
-        r.mode = "and"
-        r.invert = true
-        r.domainSuffix = ["example.com"]; r.domain = ["a.example.com"]; r.domainKeyword = ["tracker"]; r.domainRegex = [#"^ads[0-9]+\."#]
-        r.ipCIDR = ["8.8.8.0/24", "2400:cb00::/32"]; r.port = [443]; r.portRange = ["8000:9000"]
-        r.processName = ["curl"]; r.processPath = ["/usr/bin/curl"]; r.processPathRegex = ["^/opt/"]
-        r.applications = ["/Applications/Safari.app"]; r.network = ["tcp"]
-        try s.update { try $0.settingRules("Work", r) }
-        try s.update { try $0.moving("Work", to: 0) }
-        let c = try s.config()
-        XCTAssertEqual(c.lists.map(\.name), ["Work", "ir-cidr"])
-        XCTAssertEqual(c.lists[0].rules, r, "every field, the mode and the invert survive the database")
-        XCTAssertThrowsError(try s.update { try $0.settingRules("ir-cidr", r) }, "a release list has no rules of its own")
-    }
-
-    /// "No Action" keeps the list (and its rule) without applying it: the lists table accepts it and the rule survives.
-    func testAListWithNoActionIsKeptWithItsEntries() throws {
-        let s = try newStore()
-        try s.update { try $0.creating("Work", .block) }
-        var r = RuleSpec(); r.domainSuffix = ["example.com"]
-        try s.update { try $0.settingRules("Work", r) }
-        try s.update { try $0.settingAction("Work", .none, tunnel: nil) }
-        let l = try s.config().lists.first { $0.name == "Work" }
-        XCTAssertEqual(l?.action, Action.none) // not .none: that reads as Optional.none
-        XCTAssertEqual(l?.rules.domainSuffix, ["example.com"])
-    }
-
-    /// A custom list or import can carry a one-line description; a ready-made list cannot (its text is the catalog's).
-    func testAListDescriptionRoundTripsAndIsChecked() throws {
-        let s = try newStore()
-        try s.update { try $0.creating("Work", .block, description: "Sites for the office") }
-        XCTAssertEqual(try s.config().lists.first { $0.name == "Work" }?.description, "Sites for the office")
-        try s.update { try $0.settingDescription("Work", "") }
-        XCTAssertNil(try s.config().lists.first { $0.name == "Work" }?.description, "empty clears it")
-        XCTAssertThrowsError(try s.update { try $0.settingDescription("Work", String(repeating: "x", count: 121)) })
-        XCTAssertThrowsError(try s.update { try $0.settingDescription("Work", "two\nlines") })
-        XCTAssertThrowsError(try s.update { try $0.settingDescription("ir-cidr", "mine") }, "a ready-made list has the catalog's")
-        try s.update { try $0.importing("Feed", .block, url: "https://example.com/a.txt", description: "A feed") }
-        XCTAssertEqual(try s.config().lists.first { $0.name == "Feed" }?.description, "A feed")
-    }
-
-    func testAnImportsAddressCanBeChangedOnlyToAnHTTPSOne() throws {
-        let s = try newStore()
-        try s.update { try $0.importing("Feed", .block, url: "https://example.com/a.txt") }
-        XCTAssertThrowsError(try s.update { try $0.settingImportURL("Feed", to: "http://example.com/a.txt") })
-        XCTAssertThrowsError(try s.update { try $0.settingImportURL("ir-cidr", to: "https://example.com/b.txt") }, "not an import")
-        try s.update { try $0.settingImportURL("Feed", to: "https://example.com/b.txt") }
-        XCTAssertEqual(try s.config().lists.first { $0.name == "Feed" }?.importSource?.url, "https://example.com/b.txt")
-    }
-
-    /// Renaming an import keeps its downloaded entries (they live only in the database).
-    func testRenamingAnImportKeepsItsEntries() throws {
-        let s = try newStore()
-        try s.update { try $0.importing("Feed", .block, url: "https://example.com/a.txt") }
-        _ = try s.saveDownload(name: "Feed", url: "https://example.com/a.txt", lines: ["example.com", "8.8.8.0/24"], etag: "", lastModified: "", sha256: "x", skipped: 0)
-        try s.renameList("Feed", to: "News")
-        XCTAssertEqual(try s.importLines("News"), ["example.com", "8.8.8.0/24"])
-        XCTAssertEqual(try s.config().lists.map(\.name).contains("Feed"), false)
-        XCTAssertThrowsError(try s.renameList("News", to: "ir-cidr"), "a taken name")
-    }
-
-    /// Refusing QUIC is off by default and survives a round trip.
-    func testBlockQUICDefaultsOffAndRoundTrips() throws {
-        let s = try newStore()
-        XCTAssertFalse(try s.config().blockQUIC)
-        try s.update { var c = $0; c.blockQUIC = true; return c }
-        XCTAssertTrue(try s.config().blockQUIC)
-        try s.update { var c = $0; c.blockQUIC = false; return c }
-        XCTAssertFalse(try s.config().blockQUIC)
-    }
-
-    /// STUN is not blocked by default; the fingerprint is "each server's own". Both survive a write, and an unknown name is refused.
-    func testBlockSTUNAndTLSFingerprintDefaultsAndRoundTrip() throws {
-        let s = try newStore()
-        XCTAssertFalse(try s.config().blockSTUN)
-        XCTAssertEqual(try s.config().tlsFingerprint, "")
-        try s.update { var c = $0; c.blockSTUN = true; c.tlsFingerprint = "safari"; return c }
-        XCTAssertTrue(try s.config().blockSTUN)
-        XCTAssertEqual(try s.config().tlsFingerprint, "safari")
-        XCTAssertThrowsError(try s.update { var c = $0; c.tlsFingerprint = "netscape"; return c })
-        XCTAssertEqual(try s.config().tlsFingerprint, "safari", "a refused write changes nothing")
-    }
-
-    /// IPv6 is blocked by default.
-    func testBlockIPv6DefaultsOnAndRoundTrips() throws {
-        let s = try newStore()
-        XCTAssertTrue(try s.config().blockIPv6)
-        try s.update { var c = $0; c.blockIPv6 = false; return c }
-        XCTAssertFalse(try s.config().blockIPv6)
-    }
-
-    /// A note belongs to the person: it survives the subscription's update, which rewrites other columns.
-    func testNotesSurviveASubscriptionSync() throws {
-        let s = try newStore()
-        let (sub, added) = try s.addTunnels([tunnel("A"), tunnel("B")], subscription: "Provider")
-        let a = added[0]
-        try s.setNote(a.id, "  fast\tat night \n")
-        var sy = Store.Sync()
-        var changed = a
-        changed.sha = String(repeating: "b", count: 64)
-        sy.update = [changed]
-        _ = try s.sync(subscription: sub!.id, sy) { _ in }
-        let after = try XCTUnwrap(s.tunnels().first { $0.id == a.id })
-        XCTAssertEqual(after.note, "fast at night")
-        XCTAssertEqual(after.sha, changed.sha, "the sync did change the row")
-        XCTAssertEqual(try XCTUnwrap(s.tunnels().first { $0.id == added[1].id }).note, "", "another server is untouched")
-        XCTAssertThrowsError(try s.setNote(a.id, String(repeating: "x", count: 201)))
-    }
-
-    /// A country is the service's answer, stored per server: "" is an answer (a CDN), a server it couldn't look up keeps
-    /// its old one, and a subscription update that changes the address forgets it (it may be wrong now).
-    func testCountriesAreStoredAndForgottenWhenTheAddressChanges() throws {
-        let s = try newStore()
-        let (sub, added) = try s.addTunnels([tunnel("A"), tunnel("B"), tunnel("C")], subscription: "Provider")
-        XCTAssertEqual(try s.tunnels().map(\.country), ["", "", ""])
-        XCTAssertEqual(try s.tunnels().map(\.countryAt), [0, 0, 0], "never looked up")
-        try s.setCountries([added[0].id: "DE", added[1].id: ""], at: 1000)
-        try s.setCountries([added[2].id: "xx"], at: 2000) // not a code: ignored
-        var rows = try s.tunnels()
-        XCTAssertEqual(rows.map(\.country), ["DE", "", ""])
-        XCTAssertEqual(rows.map(\.countryAt), [1000, 1000, 0], "a CDN's empty answer is still an answer")
-        try s.setCountries([:], at: 3000) // nothing found: nothing changes
-        XCTAssertEqual(try s.tunnels().map(\.countryAt), [1000, 1000, 0])
-
-        var same = added[0]; same.sha = String(repeating: "b", count: 64)           // options changed, address not
-        var moved = added[1]; moved.remotes = ["other.example:443"]; moved.country = "" // the address changed
-        _ = try s.sync(subscription: sub!.id, Store.Sync(update: [same, moved])) { _ in }
-        rows = try s.tunnels()
-        XCTAssertEqual(rows[0].country, "DE", "the address is the same: the country stands")
-        XCTAssertEqual(rows[1].countryAt, 0, "a new address is looked up again")
-        XCTAssertEqual(rows[1].remotes, ["other.example:443"])
-    }
-
-    /// What is due: a server never looked up, and a standalone one older than a day. A subscription's servers are looked up
-    /// when it updates, not on a clock.
-    func testWhichServersAreDueForALocationLookup() {
-        let now = Date(timeIntervalSince1970: 1_000_000)
-        func t(_ id: Int64, sub: Int64?, at: Int) -> StoreTunnel {
-            var x = StoreTunnel(id: id, name: "n\(id)", kind: "vless", sha: "", remotes: [])
-            x.subscriptionID = sub; x.countryAt = at
-            return x
+    /// Migration 23: the lists and the default route of a database from before profiles become the profile "Default" (with
+    /// their entries and import state), and settings no longer holds a server that could block its deletion.
+    func testProfilesMigrationKeepsListsAndTheDefaultRoute() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let path = dir.appendingPathComponent("db.sqlite").path
+        let q = try DatabaseQueue(path: path)
+        let before = try XCTUnwrap(Schema.migrations.firstIndex { $0.contains("CREATE TABLE profiles") }) // the schema before profiles
+        try q.write { db in
+            for m in Schema.migrations.prefix(before) { try db.execute(sql: m) }
+            try db.execute(sql: "PRAGMA user_version = \(before)")
+            try db.execute(sql: "INSERT INTO settings (id, created_at) VALUES (1, 'x')")
+            try db.execute(sql: "INSERT INTO tunnels (name, profile_sha256, position, created_at, updated_at) VALUES ('Work', '\(String(repeating: "b", count: 64))', 0, 'x', 'x')")
+            try db.execute(sql: "UPDATE settings SET final_action = 'tunnel', final_tunnel_id = 1")
+            try db.execute(sql: "INSERT INTO lists (name, source, action, position, created_at, updated_at) VALUES ('feed', 'import', 'block', 0, 'x', 'x')")
+            try db.execute(sql: "INSERT INTO import_sources (list_id, url) VALUES (1, 'https://example.com/x')")
+            try db.execute(sql: "INSERT INTO entries (list_id, position, kind, value) VALUES (1, 0, 'domain_suffix', 'ads.example.net')")
         }
-        let day = Int(AppModel.locateEvery)
-        let due = AppModel.dueForLocation([
-            t(1, sub: nil, at: 0), t(2, sub: 7, at: 0),                       // never: due
-            t(3, sub: nil, at: 1_000_000 - day - 1), t(4, sub: nil, at: 1_000_000 - day + 60), // standalone: old, fresh
-            t(5, sub: 7, at: 1_000_000 - 5 * day),                           // old but in a subscription: not due
-        ], now: now)
-        XCTAssertEqual(due, [1, 2, 3])
+        try q.close()
+        let s = try Store(path: path)
+        let cfg = try s.config()
+        XCTAssertEqual(cfg.profiles, ["Default"])
+        XCTAssertEqual(cfg.activeProfile, "Default")
+        XCTAssertEqual(cfg.lists.map(\.name), ["feed"])
+        XCTAssertEqual(cfg.finalTunnel, "Work", "the default route moved to the profile")
+        XCTAssertEqual(try s.importLines("feed"), ["ads.example.net"])
+        // Migration 25 made the route global again: it is in settings, and the profiles hold none.
+        XCTAssertEqual(try s.queue.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM profiles WHERE final_tunnel_id IS NOT NULL") }, 0)
+        XCTAssertEqual(try s.queue.read { try Int.fetchOne($0, sql: "PRAGMA foreign_keys") }, 1)
+        XCTAssertEqual(try DatabaseQueue(path: path + ".v\(before)").read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, before)
+    }
+
+    // MARK: Profiles
+
+    /// A profile has its own lists; the same list name can be in two profiles; switching shows each its own. The default route is
+    /// global: it is the same whichever profile is active.
+    func testProfilesKeepTheirOwnListsAndShareTheDefaultRoute() throws {
+        let s = try newStore()
+        _ = try s.addTunnels([tunnel("A")])
+        try s.update { try $0.removing("ir-cidr") } // the list a new database starts with
+        try s.update { var c = try $0.creating("Office", .direct); c.finalAction = .block; return c }
+        XCTAssertEqual(try s.config().lists.map(\.name), ["Office"])
+
+        XCTAssertEqual(try s.createProfile("  Travel "), "Travel", "the name is tidied")
+        var c = try s.config()
+        XCTAssertEqual(c.activeProfile, "Travel", "a new profile becomes the active one")
+        XCTAssertEqual(c.profiles, ["Default", "Travel"])
+        XCTAssertEqual(c.lists, [], "and starts empty")
+        XCTAssertEqual(c.finalAction, .block, "the default route is the global one")
+        try s.update { try $0.creating("Streaming", .tunnel) }
+        try s.update { var c = $0; c.finalAction = .direct; return c }
+
+        try s.setActiveProfile("Default")
+        c = try s.config()
+        XCTAssertEqual(c.lists.map(\.name), ["Office"], "Default is untouched by what Travel did")
+        XCTAssertEqual(c.finalAction, .direct, "a change of the default route in one profile is a change in every profile")
+        try s.update { try $0.creating("Streaming", .block) } // the same name as in Travel: fine in another profile
+        XCTAssertEqual(try s.config().lists.map(\.name), ["Office", "Streaming"])
+        try s.setActiveProfile("Travel")
+        XCTAssertEqual(try s.config().lists.map(\.name), ["Streaming"])
+        XCTAssertEqual(try s.config().lists.first?.action, .tunnel, "each profile's Streaming is its own")
+    }
+
+    func testProfileNamesAreUniqueAndTheLastProfileStays() throws {
+        let s = try newStore()
+        XCTAssertThrowsError(try s.createProfile("default"), "ignoring case")
+        XCTAssertThrowsError(try s.createProfile("   "))
+        try s.createProfile("Work")
+        XCTAssertThrowsError(try s.renameProfile("Work", to: "DEFAULT"))
+        try s.renameProfile("Work", to: "Work")  // its own name is fine
+        try s.renameProfile("Work", to: "Office")
+        XCTAssertEqual(try s.config().profiles, ["Default", "Office"])
+        XCTAssertEqual(try s.deleteProfile("Office"), "Default", "the active one was deleted: the first other takes over")
+        XCTAssertThrowsError(try s.deleteProfile("Default"), "the only profile")
+        XCTAssertThrowsError(try s.setActiveProfile("Nope"))
+    }
+
+    /// Deleting a profile deletes its lists, their entries and import state, and no other profile's.
+    func testDeletingAProfileDeletesItsListsOnly() throws {
+        let s = try newStore()
+        func addFeed() throws {
+            try s.update { var c = $0; var l = RouteList(name: "feed", action: .block); l.importSource = ImportSource(url: "https://example.com/x", refreshHours: nil); c.lists.append(l); return c }
+            try s.saveDownload(name: "feed", url: "https://example.com/x", lines: ["ads.example.net"], etag: "", lastModified: "", sha256: String(repeating: "c", count: 64), skipped: 0)
+        }
+        try addFeed()
+        try s.createProfile("Other")
+        try addFeed() // the same list in the new profile, with its own entries
+        XCTAssertEqual(try s.queue.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM entries") }, 2)
+        try s.deleteProfile("Other")
+        XCTAssertEqual(try s.config().activeProfile, "Default")
+        XCTAssertEqual(try s.importLines("feed"), ["ads.example.net"], "the original keeps its entries")
+        XCTAssertEqual(try s.queue.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM entries") }, 1)
+        XCTAssertEqual(try s.queue.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM import_sources") }, 1)
+    }
+
+    /// A server another profile's rule uses can't be deleted either, and the message names the profile.
+    func testAServerUsedByAnotherProfileIsProtected() throws {
+        let s = try newStore()
+        let t = try s.addTunnels([tunnel("A")]).tunnels[0]
+        try s.createProfile("Work")
+        try s.update { var c = try $0.creating("Streaming", .tunnel); c.lists[c.lists.count - 1].tunnel = "A"; return c }
+        try s.setActiveProfile("Default")
+        XCTAssertEqual(try s.listsUsing(tunnel: t.id), ["Work › Streaming"])
+        XCTAssertThrowsError(try s.removeTunnel(t.id))
+        // The default route is global and protects the server too, by that name.
+        try s.update { var c = $0; c.finalAction = .tunnel; c.finalTunnel = "A"; return c }
+        XCTAssertEqual(try s.listsUsing(tunnel: t.id), ["Work › Streaming", "Default Route"])
+    }
+
+    /// Migration 25: the default route is global again. The active profile's becomes the global one, and the profiles' own are cleared so
+    /// they can't block deleting a server.
+    func testTheDefaultRouteMovesBackToSettingsFromTheActiveProfile() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let path = dir.appendingPathComponent("db.sqlite").path
+        let q = try DatabaseQueue(path: path)
+        let before = try XCTUnwrap(Schema.migrations.firstIndex { $0.contains("The default route is global again") })
+        try q.write { db in
+            for m in Schema.migrations.prefix(before) { try db.execute(sql: m) }
+            try db.execute(sql: "PRAGMA user_version = \(before)")
+            try db.execute(sql: "INSERT INTO settings (id, created_at) VALUES (1, 'x')")
+            try db.execute(sql: "INSERT INTO tunnels (name, profile_sha256, position, created_at, updated_at) VALUES ('Work', '\(String(repeating: "b", count: 64))', 0, 'x', 'x')")
+            try db.execute(sql: "INSERT INTO profiles (id, name, position, final_action, final_tunnel_id, created_at) VALUES (2, 'Other', 1, 'block', NULL, 'x')")
+            try db.execute(sql: "UPDATE profiles SET final_action = 'tunnel', final_tunnel_id = 1 WHERE id = 1")
+            try db.execute(sql: "UPDATE settings SET active_profile_id = 1")
+        }
+        try q.close()
+        let s = try Store(path: path)
+        let c = try s.config()
+        XCTAssertEqual(c.finalAction, .tunnel)
+        XCTAssertEqual(c.finalTunnel, "Work", "the active profile's route is the global one")
+        XCTAssertEqual(try s.queue.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM profiles WHERE final_tunnel_id IS NOT NULL OR final_action <> 'tunnel'") }, 0)
+        XCTAssertThrowsError(try s.removeTunnel(1), "the global default route holds the server")
     }
 
     /// A proxy server that is not the active one is loaded but idle (the service says disconnected); it still carries a

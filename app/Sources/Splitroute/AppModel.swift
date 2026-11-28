@@ -39,6 +39,10 @@ final class AppModel: ObservableObject {
     /// What Smart Select last did (or is doing), under its switch on the Servers page.
     @Published var smartNote: String?
     @Published var smartChecking = false
+    /// Bumped when the recorded statistics change from outside the page (a reset), so the page reads them again.
+    @Published var statsRevision = 0
+    /// A section the next settings page should scroll to (a button elsewhere set it); the page clears it.
+    @Published var settingsScrollTarget: String?
     @Published var updateCheckNote: String?
     /// Switches whose change is being applied by the service ("vpn", "killswitch", "routing"): a spinner shows beside each.
     @Published var pending: Set<String> = []
@@ -65,6 +69,7 @@ final class AppModel: ObservableObject {
     var subsOpenHandled = false
     var updateOpenHandled = false
     var locating = false
+    var statsPrunedDay: Int?
     /// When each subscription was last tried by the schedule, so a failing one isn't hammered.
     var subsAttempt: [Int64: Date] = [:]
     var sleepSuspended = false
@@ -102,6 +107,7 @@ final class AppModel: ObservableObject {
             let l = ServiceLink(store: s, files: files)
             store = s
             link = l
+            l.recordStats = Prefs.bool(Prefs.recordStats, true)
             l.credentials = { [weak self] name in
                 guard let self else { return nil }
                 if self.credentialsRefused.contains(name) { return nil }
@@ -133,6 +139,8 @@ final class AppModel: ObservableObject {
         if connError == nil, config != nil { await runAutomation() }
         followExitIP()
         await runSmartSelect()
+        await recordTraffic()
+        if connError == nil, !settingsVisible { traffic.sampleInBackground() }
         await autoInstallIfNeeded()
     }
 
@@ -166,7 +174,7 @@ final class AppModel: ObservableObject {
         case .notRunning: return connError?.localizedDescription ?? "Connecting…"
         case .problem: return "Problem: \(status?.error ?? "unknown")"
         case .active:
-            return "Connected through \(selectedTunnel?.name ?? "the selected server")" + (status?.enabled == false ? ", lists off" : "")
+            return "Connected through \(selectedTunnel?.name ?? "the selected server")" + (status?.enabled == false ? ", rules off" : "")
         case .idle:
             guard vpnOn else { return "Disconnected" }
             guard let t = selectedTunnel else { return "No server is selected" }
@@ -237,6 +245,7 @@ final class AppModel: ObservableObject {
             if c != config { config = c }
             let l = try tunnelListFromStore()
             if l != tunnelList { tunnelList = l }
+            pruneSmartLists(existing: Set(try store.tunnels().map(\.id)))
             errors["tunnels"] = nil
         } catch {
             errors["tunnels"] = error.localizedDescription

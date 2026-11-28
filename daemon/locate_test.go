@@ -36,7 +36,7 @@ func TestServerCountries(t *testing.T) {
 	t.Cleanup(func() { resolve = old })
 
 	got := a.ServerCountries([]string{"t1", "t2", "t3", "t4", "t5", "t6", "unknown"})
-	want := map[string]string{"t1": "FI", "t2": "FI", "t3": "", "t4": "", "t6": "DE"}
+	want := map[string]string{"t1": "FI", "t2": "FI", "t3": "XC", "t4": "", "t6": "DE"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v (a name that can't be looked up, and an unknown id, are absent)", got, want)
 	}

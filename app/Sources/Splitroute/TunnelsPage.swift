@@ -2,7 +2,7 @@ import Design
 import SwiftUI
 
 /// Tunnels: one switch turns the VPN on or off, and the tunnel with the mark is the one
-/// that carries all traffic no list names. Choosing another switches at once. Tunnels
+/// that carries all traffic no rule names. Choosing another switches at once. Tunnels
 /// that came from a subscription are grouped under it; the rest are listed first.
 struct TunnelsPage: View {
     @EnvironmentObject private var model: AppModel
@@ -82,6 +82,7 @@ struct TunnelsPage: View {
                 if showBar {
                     ToolbarGroup {
                         ToolbarSearch(text: query, prompt: "Search servers…")
+                        testButton
                         latencyMenu
                         ToolbarAddButton("Add servers") { importing = true }.disabled(unavailable)
                     }
@@ -137,8 +138,16 @@ struct TunnelsPage: View {
 
     // MARK: The switch
 
-    /// The one switch. Off, traffic uses the normal connection. On, everything no list names goes
+    /// The one switch. Off, traffic uses the normal connection. On, everything no rule names goes
     /// through the tunnel with the mark.
+    private var vpnBinding: Binding<Bool> {
+        Binding(get: { model.vpnOn }, set: { on in
+            if !on && !model.confirmDisconnect() { return }
+            Task { await model.setVPN(on) }
+        })
+    }
+    private var smartBinding: Binding<Bool> { Binding(get: { smartWanted && model.vpnOn }, set: { on in Task { await model.setSmartSelect(on) } }) }
+
     private var vpnCard: some View {
         Panel {
             VStack(alignment: .leading, spacing: Space.s) {
@@ -158,30 +167,24 @@ struct TunnelsPage: View {
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(model.vpnOn ? "Connected" : "Disconnected").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
-                        Text(vpnSubtitle).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                        ConnectionLine(fallback: vpnSubtitle).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: Space.m)
-                    PendingToggle("Connection", isOn: Binding(get: { model.vpnOn }, set: { on in Task { await model.setVPN(on) } }),
-                                  pending: model.pending.contains("vpn"))
+                    PendingToggle("Connection", isOn: vpnBinding, pending: model.pending.contains("vpn"))
                         .disabled(model.tunnels.isEmpty)
                 }
                 if let e = model.error("vpn") { NoteLine(.error, e) }
             }
+            .tapToToggle(vpnBinding, pending: model.pending.contains("vpn"), enabled: !model.tunnels.isEmpty)
             .padding(Space.l)
             Hairline()
             connectivityRow
         }
     }
 
-    @State private var smartOn = Prefs.bool(Prefs.smartSelect, false)
-
-    /// What Smart Select is doing, or what it does.
-    private var smartDetail: String {
-        if !smartOn { return "Use the fastest server automatically." }
-        if model.smartChecking { return "Checking servers…" }
-        return model.smartNote ?? "Checks servers when connected and keeps the best one."
-    }
+    /// What the person asked for. It stays on while the connection is off, so the next connection turns it on again.
+    @AppStorage(Prefs.smartSelect) private var smartWanted = false
 
     /// What the connection is doing; with it off, the tunnel that will carry the traffic once it is on.
     private var vpnSubtitle: String {
@@ -189,31 +192,37 @@ struct TunnelsPage: View {
         return model.summary
     }
 
-    /// Smart Select, and the Test button before its switch: Test measures every server and shows a time or "Timeout" on each row;
-    /// Smart Select keeps the active server the best one (its rules are in Settings > General).
+    /// Measures every server (connecting first if needed) and shows a time or "Timeout" on each row.
+    private var testButton: some View {
+        Button { Task { await model.testConnectivity() } } label: {
+            SwiftUI.Group {
+                if model.testing { ProgressView().controlSize(.small) }
+                else { Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 14, weight: .medium)).foregroundStyle(Palette.ink.color) }
+            }
+            .frame(width: 38, height: 38).contentShape(Circle())
+        }
+        .buttonStyle(.plain).toolbarCircleGlass()
+        .disabled(model.testing || unavailable || model.tunnels.isEmpty)
+        .help("Test every server").accessibilityLabel("Test servers")
+        .accessibilityHint("Connects if needed, then measures a request through each running server.")
+    }
+
+    /// Smart Select keeps the active server the best one; its rules are in Settings > General. With the connection off it
+    /// shows off, and comes back on with the next connection if it was on.
     private var connectivityRow: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             HStack(spacing: Space.m) {
                 Image(systemName: "sparkles").font(.system(size: 14)).frame(width: 18).foregroundStyle(Palette.inkSecondary.color).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Smart Select").font(TypeScale.body).foregroundStyle(Palette.ink.color)
-                    Text(smartDetail).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color).lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Use the fastest server automatically.").font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                 }
                 Spacer(minLength: Space.m)
-                Button { Task { await model.testConnectivity() } } label: {
-                    HStack(spacing: 6) {
-                        if model.testing { ProgressView().controlSize(.small) } else { Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 13)) }
-                        Text("Test")
-                    }
-                }
-                .buttonStyle(OutlineButtonStyle()).disabled(model.testing || unavailable || model.tunnels.isEmpty)
-                .accessibilityLabel("Test")
-                .accessibilityHint("Connects if needed, then measures a request through each running server.")
-                PendingToggle("Smart Select", isOn: Binding(get: { smartOn }, set: { on in smartOn = on; Task { await model.setSmartSelect(on) } }),
-                              pending: model.smartChecking && smartOn)
+                SmartScopeMenu()
+                PendingToggle("Smart Select", isOn: smartBinding, pending: model.smartChecking && smartWanted)
                     .disabled(unavailable || model.tunnels.isEmpty)
             }
+            .tapToToggle(smartBinding, pending: model.smartChecking && smartWanted, enabled: !unavailable && !model.tunnels.isEmpty)
             if let e = model.error("test") { NoteLine(.warning, e) }
         }
         .padding(.vertical, Space.m).padding(.horizontal, Space.l)
@@ -278,6 +287,11 @@ struct TunnelsPage: View {
                     .padding(.horizontal, 10).padding(.vertical, 4)
                     .glassCapsule()
                     .accessibilityLabel(plural(group.tunnels.count, "server"))
+                Button { Task { await model.testConnectivity(group: sub.name) } } label: {
+                    Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 14, weight: .regular)).roundGlass(30)
+                }
+                .buttonStyle(.plain).disabled(model.testing || unavailable)
+                .help("Test the servers of this subscription").accessibilityLabel("Test \(sub.name)")
                 Button { update(sub.name) } label: {
                     ZStack {
                         if updating {
@@ -385,20 +399,13 @@ struct TunnelsPage: View {
 
     /// Show only servers that answered a test within a time. Servers with no result yet are hidden while a filter is on.
     private var latencyMenu: some View {
-        Menu {
-            Picker("Latency", selection: $latency) {
-                ForEach(LatencyFilter.allCases, id: \.self) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.inline)
-            if latency != .all && model.testResults.isEmpty { Text("Run a connectivity test first.") }
-        } label: {
-            Image(systemName: "line.3.horizontal.decrease").font(.system(size: 14, weight: .medium))
-                .foregroundStyle(latency == .all ? Palette.ink.color : Accent.color)
-                .frame(width: 38, height: 38).contentShape(Circle())
-        }
-        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-        .toolbarCircleGlass()
-        .help("Filter by latency").accessibilityLabel("Filter by latency")
+        SelectMenu(title: latency.title, options: LatencyFilter.allCases, label: { $0.title }, selected: latency,
+                   customLabel: AnyView(
+                       Image(systemName: "line.3.horizontal.decrease").font(.system(size: 14, weight: .medium))
+                           .foregroundStyle(latency == .all ? Palette.ink.color : Accent.color)
+                           .frame(width: 38, height: 38).contentShape(Circle()))) { latency = $0 }
+            .toolbarCircleGlass()
+            .help("Filter by latency").accessibilityLabel("Filter by latency")
     }
 
     private func select(_ t: Tunnel) {
@@ -424,7 +431,7 @@ struct TunnelsPage: View {
                         .frame(width: 26)
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 5) {
-                                Text(Highlight.attributed((Flags.prefix(name: t.name, country: t.country).map { $0 + " " } ?? "") + t.name, query.wrappedValue)).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color).lineLimit(1).help(t.name)
+                                Text(Highlight.attributed((Flags.prefix(name: t.name, country: t.country).map { $0 + " " } ?? "") + t.name, query.wrappedValue)).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color).lineLimit(1).help(t.country == Flags.cdn ? "\(t.name)\nBehind Cloudflare" : t.name)
                             }
                             Text(detail(t)).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                                 .monospacedDigit().lineLimit(2)
@@ -448,7 +455,7 @@ struct TunnelsPage: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(t.name)
                 .accessibilityValue(testWords(t) ?? label(t, selected: selected) ?? "")
-                .accessibilityHint("Use this server for all traffic that no list names")
+                .accessibilityHint("Use this server for all traffic that no rule names")
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
                 Button { Task { await model.testConnectivity(only: t) } } label: {
                     Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 13, weight: .semibold)).roundGlass(28)
@@ -746,7 +753,7 @@ struct SubscriptionEditSheet: View {
         .confirmationDialog("Remove \(subscription.name)?", isPresented: $confirmRemove) {
             Button("Remove subscription", role: .destructive) { Task { await remove() } }
         } message: {
-            Text("Its \(plural(subscription.tunnels, "server")) and the saved address are deleted. A list that uses one of them must be moved to another server first.")
+            Text("Its \(plural(subscription.tunnels, "server")) and the saved address are deleted. A rule that uses one of them must be moved to another server first.")
         }
     }
 
@@ -837,14 +844,14 @@ struct ProfileChoice: Identifiable {
 
 /// Which servers the Servers page shows by their last test.
 enum LatencyFilter: String, CaseIterable {
-    case all, answered, under100, under200, under500
+    case all, answered, under100, under300, under500
 
     var title: String {
         switch self {
         case .all: return "All servers"
         case .answered: return "Answered the test"
         case .under100: return "Under 100 ms"
-        case .under200: return "Under 200 ms"
+        case .under300: return "Under 300 ms"
         case .under500: return "Under 500 ms"
         }
     }
@@ -855,7 +862,7 @@ enum LatencyFilter: String, CaseIterable {
         guard case .ms(let ms)? = r else { return false }
         switch self {
         case .under100: return ms < 100
-        case .under200: return ms < 200
+        case .under300: return ms < 300
         case .under500: return ms < 500
         default: return true
         }

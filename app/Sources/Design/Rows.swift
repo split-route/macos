@@ -100,6 +100,19 @@ public extension EnvironmentValues {
     }
 }
 
+private struct PageScrollTargetKey: EnvironmentKey { static let defaultValue: Binding<String?> = .constant(nil) }
+
+public extension EnvironmentValues {
+    /// A section (`SettingsSection` title) the page should scroll to when it appears; the page clears it once it has.
+    var pageScrollTarget: Binding<String?> {
+        get { self[PageScrollTargetKey.self] }
+        set { self[PageScrollTargetKey.self] = newValue }
+    }
+}
+
+/// What a sidebar asks for when the page that is open is chosen again (the id of the top of every `PageScaffold`).
+public enum PageScrollTop { public static let id = "pageTop" }
+
 public struct PageScaffold<Trailing: View, Content: View, Footer: View>: View {
     let title: String
     let back: (() -> Void)?
@@ -108,6 +121,7 @@ public struct PageScaffold<Trailing: View, Content: View, Footer: View>: View {
     /// Pinned under the scrolling page (the buttons of an editor); empty for most pages.
     let footer: Footer
     @State private var scrolled = false
+    @Environment(\.pageScrollTarget) private var scrollTarget
     public init(_ title: String, back: (() -> Void)? = nil, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content,
                 @ViewBuilder footer: () -> Footer) {
         self.title = title; self.back = back; self.trailing = trailing(); self.content = content(); self.footer = footer()
@@ -122,8 +136,22 @@ public struct PageScaffold<Trailing: View, Content: View, Footer: View>: View {
         }
     }
 
+    /// The id of the top of the page: the sidebar asks to scroll to it when the page that is open is chosen again.
+    static var topID: String { PageScrollTop.id }
+
+    /// Scrolls to the section a button elsewhere asked for, then clears the request. When the page has just appeared it waits for
+    /// the layout; a request made while it is showing is done at once.
+    private func scrollToTarget(_ proxy: ScrollViewProxy, after delay: TimeInterval) {
+        guard let target = scrollTarget.wrappedValue else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(target, anchor: .top) }
+            scrollTarget.wrappedValue = nil
+        }
+    }
+
     private var scaffold: some View {
         ZStack(alignment: .top) {
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.xl) {
                     PageHeader(title, back: back) { trailing }
@@ -138,11 +166,15 @@ public struct PageScaffold<Trailing: View, Content: View, Footer: View>: View {
                 .background(GeometryReader { g in
                     Color.clear.preference(key: ScrollOffsetKey.self, value: -g.frame(in: .named("page")).minY)
                 })
+                .id(Self.topID) // the very start of the page, its top margin included, so the page header shows and not the floating bar
             }
             .coordinateSpace(name: "page")
             .onPreferenceChange(ScrollOffsetKey.self) { scrolled = $0 > 16 }
             .modifier(ScrollTracker { scrolled = $0 })
             .scrollIndicators(.never)
+            .onAppear { scrollToTarget(proxy, after: 0.3) }
+            .onChange(of: scrollTarget.wrappedValue) { _, _ in scrollToTarget(proxy, after: 0) }
+            }
             FloatingBar(title, back: back, visible: scrolled) { trailing }
         }
     }

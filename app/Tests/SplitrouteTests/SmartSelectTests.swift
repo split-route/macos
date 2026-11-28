@@ -9,25 +9,30 @@ final class SmartSelectTests: XCTestCase {
         return s
     }
 
-    func testThePoolStartsWithTheActiveServerThenProxyServersOfItsGroupFirst() {
+    func testThePoolIsTheActiveServerThenProxyServersOfItsGroup() {
         let me = t(1, "me", sub: 7)
         let all = [me, t(2, "same-a", sub: 7), t(3, "ovpn", kind: "openvpn", sub: 7), t(4, "other", sub: 8), t(5, "same-b", sub: 7), t(6, "left", sub: 7), t(7, "lone")]
         let now = Date()
         let left = ["left": now.addingTimeInterval(-60)]
-        XCTAssertEqual(AppModel.smartPool(all, active: me, groupOnly: false, failedAt: left, now: now, limit: 99).map(\.name),
-                       ["me", "same-a", "same-b", "other", "lone"], "its group first; OpenVPN and the one just left never")
-        XCTAssertEqual(AppModel.smartPool(all, active: me, groupOnly: true, failedAt: left, now: now, limit: 99).map(\.name),
-                       ["me", "same-a", "same-b"], "only its group when asked")
-        let later = AppModel.smartPool(all, active: me, groupOnly: true, failedAt: ["left": now.addingTimeInterval(-601)], now: now, limit: 99)
+        XCTAssertEqual(AppModel.smartPool(all, active: me, scope: .group, failedAt: left, now: now).map(\.name),
+                       ["me", "same-a", "same-b"], "its group only; OpenVPN and the one just left never")
+        let later = AppModel.smartPool(all, active: me, scope: .group, failedAt: ["left": now.addingTimeInterval(-601)], now: now)
         XCTAssertTrue(later.map(\.name).contains("left"), "after ten minutes a left server may be tried again")
     }
 
-    func testThePoolIsCappedAndKeepsTheActiveServer() {
-        let me = t(1, "me", sub: 1)
-        let many = (2...100).map { t(Int64($0), "s\($0)", sub: 1) }
-        let pool = AppModel.smartPool(many + [me], active: me, groupOnly: true, failedAt: [:], now: Date(), limit: 24)
-        XCTAssertEqual(pool.count, 24)
-        XCTAssertEqual(pool.first?.name, "me")
+    func testThereIsNoLimitAndTheActiveServerAndItsOwnGroupComeFirst() {
+        let me = t(1, "me", sub: 7)
+        let all = [me, t(2, "other-a", sub: 8), t(3, "same", sub: 7), t(4, "ovpn", kind: "openvpn", sub: 7)] + (5...300).map { t(Int64($0), "s\($0)", sub: 8) }
+        let pool = AppModel.smartPool(all, active: me, scope: .all, failedAt: [:], now: Date())
+        XCTAssertEqual(pool.count, 299, "every proxy server (300 minus the one OpenVPN), no cap")
+        XCTAssertEqual(pool.prefix(2).map(\.name), ["me", "same"], "the active server, then its own group")
+    }
+
+    func testACustomListReplacesTheGroupAndNeverAddsOpenVPN() {
+        let me = t(1, "me", sub: 7)
+        let all = [me, t(2, "same", sub: 7), t(3, "ovpn", kind: "openvpn", sub: 8), t(4, "other", sub: 8), t(5, "lone")]
+        let pool = AppModel.smartPool(all, active: me, scope: .custom([3, 4, 5]), failedAt: [:], now: Date())
+        XCTAssertEqual(pool.map(\.name), ["me", "other", "lone"], "the active server is always measured; the list's proxy servers only")
     }
 
     func testPickMovesOnlyWhenAnotherIsFasterByMoreThanTheTolerance() {

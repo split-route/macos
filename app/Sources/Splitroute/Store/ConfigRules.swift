@@ -54,31 +54,31 @@ extension Config {
         for l in lists {
             let n = l.name
             if n.isEmpty || n.utf8.count > Config.maxNameLength || n.trimmingCharacters(in: .whitespaces) != n {
-                throw StoreError("List name \"\(n)\": 1-\(Config.maxNameLength) characters, no leading or trailing spaces.")
+                throw StoreError("Rule name \"\(n)\": 1-\(Config.maxNameLength) characters, no leading or trailing spaces.")
             }
             if let d = l.description {
                 if d.count > Config.maxDescription || d.contains(where: \.isNewline) || d.trimmingCharacters(in: .whitespaces) != d {
-                    throw StoreError("List \"\(n)\": the description is one line of at most \(Config.maxDescription) characters.")
+                    throw StoreError("Rule \"\(n)\": the description is one line of at most \(Config.maxDescription) characters.")
                 }
-                if !l.custom && l.importSource == nil { throw StoreError("List \"\(n)\": only custom lists and imports have a description of their own.") }
+                if !l.custom && l.importSource == nil { throw StoreError("Rule \"\(n)\": only custom rules and imports have a description of their own.") }
             }
-            if l.custom && l.importSource != nil { throw StoreError("List \"\(n)\" is custom or an import, not both.") }
+            if l.custom && l.importSource != nil { throw StoreError("Rule \"\(n)\" is custom or an import, not both.") }
             if !l.custom, l.importSource == nil,
                Config.releaseName.firstMatch(in: n, range: NSRange(n.startIndex..., in: n)) == nil {
-                throw StoreError("Invalid list name \"\(n)\".")
+                throw StoreError("Invalid rule name \"\(n)\".")
             }
-            if !l.custom && !l.rules.isEmpty { throw StoreError("List \"\(n)\": only custom lists have rules of their own.") }
+            if !l.custom && !l.rules.isEmpty { throw StoreError("Rule \"\(n)\": only custom rules have fields of their own.") }
             if let t = l.tunnel, !t.isEmpty {
-                if l.action != .tunnel { throw StoreError("List \"\(n)\": only a server list can name a server.") }
+                if l.action != .tunnel { throw StoreError("Rule \"\(n)\": only a rule that uses a server can name one.") }
                 if t.utf8.count > Config.maxNameLength || t.trimmingCharacters(in: .whitespaces) != t {
-                    throw StoreError("List \"\(n)\": the server name \"\(t)\" is not valid.")
+                    throw StoreError("Rule \"\(n)\": the server name \"\(t)\" is not valid.")
                 }
             }
-            if !seen.insert(n).inserted { throw StoreError("List \"\(n)\" is listed twice.") }
+            if !seen.insert(n).inserted { throw StoreError("Rule \"\(n)\" appears twice.") }
             if let im = l.importSource {
                 try Config.validateImportURL(im.url)
                 if let h = im.refreshHours, h < 0 || h > Config.maxRefreshHours {
-                    throw StoreError("List \"\(n)\": refresh must be 1-\(Config.maxRefreshHours) hours.")
+                    throw StoreError("Rule \"\(n)\": refresh must be 1-\(Config.maxRefreshHours) hours.")
                 }
             }
         }
@@ -89,7 +89,7 @@ extension Config {
     private func index(_ name: String) -> Int? { lists.firstIndex { $0.name == name } }
 
     private func adding(_ l: RouteList) throws -> Config {
-        if index(l.name) != nil { throw StoreError("List \"\(l.name)\" already exists.") }
+        if index(l.name) != nil { throw StoreError("Rule \"\(l.name)\" already exists.") }
         var c = self
         c.lists.append(l)
         try c.validate()
@@ -112,7 +112,7 @@ extension Config {
     }
 
     func removing(_ name: String) throws -> Config {
-        guard let i = index(name) else { throw StoreError("No list named \"\(name)\".") }
+        guard let i = index(name) else { throw StoreError("No rule named \"\(name)\".") }
         var c = self
         c.lists.remove(at: i)
         return c
@@ -120,11 +120,11 @@ extension Config {
 
     /// Release lists are named by the release, so only custom lists and imports can be renamed.
     func renaming(_ name: String, to new: String) throws -> Config {
-        guard let i = index(name) else { throw StoreError("No list named \"\(name)\".") }
+        guard let i = index(name) else { throw StoreError("No rule named \"\(name)\".") }
         if !lists[i].custom && lists[i].importSource == nil {
-            throw StoreError("\"\(name)\" is a release list; only custom lists and imports can be renamed.")
+            throw StoreError("\"\(name)\" is a ready-made rule; only custom rules and imports can be renamed.")
         }
-        if new != name && index(new) != nil { throw StoreError("List \"\(new)\" already exists.") }
+        if new != name && index(new) != nil { throw StoreError("Rule \"\(new)\" already exists.") }
         var c = self
         c.lists[i].name = new
         try c.validate()
@@ -142,7 +142,7 @@ extension Config {
 
     /// Points an import at another address; its entries are dropped until the new one is downloaded (the store does that).
     func settingImportURL(_ name: String, to url: String) throws -> Config {
-        guard let i = index(name), lists[i].importSource != nil else { throw StoreError("\"\(name)\" is not a list from a URL.") }
+        guard let i = index(name), lists[i].importSource != nil else { throw StoreError("\"\(name)\" is not a rule from a URL.") }
         try Config.validateImportURL(url)
         var c = self
         c.lists[i].importSource?.url = url
@@ -152,7 +152,7 @@ extension Config {
 
     /// A custom list's or import's description; empty clears it.
     func settingDescription(_ name: String, _ text: String?) throws -> Config {
-        guard let i = index(name) else { throw StoreError("No list named \"\(name)\".") }
+        guard let i = index(name) else { throw StoreError("No rule named \"\(name)\".") }
         var c = self
         c.lists[i].description = text?.nilIfEmpty
         try c.validate()
@@ -161,7 +161,7 @@ extension Config {
 
     /// `tunnel` names the tunnel for the tunnel action; nil means the default tunnel, and it must be nil for the others.
     func settingAction(_ name: String, _ a: Action, tunnel: String?) throws -> Config {
-        guard let i = index(name) else { throw StoreError("No list named \"\(name)\".") }
+        guard let i = index(name) else { throw StoreError("No rule named \"\(name)\".") }
         var c = self
         c.lists[i].action = a
         c.lists[i].tunnel = (tunnel?.isEmpty ?? true) ? nil : tunnel
@@ -170,7 +170,7 @@ extension Config {
     }
 
     func moving(_ name: String, to pos: Int) throws -> Config {
-        guard let i = index(name) else { throw StoreError("No list named \"\(name)\".") }
+        guard let i = index(name) else { throw StoreError("No rule named \"\(name)\".") }
         guard pos >= 0, pos < lists.count else { throw StoreError("Position \(pos + 1) is out of range (1-\(lists.count)).") }
         var c = self
         let l = c.lists.remove(at: i)
@@ -179,9 +179,9 @@ extension Config {
     }
 
     private func customIndex(_ name: String) throws -> Int {
-        guard let i = index(name) else { throw StoreError("No list named \"\(name)\".") }
+        guard let i = index(name) else { throw StoreError("No rule named \"\(name)\".") }
         if let im = lists[i].importSource { throw StoreError("\"\(name)\" is an import; its entries come from \(im.url).") }
-        if !lists[i].custom { throw StoreError("\"\(name)\" is a release list; entries can only be changed in custom lists.") }
+        if !lists[i].custom { throw StoreError("\"\(name)\" is a ready-made rule; entries can only be changed in custom rules.") }
         return i
     }
 
@@ -272,7 +272,7 @@ enum Catalog {
         ("phishing", "Phishing", "Sites that imitate others to steal passwords.", .block),
         ("cryptominers", "Crypto miners", "In-browser cryptocurrency miners.", .block),
         ("ads", "Ads and trackers", "Ad networks and trackers, Iranian ones included.", .block),
-        ("ads-lite", "Ads and trackers (lite)", "A smaller ads list for low-memory devices.", .block),
+        ("ads-lite", "Ads and trackers (lite)", "A smaller ads rule for low-memory devices.", .block),
         ("tracking", "Device telemetry", "Telemetry from Windows, phones and smart TVs.", .block),
         ("sanctioned", "Sites that block Iran", "Services that refuse Iranian IP addresses.", .tunnel),
         ("social", "Social networks", "Major social networks and their apps.", .tunnel),

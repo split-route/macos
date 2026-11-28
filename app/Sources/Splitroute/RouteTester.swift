@@ -44,10 +44,6 @@ struct RouteTestSheet: View {
             }
         }
         .accessibilityElement(children: .combine)
-        if let notes = r.notes, !notes.isEmpty {
-            Text(notes.joined(separator: " ")).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color.opacity(0.85))
-                .fixedSize(horizontal: false, vertical: true)
-        }
     }
 
     private func outcome(_ r: WireRoute) -> (String, Color) {
@@ -60,10 +56,10 @@ struct RouteTestSheet: View {
 
     private func why(_ r: WireRoute) -> String {
         switch r.kind {
-        case "list": return "Matched by the list “\(r.list ?? "")”."
+        case "list": return "Matched by the rule “\(r.list ?? "")”."
         case "local": return "A local network address always stays direct."
         case "ipv6": return "IPv6 is blocked (Settings > Advanced). Turn that off to send it where the default route says."
-        default: return "No list matches, so the default route decides."
+        default: return "No rule matches, so the default route decides."
         }
     }
 

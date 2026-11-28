@@ -11,6 +11,8 @@ struct ApplicationSettingsPage: View {
     @AppStorage(Prefs.autoDownloadUpdates) private var autoDownload = true
 
     @AppStorage(Theme.key) private var theme = Theme.system.rawValue
+    @AppStorage(Prefs.speedUnit) private var speedUnitName = SpeedUnit.mbps.rawValue
+    private var speedUnit: SpeedUnit { SpeedUnit(rawValue: speedUnitName) ?? .mbps }
     private static let quitLabels = ["": "Ask", "turnOff": "Disconnect", "keep": "Keep it on"]
 
     var body: some View {
@@ -19,6 +21,7 @@ struct ApplicationSettingsPage: View {
             warnings
             appearance
             startup
+            confirmations
             service
             about
         }
@@ -114,8 +117,45 @@ struct ApplicationSettingsPage: View {
                 }
             }
             Hairline()
+            FormRow("Speed unit", detail: "Megabits a second (Mbps) or megabytes a second (MB/s). Sizes are always bytes.") {
+                SelectMenu(title: speedUnit.title, options: SpeedUnit.allCases, label: { $0.title }, selected: speedUnit) { speedUnitName = $0.rawValue }
+            }
+            Hairline()
             FormRow("Language") {
                 Text("English").font(TypeScale.body).foregroundStyle(Palette.inkSecondary.color)
+            }
+        }
+    }
+
+    // MARK: Confirmations
+
+    @AppStorage(Prefs.confirmDisconnect) private var confirmDisconnect = true
+    @AppStorage(Prefs.confirmProfile) private var confirmProfile = true
+    @AppStorage(Prefs.confirmKillSwitch) private var confirmKillSwitch = true
+    @AppStorage(Prefs.confirmRouting) private var confirmRouting = true
+
+    /// The questions asked before something easy to do by accident; each one's box "Don't ask again" turns its switch off.
+    @ViewBuilder private var confirmations: some View {
+        SettingsSection("Confirmations") {
+            FormRow("Confirm before disconnecting", detail: "Ask before the connection is turned off.") {
+                settingsSwitch("Confirm before disconnecting", isOn: $confirmDisconnect)
+            }
+            Hairline()
+            FormRow("Confirm before changing profile", detail: "Ask before another routing profile is used.") {
+                settingsSwitch("Confirm before changing profile", isOn: $confirmProfile)
+            }
+            Hairline()
+            FormRow("Confirm before turning off routing", detail: "Ask before the rules stop applying.") {
+                settingsSwitch("Confirm before turning off routing", isOn: $confirmRouting)
+            }
+            Hairline()
+            FormRow("Confirm before turning off the kill switch", detail: "Ask before it stops blocking traffic.") {
+                settingsSwitch("Confirm before turning off the kill switch", isOn: $confirmKillSwitch)
+            }
+            Hairline()
+            FormRow("When quitting while connected", detail: "Keep it on leaves the service running.") {
+                SelectMenu(title: Self.quitLabels[quitAction] ?? "Ask", options: ["", "turnOff", "keep"],
+                           label: { Self.quitLabels[$0] ?? $0 }, selected: quitAction) { quitAction = $0 }
             }
         }
     }
@@ -127,13 +167,6 @@ struct ApplicationSettingsPage: View {
             FormRow("Open at login", detail: "Show the menu bar icon after you log in.") {
                 toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
             }
-            Hairline()
-            FormRow("When quitting while connected", detail: "Keep it on leaves the service running.") {
-                SelectMenu(title: Self.quitLabels[quitAction] ?? "Ask", options: ["", "turnOff", "keep"],
-                           label: { Self.quitLabels[$0] ?? $0 }, selected: quitAction) { quitAction = $0 }
-            }
-            Hairline()
-            FormRow("Global shortcut", detail: "Connect or disconnect from any app.") { ShortcutRecorder() }
         }
     }
 
@@ -182,10 +215,6 @@ struct ApplicationSettingsPage: View {
                 newVersionRow(r)
             }
             Hairline()
-            FormRow("Country data", detail: "Server flags use IP to Country Lite by DB-IP.com (CC BY 4.0).") {
-                Link("db-ip.com", destination: URL(string: "https://db-ip.com")!).font(TypeScale.bodyStrong)
-            }
-            Hairline()
             FormRow("Check for updates automatically", detail: "Asks GitHub once a day.") {
                 settingsSwitch("Check for updates automatically", isOn: Binding(get: { autoCheck }, set: { on in
                     autoCheck = on
@@ -195,6 +224,10 @@ struct ApplicationSettingsPage: View {
             Hairline()
             FormRow("Download updates automatically", detail: "Have new versions ready to install. Nothing installs without you.") {
                 settingsSwitch("Download updates automatically", isOn: $autoDownload).disabled(!autoCheck)
+            }
+            Hairline()
+            FormRow("Country data", detail: "Server flags use IP to Country Lite by DB-IP.com (CC BY 4.0).") {
+                Link("db-ip.com", destination: URL(string: "https://db-ip.com")!).font(TypeScale.bodyStrong)
             }
         }
     }

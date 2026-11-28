@@ -318,5 +318,80 @@ ALTER TABLE tunnels ADD COLUMN country_at INTEGER NOT NULL DEFAULT 0 CHECK (coun
 -- Pins (favorites first) are gone from the app; the column goes with them. Existing pins are dropped, not migrated.
 ALTER TABLE tunnels DROP COLUMN pinned;
 """#,
+#"""
+-- splitroute: foreign_keys=off
+-- Routing profiles: each one has its own lists and its own default route (where traffic no list matches goes); one is
+-- active and is what the service runs. The existing lists and default route become the profile "Default". The default
+-- route moves from settings to profiles (settings.final_* are left unused, and cleared so they can't block deleting a
+-- server). A list's name is unique within its profile, not in the database, so lists is rebuilt (ids are kept, so entries
+-- and import_sources still point at the right rows; the runner turns foreign keys off and checks them before it commits).
+CREATE TABLE profiles (
+    id              INTEGER PRIMARY KEY,
+    name            TEXT    NOT NULL UNIQUE CHECK (length(name) BETWEEN 1 AND 64),
+    position        INTEGER NOT NULL,
+    final_action    TEXT    NOT NULL DEFAULT 'tunnel' CHECK (final_action IN ('direct', 'block', 'tunnel')),
+    final_tunnel_id INTEGER REFERENCES tunnels (id) ON DELETE RESTRICT,
+    created_at      TEXT    NOT NULL
+);
+
+INSERT INTO profiles (id, name, position, created_at) VALUES (1, 'Default', 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+UPDATE profiles SET
+    final_action = (SELECT final_action FROM settings WHERE id = 1),
+    final_tunnel_id = (SELECT final_tunnel_id FROM settings WHERE id = 1)
+WHERE id = 1 AND EXISTS (SELECT 1 FROM settings WHERE id = 1);
+
+UPDATE settings SET final_action = 'tunnel', final_tunnel_id = NULL;
+
+ALTER TABLE settings ADD COLUMN active_profile_id INTEGER NOT NULL DEFAULT 1;
+
+CREATE TABLE lists_new (
+    id          INTEGER PRIMARY KEY,
+    profile_id  INTEGER NOT NULL REFERENCES profiles (id) ON DELETE CASCADE,
+    name        TEXT    NOT NULL CHECK (length(name) BETWEEN 1 AND 64),
+    source      TEXT    NOT NULL CHECK (source IN ('release', 'custom', 'import')),
+    action      TEXT    NOT NULL CHECK (action IN ('none', 'direct', 'block', 'tunnel')),
+    tunnel_id   INTEGER REFERENCES tunnels (id) ON DELETE RESTRICT,
+    position    INTEGER NOT NULL,
+    note        TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL,
+    description TEXT    NOT NULL DEFAULT '' CHECK (length(description) <= 120),
+    builder     TEXT    NOT NULL DEFAULT '',
+    ruleset     BLOB,
+    UNIQUE (profile_id, name),
+    CHECK (tunnel_id IS NULL OR action = 'tunnel')
+);
+
+INSERT INTO lists_new (id, profile_id, name, source, action, tunnel_id, position, note, created_at, updated_at, description, builder, ruleset)
+SELECT id, 1, name, source, action, tunnel_id, position, note, created_at, updated_at, description, builder, ruleset FROM lists;
+
+DROP TABLE lists;
+ALTER TABLE lists_new RENAME TO lists;
+"""#,
+#"""
+-- Statistics: the bytes the engine carried, in 5-minute buckets (a bucket is seconds since 1970 divided by 300), direct and
+-- through a server, and the fastest second seen in each. The app keeps the last 3 months. Nothing about where traffic went.
+CREATE TABLE traffic (
+    bucket      INTEGER PRIMARY KEY,
+    direct_down INTEGER NOT NULL DEFAULT 0 CHECK (direct_down >= 0),
+    direct_up   INTEGER NOT NULL DEFAULT 0 CHECK (direct_up >= 0),
+    proxy_down  INTEGER NOT NULL DEFAULT 0 CHECK (proxy_down >= 0),
+    proxy_up    INTEGER NOT NULL DEFAULT 0 CHECK (proxy_up >= 0),
+    peak_down   INTEGER NOT NULL DEFAULT 0 CHECK (peak_down >= 0),
+    peak_up     INTEGER NOT NULL DEFAULT 0 CHECK (peak_up >= 0)
+) WITHOUT ROWID;
+"""#,
+#"""
+-- The default route is global again, not a profile's: it applies whichever profile is active. The active profile's route
+-- becomes the global one (the others' are dropped), and profiles.final_* are left unused and cleared, so they can't block
+-- deleting a server.
+UPDATE settings SET
+    final_action = (SELECT final_action FROM profiles WHERE id = settings.active_profile_id),
+    final_tunnel_id = (SELECT final_tunnel_id FROM profiles WHERE id = settings.active_profile_id)
+WHERE id = 1 AND EXISTS (SELECT 1 FROM profiles WHERE id = settings.active_profile_id);
+
+UPDATE profiles SET final_action = 'tunnel', final_tunnel_id = NULL;
+"""#,
     ]
 }

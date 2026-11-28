@@ -8,8 +8,9 @@ final class ServersTests: XCTestCase {
         XCTAssertFalse(LatencyFilter.answered.allows(nil), "no result yet")
         XCTAssertFalse(LatencyFilter.answered.allows(.failed("Timeout", detail: nil)))
         XCTAssertTrue(LatencyFilter.answered.allows(.ms(900)))
-        XCTAssertTrue(LatencyFilter.under200.allows(.ms(199)))
-        XCTAssertFalse(LatencyFilter.under200.allows(.ms(200)))
+        XCTAssertTrue(LatencyFilter.under300.allows(.ms(299)))
+        XCTAssertFalse(LatencyFilter.under300.allows(.ms(300)))
+        XCTAssertEqual(LatencyFilter.allCases.map(\.title), ["All servers", "Answered the test", "Under 100 ms", "Under 300 ms", "Under 500 ms"])
         XCTAssertFalse(LatencyFilter.under100.allows(.failed("Failed", detail: nil)))
     }
 

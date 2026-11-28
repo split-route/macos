@@ -37,7 +37,7 @@ struct AdvancedSettingsPage: View {
                                                    set: { on in Task { await model.setBlockSTUN(on) } }))
             }
             Hairline()
-            FormRow("Block QUIC (HTTP/3)", detail: "Browsers fall back to HTTPS, so lists match names.", error: model.error("blockQUIC")) {
+            FormRow("Block QUIC (HTTP/3)", detail: "Browsers fall back to HTTPS, so rules match names.", error: model.error("blockQUIC")) {
                 toggle("Block QUIC", isOn: Binding(get: { model.config?.blockQUIC ?? false },
                                                    set: { on in Task { await model.setBlockQUIC(on) } }))
             }

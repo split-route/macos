@@ -34,14 +34,17 @@ extension View {
 struct SheetTabs<T: Hashable & Identifiable & RawRepresentable>: View where T.RawValue == String {
     let options: [T]
     @Binding var selection: T
+    /// What a tab says, when it isn't its name (the Statistics page adds the connection's uptime to one).
+    var title: ((T) -> String)?
     @Namespace private var ns
 
     var body: some View {
         HStack(spacing: 2) {
             ForEach(options) { o in
-                Text(o.rawValue)
+                Text(title?(o) ?? o.rawValue).monospacedDigit()
                     .font(selection == o ? TypeScale.bodyStrong : TypeScale.body)
                     .foregroundStyle(selection == o ? Palette.ink.color : Palette.inkSecondary.color)
+                    .transaction { $0.animation = nil } // the weight changes with the selection: animating it makes the letters swell, so the text snaps
                     .padding(.horizontal, 16).padding(.vertical, 6)
                     .background {
                         if selection == o {

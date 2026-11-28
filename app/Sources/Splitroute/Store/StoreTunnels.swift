@@ -113,13 +113,18 @@ extension Store {
     }
 
     private static func listsUsing(_ db: Database, _ id: Int64) throws -> [String] {
-        var names = try String.fetchAll(db, sql: "SELECT name FROM lists WHERE tunnel_id = ? ORDER BY position", arguments: [id])
+        // Lists of every profile count; another profile's are named with it ("Work › list"). The default route is global.
+        func label(_ r: Row, _ what: String) -> String { (r["active"] as Int) == 1 ? what : "\(r["profile"] as String) › \(what)" }
+        var names = try Row.fetchAll(db, sql: """
+            SELECT p.name AS profile, l.name AS list, p.id = \(Store.activeProfile) AS active FROM lists l JOIN profiles p ON p.id = l.profile_id
+            WHERE l.tunnel_id = ? ORDER BY p.position, l.position
+            """, arguments: [id]).map { label($0, $0["list"]) }
         if try Int.fetchOne(db, sql: "SELECT 1 FROM settings WHERE final_tunnel_id = ?", arguments: [id]) != nil { names.append("Default Route") }
         return names
     }
 
     static func inUse(_ lists: [String]) -> StoreError {
-        StoreError("This server is used by the lists \(lists.joined(separator: ", ")); choose another server for them first.")
+        StoreError("This server is used by the rules \(lists.joined(separator: ", ")); choose another server for them first.")
     }
 
     func removeTunnel(_ id: Int64) throws {
@@ -155,11 +160,15 @@ extension Store {
     }
 
     private static func listsUsingSubscription(_ db: Database, _ id: Int64) throws -> [String] {
-        try String.fetchAll(db, sql: """
-            SELECT DISTINCT l.name FROM lists l JOIN tunnels t ON l.tunnel_id = t.id WHERE t.subscription_id = ? ORDER BY l.position
-            """, arguments: [id])
-            + (try Int.fetchOne(db, sql: "SELECT 1 FROM settings s JOIN tunnels t ON s.final_tunnel_id = t.id WHERE t.subscription_id = ?", arguments: [id]) != nil
-               ? ["Default Route"] : [])
+        func label(_ r: Row, _ what: String) -> String { (r["active"] as Int) == 1 ? what : "\(r["profile"] as String) › \(what)" }
+        var names = try Row.fetchAll(db, sql: """
+            SELECT DISTINCT p.name AS profile, l.name AS list, p.id = \(Store.activeProfile) AS active, p.position AS pp, l.position AS lp
+            FROM lists l JOIN profiles p ON p.id = l.profile_id JOIN tunnels t ON l.tunnel_id = t.id WHERE t.subscription_id = ? ORDER BY pp, lp
+            """, arguments: [id]).map { label($0, $0["list"]) }
+        if try Int.fetchOne(db, sql: "SELECT 1 FROM settings s JOIN tunnels t ON s.final_tunnel_id = t.id WHERE t.subscription_id = ?", arguments: [id]) != nil {
+            names.append("Default Route")
+        }
+        return names
     }
 
     /// Deletes a subscription and its tunnels in one transaction. Refused while a list uses one of them.
@@ -167,7 +176,7 @@ extension Store {
         try queue.write { db in
             let using = try Store.listsUsingSubscription(db, id)
             guard using.isEmpty else {
-                throw StoreError("A server of this subscription is used by the lists \(using.joined(separator: ", ")); choose another server for them first.")
+                throw StoreError("A server of this subscription is used by the rules \(using.joined(separator: ", ")); choose another server for them first.")
             }
             try db.execute(sql: "DELETE FROM tunnels WHERE subscription_id = ?", arguments: [id])
             try db.execute(sql: "DELETE FROM subscriptions WHERE id = ?", arguments: [id])

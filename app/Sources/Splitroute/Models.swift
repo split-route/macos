@@ -117,6 +117,10 @@ struct Config: Codable, Equatable {
     var blockIPv6 = true
     /// The browser handshake servers that use TLS get when they chose none; "" is each server's own.
     var tlsFingerprint = ""
+    /// The routing profiles (by name, in order) and the active one: `lists`, `finalAction` and `finalTunnel` are the active
+    /// profile's. Not part of the JSON a config file has.
+    var profiles = ["Default"]
+    var activeProfile = "Default"
     static let tlsFingerprints = ["chrome", "firefox", "safari", "edge", "ios", "android", "random"]
 
     enum CodingKeys: String, CodingKey {

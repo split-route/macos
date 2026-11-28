@@ -5,7 +5,7 @@ go 1.27.1
 require (
 	github.com/oschwald/maxminddb-golang v1.13.1
 	github.com/sagernet/sing-box v1.14.4
-	github.com/split-route/core v0.6.1
+	github.com/split-route/core v0.7.1
 	golang.org/x/net v0.61.0
 	golang.org/x/sys v0.49.0
 )

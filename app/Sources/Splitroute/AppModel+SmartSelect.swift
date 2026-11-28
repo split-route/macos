@@ -35,13 +35,45 @@ extension AppModel {
         return current - best.value > tolerance ? best.key : nil
     }
 
-    /// The servers to compare: the active one first (its time is the one to beat), then proxy servers only, in its group when
-    /// asked (otherwise its group first), none left in the last ten minutes, at most `limit` in all.
-    static func smartPool(_ all: [StoreTunnel], active: StoreTunnel, groupOnly: Bool, failedAt: [String: Date], now: Date, limit: Int) -> [StoreTunnel] {
+    /// Where Smart Select looks for a better server.
+    enum SmartScope: Equatable {
+        case all // every proxy server (the default)
+        case group // the active server's group
+        case custom(Set<Int64>) // the servers the person chose
+    }
+
+    /// The servers to compare: the active one first (its time is the one to beat), then proxy servers only, from the scope,
+    /// none left in the last ten minutes. No limit: a long list takes the time it takes. Its own group comes first when the
+    /// scope is every server.
+    static func smartPool(_ all: [StoreTunnel], active: StoreTunnel, scope: SmartScope, failedAt: [String: Date], now: Date) -> [StoreTunnel] {
         var others = all.filter { !$0.isOpenVPN && $0.id != active.id && now.timeIntervalSince(failedAt[$0.name] ?? .distantPast) > 600 }
-        if groupOnly { others = others.filter { $0.subscriptionID == active.subscriptionID } }
-        let ordered = others.filter { $0.subscriptionID == active.subscriptionID } + others.filter { $0.subscriptionID != active.subscriptionID }
-        return Array(([active] + ordered).prefix(max(limit, 1)))
+        switch scope {
+        case .all: others = others.filter { $0.subscriptionID == active.subscriptionID } + others.filter { $0.subscriptionID != active.subscriptionID }
+        case .group: others = others.filter { $0.subscriptionID == active.subscriptionID }
+        case .custom(let ids): others = others.filter { ids.contains($0.id) }
+        }
+        return [active] + others
+    }
+
+    /// The scope the dropdown on the Servers page chose: every server unless it is the group or a custom list that holds servers.
+    static func smartScope() -> SmartScope {
+        let value = UserDefaults.standard.string(forKey: Prefs.smartScope) ?? "all"
+        if value == "group" { return .group }
+        if let id = SmartLists.listID(in: value), let list = SmartLists.load().first(where: { $0.id == id }), !list.servers.isEmpty {
+            return .custom(Set(list.servers))
+        }
+        return .all
+    }
+
+    /// A server was removed: it leaves every custom list; if the list in use is empty now, Smart Select goes back to every server.
+    func pruneSmartLists(existing: Set<Int64>) {
+        let lists = SmartLists.load()
+        let pruned = SmartLists.removing(missingFrom: existing, in: lists)
+        if pruned != lists { SmartLists.save(pruned) }
+        if let id = SmartLists.listID(in: UserDefaults.standard.string(forKey: Prefs.smartScope) ?? ""),
+           pruned.first(where: { $0.id == id })?.servers.isEmpty ?? true {
+            UserDefaults.standard.set("all", forKey: Prefs.smartScope)
+        }
     }
 
     // MARK: The poll
@@ -50,6 +82,7 @@ extension AppModel {
         guard Prefs.bool(Prefs.smartSelect, false), health == .active, !testing, !smartChecking, !busy,
               let sel = selectedTunnel, sel.protocolName != "openvpn", !serviceOutdated else {
             smartFailures = 0
+            if !vpnOn { smartLastPass = .distantPast } // Smart Select is on again with the next connection: it checks at once
             return
         }
         let now = Date()
@@ -58,14 +91,14 @@ extension AppModel {
             networkChangedAt = nil
             if Prefs.bool(Prefs.smartOnNetwork, true) { await smartPass(.network); return }
         }
-        let every = TimeInterval(Prefs.int(Prefs.smartInterval, 3600))
+        let every = TimeInterval(Prefs.int(Prefs.smartInterval, 1800))
         if every > 0, now.timeIntervalSince(smartLastPass) >= every { await smartPass(.scheduled); return }
         let hc = TimeInterval(Prefs.int(Prefs.smartHealth, 30))
         guard hc > 0, now.timeIntervalSince(lastProbe) >= (smartFailures > 0 ? 5 : hc) else { return }
         lastProbe = now
         smartChecking = true
         defer { smartChecking = false }
-        if let id = try? stored(sel.name).coreID, await Self.measure(id) != nil {
+        if let id = try? stored(sel.name).coreID, case .ms = await Self.measure(id) {
             smartFailures = 0
             return
         }
@@ -77,11 +110,13 @@ extension AppModel {
 
     // MARK: A check
 
-    nonisolated static func measure(_ id: String) async -> Int? {
+    /// One request through a server, with the test's address and timeout: its time, or why it didn't answer.
+    nonisolated static func measure(_ id: String) async -> TunnelTest {
         let timeout = min(max(Prefs.int(Prefs.testTimeout, 5), Prefs.timeoutRange.lowerBound), Prefs.timeoutRange.upperBound)
         let url = Prefs.validTestURL(UserDefaults.standard.string(forKey: Prefs.testURL) ?? "") ?? Prefs.defaultTestURL
-        guard let r = try? await Daemon.test([id], method: "connect", url: url, timeout: timeout)[id], r.error == nil else { return nil }
-        return r.ms ?? 0
+        guard let r = try? await Daemon.test([id], method: "connect", url: url, timeout: timeout)[id] else { return .failed("Failed", detail: nil) }
+        if let e = r.error { return .failed(e, detail: r.detail?.nilIfEmpty) }
+        return .ms(r.ms ?? 0)
     }
 
     /// Measures the servers worth comparing and moves to the best one (see the rules above); says what it did either way.
@@ -96,24 +131,32 @@ extension AppModel {
         let now = Date()
         smartLastPass = now
         if reason == .failed { failedAt[sel.name] = now }
-        let pool = Self.smartPool(all, active: me, groupOnly: Prefs.bool(Prefs.smartGroupOnly, true), failedAt: failedAt, now: now,
-                                  limit: Prefs.int(Prefs.smartPool, 48))
+        let scope = Self.smartScope()
+        let pool = Self.smartPool(all, active: me, scope: scope, failedAt: failedAt, now: now)
         var results: [String: Int] = [:]
-        await withTaskGroup(of: (String, Int?).self) { group in
+        // The rows show these numbers as a manual test would, and sorting by ping applies once the check is done.
+        testing = true
+        defer { testing = false }
+        await withTaskGroup(of: (String, TunnelTest).self) { group in
             var it = pool.makeIterator()
             for _ in 0..<8 { if let t = it.next() { group.addTask { (t.name, await Self.measure(t.coreID)) } } }
-            for await (name, ms) in group {
-                if let ms { results[name] = ms }
+            for await (name, result) in group {
+                // Turned off in the middle of the check: stop, with nothing recorded or changed.
+                if !vpnOn { group.cancelAll(); break }
+                if case .failed(let why, _) = result, why == Self.vpnOffMessage { continue }
+                testResults[name] = result
+                if case .ms(let ms) = result { results[name] = ms }
                 if let t = it.next() { group.addTask { (t.name, await Self.measure(t.coreID)) } }
             }
         }
+        guard vpnOn else { return }
         await smartApply(results, reason: reason)
     }
 
     /// Moves to the server `smartPick` names, if any. A person who chose another server meanwhile is left alone.
     private func smartApply(_ results: [String: Int], reason: SmartReason) async {
         guard let sel = selectedTunnel else { return }
-        let tolerance = Prefs.int(Prefs.smartTolerance, 50)
+        let tolerance = Prefs.int(Prefs.smartTolerance, 100)
         let at = Date().formatted(date: .omitted, time: .shortened)
         guard let pick = Self.smartPick(active: sel.name, results: results, tolerance: tolerance),
               let target = tunnels.first(where: { $0.name == pick }) else {
@@ -144,11 +187,24 @@ extension AppModel {
         guard Prefs.bool(Prefs.smartSelect, false), Prefs.bool(Prefs.smartAfterTest, true), health == .active,
               TestMethod(rawValue: UserDefaults.standard.string(forKey: Prefs.testMethod) ?? "") ?? .connect == .connect,
               let sel = selectedTunnel, sel.protocolName != "openvpn", let store, let me = try? stored(sel.name), let all = try? store.tunnels() else { return }
-        let pool = Self.smartPool(all, active: me, groupOnly: Prefs.bool(Prefs.smartGroupOnly, true), failedAt: failedAt, now: Date(), limit: .max)
+        let pool = Self.smartPool(all, active: me, scope: Self.smartScope(), failedAt: failedAt, now: Date())
         var results: [String: Int] = [:]
         for t in pool { if case .ms(let ms)? = testResults[t.name] { results[t.name] = ms } }
         smartLastPass = Date()
         await smartApply(results, reason: .manual)
+    }
+
+    /// The title a server sits under in a list of servers: its subscription's name, or "Servers".
+    static let handAddedTitle = "Servers"
+    func groupTitle(of server: String) -> String { tunnels.first { $0.name == server }?.group ?? Self.handAddedTitle }
+
+    struct SmartServer: Identifiable { let id: Int64; let name: String; let group: String?; let country: String }
+
+    /// The proxy servers a custom list can hold, with their group's name.
+    func smartServers() -> [SmartServer] {
+        guard let store, let all = try? store.tunnels() else { return [] }
+        let groups = Dictionary(uniqueKeysWithValues: ((try? store.subscriptions()) ?? []).map { ($0.id, $0.name) })
+        return all.filter { !$0.isOpenVPN }.map { SmartServer(id: $0.id, name: $0.name, group: $0.subscriptionID.flatMap { groups[$0] }, country: $0.country) }
     }
 
     // MARK: Turning it on and off

@@ -29,8 +29,9 @@ struct MenuPopover: View {
             } else {
                 connectionRow
                 serverRow
-                routingRow
                 killSwitchRow
+                routingRow
+                profileRow
                 defaultRouteRow
             }
             if model.serviceOutdated {
@@ -81,6 +82,7 @@ struct MenuPopover: View {
         VStack(alignment: .leading, spacing: 0) {
             row("Connection", model.summary) {
                 PendingToggle("Connection", isOn: Binding(get: { model.vpnOn }, set: { on in
+                    if !on && !model.confirmDisconnect() { return }
                     Task {
                         await model.setVPN(on)
                         // The selected OpenVPN server needs a password: the sheet for it is in the app.
@@ -99,7 +101,7 @@ struct MenuPopover: View {
         return row("Server", selected == nil ? "None selected" : "Carries your traffic") {
             HStack(spacing: 6) {
                 SelectMenu(title: selected ?? "Choose…", options: names, label: { serverLabel($0) }, selected: selected,
-                           group: { n in model.tunnels.first { $0.name == n }?.group }, maxTitleWidth: Self.controlTitleWidth, compact: true) { n in
+                           group: { n in model.groupTitle(of: n) }, maxTitleWidth: Self.controlTitleWidth, compact: true) { n in
                     Task { if let t = model.tunnels.first(where: { $0.name == n }), await model.selectTunnel(t) { openApp(.tunnels) } }
                 }
                 .accessibilityLabel("Server")
@@ -126,9 +128,22 @@ struct MenuPopover: View {
         }
     }
 
+    /// The routing profile: its lists and default route are what the service runs.
+    private var profileRow: some View {
+        row("Routing Profile", "The routing profile in use") {
+            SelectMenu(title: model.activeProfile, options: model.profiles, label: { $0 }, selected: model.activeProfile,
+                       maxTitleWidth: Self.controlTitleWidth, compact: true) { n in Task { await model.switchProfile(n) } }
+        }
+    }
+
+    /// Where traffic no rule matches goes: one setting for every profile.
+    private var defaultRouteRow: some View {
+        row("Default Route", "When no rule matches", dimmed: !connected) { DefaultRouteMenu(maxTitleWidth: Self.controlTitleWidth, compact: true) }
+    }
+
     private var routingRow: some View {
-        row("Routing", model.routingOn ? "Lists are applied" : "Only the default route is applied", dimmed: !connected) {
-            PendingToggle("Routing", isOn: Binding(get: { model.routingOn }, set: { on in Task { await model.setRoutingOn(on) } }),
+        row("Routing", model.routingOn ? "Rules are applied" : "Only the default route is applied", dimmed: !connected) {
+            PendingToggle("Routing", isOn: Binding(get: { model.routingOn }, set: { on in if !on && !model.confirmRoutingOff() { return }; Task { await model.setRoutingOn(on) } }),
                           pending: model.pending.contains("routing"))
         }
     }
@@ -136,13 +151,9 @@ struct MenuPopover: View {
     private var killSwitchRow: some View {
         let detail = model.killSwitchOn ? (model.killSwitchArmed ? "Blocking leaks" : "Not active") : "Off"
         return row("Kill Switch", detail, dimmed: !connected) {
-            PendingToggle("Kill Switch", isOn: Binding(get: { model.killSwitchOn }, set: { on in Task { await model.setKillSwitch(on: on) } }),
+            PendingToggle("Kill Switch", isOn: Binding(get: { model.killSwitchOn }, set: { on in if !on && !model.confirmKillSwitchOff() { return }; Task { await model.setKillSwitch(on: on) } }),
                           pending: model.pending.contains("killswitch"))
         }
-    }
-
-    private var defaultRouteRow: some View {
-        row("Default Route", "When no list matches", dimmed: !connected) { DefaultRouteMenu(maxTitleWidth: Self.controlTitleWidth, compact: true) }
     }
 
     /// The service can't be reached: the way to fix it, as the old menu offered.

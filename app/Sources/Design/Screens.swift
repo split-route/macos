@@ -4,7 +4,7 @@ public enum Destination: String, CaseIterable, Sendable {
     // The raw values are stored in the user's defaults: keep them when a title changes.
     // The raw values are stored in the user's defaults (key "settingsPage"): keep them when a title changes, and when one has to
     // change, map the old value in `migrateStoredPage`.
-    case home = "Home", tunnels = "Tunnels", lists = "Lists", general = "General", application = "Application", advanced = "Advanced"
+    case home = "Home", tunnels = "Tunnels", lists = "Lists", statistics = "Statistics", general = "General", application = "Application", advanced = "Advanced"
 
     /// The sidebar's top group and its Settings group; the pages of the second are listed under a "Settings" title.
     /// The raw values these pages had before they were renamed: a saved page with an old value is moved to its new one.
@@ -15,7 +15,7 @@ public enum Destination: String, CaseIterable, Sendable {
         if let v = defaults.string(forKey: key), let n = renamed[v] { defaults.set(n, forKey: key) }
     }
 
-    public static let mainPages: [Destination] = [.home, .tunnels, .lists]
+    public static let mainPages: [Destination] = [.home, .tunnels, .lists, .statistics]
     public static let settingsPages: [Destination] = [.general, .application, .advanced]
 
     public var title: String {
@@ -23,6 +23,7 @@ public enum Destination: String, CaseIterable, Sendable {
         case .home: return "Home"
         case .tunnels: return "Servers"
         case .lists: return "Routing"
+        case .statistics: return "Statistics"
         case .general: return "General"
         case .application: return "Application"
         case .advanced: return "Advanced"
@@ -44,6 +45,7 @@ public enum Destination: String, CaseIterable, Sendable {
         case .home: return "house"
         case .tunnels: return "shield"
         case .lists: return "arrow.triangle.branch"
+        case .statistics: return "chart.bar.xaxis"
         case .general: return "gearshape"
         case .application: return "macwindow"
         case .advanced: return "slider.horizontal.3"
@@ -60,6 +62,7 @@ public extension Destination {
         case .home: return Tone(light: 0x2F7BF0, dark: 0x3B86F5)
         case .tunnels: return Tone(light: 0x2FB85A, dark: 0x34C05F)
         case .lists: return Tone(light: 0x9B4FD8, dark: 0xA55CE0)
+        case .statistics: return Tone(light: 0x1FB5A8, dark: 0x2CC2B5)
         case .general: return Tone(light: 0x7C7C84, dark: 0x8A8A92)
         case .application: return Tone(light: 0x1F9FD8, dark: 0x2BA8E0)
         case .advanced: return Tone(light: 0x5B5FC7, dark: 0x6A6EDB)
@@ -106,6 +109,7 @@ public struct SidebarSectionTitle: View {
 public struct Sidebar: View {
     @Namespace private var selectionNamespace
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.pageScrollTarget) private var scrollTarget
     @Binding var selection: Destination
     let tunnels: [TunnelItem]
     /// Space above the title for the window's traffic lights.
@@ -141,7 +145,8 @@ public struct Sidebar: View {
                 let on = selection == d
                 if d == Destination.settingsPages.first { SidebarSectionTitle("Settings") }
                 Button {
-                    if reduceMotion { selection = d } else { withAnimation(.spring(response: 0.2, dampingFraction: 0.9)) { selection = d } }
+                    if selection == d { scrollTarget.wrappedValue = PageScrollTop.id } // the open page again: back to its top
+                    else if reduceMotion { selection = d } else { withAnimation(.spring(response: 0.2, dampingFraction: 0.9)) { selection = d } }
                 } label: {
                     HStack(spacing: Space.m) {
                         DestinationIcon(d, selected: on, plain: on ? Color.white : Palette.inkSecondary.color)
@@ -462,6 +467,7 @@ public struct AppWindow: View {
                 case .home: TunnelsScreen(tunnels: tunnels)
                 case .tunnels: TunnelsScreen(tunnels: tunnels)
                 case .lists: ListsScreen(lists: $lists, tunnels: tunnels, focusFirst: focusFirstList)
+                case .statistics: TunnelsScreen(tunnels: tunnels)
                 case .general, .application, .advanced: SettingsScreen()
                 }
             }

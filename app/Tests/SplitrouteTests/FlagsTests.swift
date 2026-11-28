@@ -10,6 +10,11 @@ final class FlagsTests: XCTestCase {
         XCTAssertNil(Flags.prefix(name: "x", country: "D"), "not a two-letter code")
     }
 
+    func testAServerBehindCloudflareGetsACloudNotAFlag() {
+        XCTAssertEqual(Flags.prefix(name: "CDN vless", country: Flags.cdn), "☁️")
+        XCTAssertNotEqual(Flags.prefix(name: "x", country: "CF"), "☁️", "CF is the Central African Republic's code")
+    }
+
     func testAFlagAlreadyInTheNameIsNotRepeated() {
         XCTAssertEqual(Flags.existing(in: "🇩🇪 Berlin"), "🇩🇪")
         XCTAssertNil(Flags.prefix(name: "🇩🇪 Berlin", country: "DE"))

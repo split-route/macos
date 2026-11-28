@@ -207,7 +207,11 @@ extension AppModel {
     /// on first and leaves it on. OpenVPN tunnels that aren't in use are loaded for the test (their sessions come up,
     /// which takes a few seconds) and put away again after. A tunnel that failed earlier stays failed, with its message:
     /// a test never retries credentials. One that needs a sign-in says so.
-    func testConnectivity(only one: Tunnel? = nil) async {
+    /// What the service answers a request through the engine while the engine is off (Go: the connection is off).
+    static let vpnOffMessage = "The VPN is off"
+
+    /// Measures every server, one server (`one`), or the servers of one subscription (`group`).
+    func testConnectivity(only one: Tunnel? = nil, group: String? = nil) async {
         guard !testing else { return }
         errors["test"] = nil
         if serviceOutdated {
@@ -215,11 +219,12 @@ extension AppModel {
             return
         }
         guard let store, let every = try? store.tunnels(), !every.isEmpty, let link else { return }
-        let all = one.map { o in every.filter { $0.name == o.name } } ?? every
+        var all = one.map { o in every.filter { $0.name == o.name } } ?? every
+        if let group, let sub = try? store.subscriptions().first(where: { $0.name == group }) { all = every.filter { $0.subscriptionID == sub.id } }
         guard !all.isEmpty else { return }
         testing = true
         defer { testing = false }
-        if one == nil { testResults = [:] } else { testResults[one!.name] = nil } // one server: the others keep their numbers
+        if one == nil && group == nil { testResults = [:] } else { for t in all { testResults[t.name] = nil } } // a part: the others keep their numbers
         let method = TestMethod(rawValue: UserDefaults.standard.string(forKey: Prefs.testMethod) ?? "") ?? .connect
         let timeout = min(max(Prefs.int(Prefs.testTimeout, 5), Prefs.timeoutRange.lowerBound), Prefs.timeoutRange.upperBound)
         let url = Prefs.validTestURL(UserDefaults.standard.string(forKey: Prefs.testURL) ?? "") ?? Prefs.defaultTestURL
@@ -259,6 +264,8 @@ extension AppModel {
         await withTaskGroup(of: (String, WireTest?, Error?).self) { group in
             for _ in 0..<8 { if let id = ids.next() { group.addTask { await one(id) } } }
             for await (id, r, err) in group {
+                // The connection was turned off in the middle of the test: stop, and don't record the answers it caused.
+                if !direct && !vpnOn || r?.error == Self.vpnOffMessage { group.cancelAll(); break }
                 if let err {
                     errors["test"] = err.localizedDescription
                     group.cancelAll()
@@ -274,7 +281,7 @@ extension AppModel {
                 if let next = ids.next() { group.addTask { await one(next) } }
             }
         }
-        if one == nil, errors["test"] == nil { Task { await self.smartApplyAfterTest() } } // Smart Select: move to the fastest
+        if one == nil, group == nil, errors["test"] == nil, vpnOn { Task { await self.smartApplyAfterTest() } } // Smart Select: move to the fastest
     }
 
     // MARK: Adding

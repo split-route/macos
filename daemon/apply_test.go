@@ -715,3 +715,73 @@ func TestCanonEntriesTypedKinds(t *testing.T) {
 		t.Errorf("a bad pattern must be refused and a note kept: %+v %+v", got[3], got[4])
 	}
 }
+
+// The snapshot's stats flag reaches the engine, and the stats command answers only while recording is on.
+func TestApplyStatsReachesTheEngineAndTheLogIsReportedWhileRecording(t *testing.T) {
+	a, f := testApp(t)
+	if _, ok := a.Traffic(0); ok {
+		t.Error("a log although recording was never asked for")
+	}
+	s := api.Snapshot{VPN: true, Selected: "t1", Tunnels: []api.TunnelSpec{proxy("t1", "Alpha")}}
+	if err := a.Apply(s); err != nil {
+		t.Fatal(err)
+	}
+	applied2(t, a, f)
+	if _, ok := a.Traffic(0); ok {
+		t.Error("a log although the snapshot didn't ask for recording")
+	}
+	s.Stats = true
+	if err := a.Apply(s); err != nil {
+		t.Fatal(err)
+	}
+	eng := applied2(t, a, f)
+	eng.mu.Lock()
+	eng.stats = core.Stats{Since: time.UnixMilli(1_700_000_000_000), DirectDown: 10, ProxyDown: 300}
+	eng.mu.Unlock()
+	if st, ok := a.host.engineStats(); ok {
+		a.traffic.add(time.Unix(1_700_000_100, 0), st)
+	}
+	got, ok := a.Traffic(0)
+	if !ok || len(got.Buckets) != 1 || got.Buckets[0].ProxyDown != 300 || got.Buckets[0].DirectDown != 10 {
+		t.Errorf("%+v %v", got, ok)
+	}
+	s.Stats = false
+	if err := a.Apply(s); err != nil {
+		t.Fatal(err)
+	}
+	applied2(t, a, f)
+	if _, ok := a.Traffic(0); ok {
+		t.Error("a log after recording was turned off")
+	}
+}
+
+// ConnectedSince is when the VPN switch went on; changing the rules (an engine restart) doesn't reset it, turning it off clears it.
+func TestConnectedSinceFollowsTheSwitchNotTheEngine(t *testing.T) {
+	a, _ := testApp(t)
+	if a.Status().ConnectedSince != 0 {
+		t.Error("a connected time before anything was applied")
+	}
+	s := api.Snapshot{VPN: true, Selected: "t1", Tunnels: []api.TunnelSpec{proxy("t1", "Alpha")}}
+	if err := a.Apply(s); err != nil {
+		t.Fatal(err)
+	}
+	first := a.Status().ConnectedSince
+	if first == 0 || time.Since(time.UnixMilli(first)) > time.Minute {
+		t.Fatalf("not set when the switch went on: %v", first)
+	}
+	time.Sleep(5 * time.Millisecond)
+	s.BlockSTUN = true // another engine config
+	if err := a.Apply(s); err != nil {
+		t.Fatal(err)
+	}
+	if a.Status().ConnectedSince != first {
+		t.Error("a change of config reset the connected time")
+	}
+	s.VPN = false
+	if err := a.Apply(s); err != nil {
+		t.Fatal(err)
+	}
+	if a.Status().ConnectedSince != 0 {
+		t.Error("still connected since a time after the switch went off")
+	}
+}

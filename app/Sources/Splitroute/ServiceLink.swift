@@ -15,6 +15,8 @@ final class ServiceLink {
     var loadAll = false
     /// Set while the Mac sleeps with "Disconnect on sleep": the snapshot says the VPN is off, the saved switch isn't touched.
     var suspended = false
+    /// Whether the engine should count the bytes it carries (Settings: Record statistics); off: no tracker is attached.
+    var recordStats = false
     private(set) var bootID: String?
     private(set) var dirty = true
     private var retry = Set<String>()
@@ -45,16 +47,16 @@ final class ServiceLink {
     }
 
     /// What the snapshot needs from the main actor: the retry and load-all asks and the credentials in use.
-    private func inputs() throws -> (retry: Set<String>, loadAll: Bool, suspended: Bool, credentials: [String: TunnelSecrets]) {
+    private func inputs() throws -> (retry: Set<String>, loadAll: Bool, suspended: Bool, recordStats: Bool, credentials: [String: TunnelSecrets]) {
         var creds: [String: TunnelSecrets] = [:]
         for t in try store.tunnels() where t.isOpenVPN { if let c = credentials(t.name) { creds[t.name] = c } }
-        return (retry, loadAll, suspended, creds)
+        return (retry, loadAll, suspended, recordStats, creds)
     }
 
     /// The snapshot, built here (tests, and anything that must be synchronous).
     func snapshot() throws -> Snapshot {
         let i = try inputs()
-        let built = try Self.build(store: store, files: files, retry: i.retry, loadAll: i.loadAll, suspended: i.suspended, credentials: i.credentials)
+        let built = try Self.build(store: store, files: files, retry: i.retry, loadAll: i.loadAll, suspended: i.suspended, recordStats: i.recordStats, credentials: i.credentials)
         problems = built.problems
         sentCredentials = built.sent
         return built.snapshot
@@ -66,7 +68,7 @@ final class ServiceLink {
         let i = try inputs()
         let (store, files) = (self.store, self.files)
         let built = try await Task.detached(priority: .userInitiated) {
-            try ServiceLink.build(store: store, files: files, retry: i.retry, loadAll: i.loadAll, suspended: i.suspended, credentials: i.credentials)
+            try ServiceLink.build(store: store, files: files, retry: i.retry, loadAll: i.loadAll, suspended: i.suspended, recordStats: i.recordStats, credentials: i.credentials)
         }.value
         problems = built.problems
         sentCredentials = built.sent
@@ -79,7 +81,7 @@ final class ServiceLink {
         var sent: Set<String>
     }
 
-    nonisolated static func build(store: Store, files: AppFiles, retry: Set<String>, loadAll: Bool, suspended: Bool = false, credentials: [String: TunnelSecrets]) throws -> Built {
+    nonisolated static func build(store: Store, files: AppFiles, retry: Set<String>, loadAll: Bool, suspended: Bool = false, recordStats: Bool = false, credentials: [String: TunnelSecrets]) throws -> Built {
         let vpn = try store.vpn()
         let ks = try store.killSwitch()
         let bootstrap = try store.bootstrap()
@@ -145,7 +147,7 @@ final class ServiceLink {
         }
         // Nothing is sent for the default (the selected tunnel): an older snapshot shape stays valid.
         let final = cfg.finalAction == .tunnel && cfg.finalTunnel == nil ? nil : WireFinal(action: cfg.finalAction, tunnel: cfg.finalTunnel)
-        let snap = Snapshot(vpn: vpn.on && !suspended, listsOn: !cfg.disabled, selected: selected, final: final, blockQuic: cfg.blockQUIC ? true : nil, blockStun: cfg.blockSTUN ? true : nil, blockIPv6: cfg.blockIPv6 ? true : nil, tlsFingerprint: cfg.tlsFingerprint.nilIfEmpty, retry: retry.isEmpty ? nil : retry.sorted(),
+        let snap = Snapshot(vpn: vpn.on && !suspended, listsOn: !cfg.disabled, selected: selected, final: final, blockQuic: cfg.blockQUIC ? true : nil, blockStun: cfg.blockSTUN ? true : nil, blockIPv6: cfg.blockIPv6 ? true : nil, tlsFingerprint: cfg.tlsFingerprint.nilIfEmpty, stats: recordStats ? true : nil, retry: retry.isEmpty ? nil : retry.sorted(),
                         loadAll: loadAll ? true : nil, bootstrap: bootstrap.nilIfEmpty, killSwitch: ks.on ? true : nil, killSwitchLAN: ks.on && ks.lan ? true : nil,
                         tunnels: tunnels, lists: lists)
         return Built(snapshot: snap, problems: problems, sent: sent)

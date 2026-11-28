@@ -168,6 +168,10 @@ final class Store {
 
     // MARK: Config
 
+    /// SQL for the id of the active routing profile. Every list query by name is scoped to it: a list's name is unique
+    /// within its profile, and the app only ever shows and changes the active profile's lists.
+    static let activeProfile = "(SELECT active_profile_id FROM settings WHERE id = 1)"
+
     func config() throws -> Config { try queue.read { try Store.read($0) } }
 
     /// Reads the config, changes it with `f`, validates and writes it in one transaction.
@@ -184,12 +188,15 @@ final class Store {
 
     static func read(_ db: Database) throws -> Config {
         guard let s = try Row.fetchOne(db, sql: """
-            SELECT s.base_url, s.disabled, s.final_action, s.block_quic, s.block_stun, s.tls_fingerprint, s.block_ipv6, t.name AS final_tunnel
-            FROM settings s LEFT JOIN tunnels t ON t.id = s.final_tunnel_id WHERE s.id = 1
+            SELECT s.base_url, s.disabled, s.final_action, s.block_quic, s.block_stun, s.tls_fingerprint, s.block_ipv6, p.name AS profile,
+                   t.name AS final_tunnel
+            FROM settings s JOIN profiles p ON p.id = \(Store.activeProfile) LEFT JOIN tunnels t ON t.id = s.final_tunnel_id WHERE s.id = 1
             """) else {
             throw StoreError("The settings database has no settings.")
         }
         var cfg = Config()
+        cfg.activeProfile = s["profile"]
+        cfg.profiles = try String.fetchAll(db, sql: "SELECT name FROM profiles ORDER BY position, id")
         let base: String = s["base_url"]
         cfg.baseURL = base.isEmpty ? nil : base
         cfg.disabled = (s["disabled"] as Int) == 1
@@ -203,6 +210,7 @@ final class Store {
             SELECT l.id, l.name, l.source, l.action, t.name AS tunnel, l.description, l.builder, (l.ruleset IS NOT NULL) AS has_ruleset,
                    i.url, i.refresh_hours
             FROM lists l LEFT JOIN import_sources i ON i.list_id = l.id LEFT JOIN tunnels t ON t.id = l.tunnel_id
+            WHERE l.profile_id = \(Store.activeProfile)
             ORDER BY l.position, l.id
             """)
         for r in rows {
@@ -236,17 +244,19 @@ final class Store {
             }
             finalID = id
         }
+        // The default route is global (it applies whichever profile is active); the lists written below are the active profile's.
         try db.execute(sql: "UPDATE settings SET base_url = ?, disabled = ?, final_action = ?, final_tunnel_id = ?, block_quic = ?, block_stun = ?, tls_fingerprint = ?, block_ipv6 = ? WHERE id = 1",
                        arguments: [cfg.baseURL ?? "", cfg.disabled ? 1 : 0, cfg.finalAction.rawValue, finalID, cfg.blockQUIC ? 1 : 0, cfg.blockSTUN ? 1 : 0, cfg.tlsFingerprint, cfg.blockIPv6 ? 1 : 0])
+        let profileID = try Int64.fetchOne(db, sql: "SELECT \(Store.activeProfile)") ?? 1
         var existing: [String: (id: Int64, source: String)] = [:]
-        for r in try Row.fetchAll(db, sql: "SELECT id, name, source FROM lists") { existing[r["name"]] = (r["id"], r["source"]) }
+        for r in try Row.fetchAll(db, sql: "SELECT id, name, source FROM lists WHERE profile_id = ?", arguments: [profileID]) { existing[r["name"]] = (r["id"], r["source"]) }
         for (pos, l) in cfg.lists.enumerated() {
             let source = l.custom ? "custom" : (l.importSource != nil ? "import" : "release")
             let builder = l.custom && !l.rules.isEmpty ? (String(data: try JSONEncoder().encode(l.rules), encoding: .utf8) ?? "") : ""
             var tunnelID: Int64?
             if let name = l.tunnel, !name.isEmpty {
                 guard let id = try Int64.fetchOne(db, sql: "SELECT id FROM tunnels WHERE name = ?", arguments: [name]) else {
-                    throw StoreError("List \"\(l.name)\": no server named \"\(name)\".")
+                    throw StoreError("Rule \"\(l.name)\": no server named \"\(name)\".")
                 }
                 tunnelID = id
             }
@@ -258,8 +268,8 @@ final class Store {
                 if source != "import" || old.source != "import" { try db.execute(sql: "DELETE FROM entries WHERE list_id = ?", arguments: [id]) }
                 if source != "import" && old.source == "import" { try db.execute(sql: "DELETE FROM import_sources WHERE list_id = ?", arguments: [id]) }
             } else {
-                try db.execute(sql: "INSERT INTO lists (name, source, action, tunnel_id, position, builder, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                               arguments: [l.name, source, l.action.rawValue, tunnelID, pos, builder, l.description ?? "", now, now])
+                try db.execute(sql: "INSERT INTO lists (profile_id, name, source, action, tunnel_id, position, builder, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               arguments: [profileID, l.name, source, l.action.rawValue, tunnelID, pos, builder, l.description ?? "", now, now])
                 id = db.lastInsertedRowID
             }
             if let im = l.importSource { try writeImport(db, id, im) }
@@ -291,13 +301,13 @@ final class Store {
     /// and `update` would see a new name as a new list and drop them.
     func renameList(_ old: String, to new: String) throws {
         try queue.write { db in
-            guard try Int.fetchOne(db, sql: "SELECT 1 FROM lists WHERE name = ?", arguments: [old]) != nil else {
-                throw StoreError("No list named \"\(old)\".")
+            guard try Int.fetchOne(db, sql: "SELECT 1 FROM lists WHERE name = ? AND profile_id = \(Store.activeProfile)", arguments: [old]) != nil else {
+                throw StoreError("No rule named \"\(old)\".")
             }
-            if new != old, try Int.fetchOne(db, sql: "SELECT 1 FROM lists WHERE name = ?", arguments: [new]) != nil {
-                throw StoreError("List \"\(new)\" already exists.")
+            if new != old, try Int.fetchOne(db, sql: "SELECT 1 FROM lists WHERE name = ? AND profile_id = \(Store.activeProfile)", arguments: [new]) != nil {
+                throw StoreError("Rule \"\(new)\" already exists.")
             }
-            try db.execute(sql: "UPDATE lists SET name = ?, updated_at = ? WHERE name = ?", arguments: [new, Store.stamp(), old])
+            try db.execute(sql: "UPDATE lists SET name = ?, updated_at = ? WHERE name = ? AND profile_id = \(Store.activeProfile)", arguments: [new, Store.stamp(), old])
         }
     }
 
@@ -313,7 +323,7 @@ final class Store {
             try Row.fetchAll(db, sql: """
                 SELECT l.id, l.name, i.url, i.refresh_hours, i.etag, i.last_modified, i.sha256, i.fetched_at, i.checked_at, i.last_error, i.force, i.skipped,
                        (l.ruleset IS NOT NULL) AS has_ruleset
-                FROM import_sources i JOIN lists l ON l.id = i.list_id ORDER BY l.position, l.id
+                FROM import_sources i JOIN lists l ON l.id = i.list_id WHERE l.profile_id = \(Store.activeProfile) ORDER BY l.position, l.id
                 """).map { r in
                 let id: Int64 = r["id"]
                 let sha: String = r["sha256"]
@@ -340,14 +350,14 @@ final class Store {
         try queue.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT e.kind, e.value FROM entries e JOIN lists l ON l.id = e.list_id
-                WHERE l.name = ? AND l.source = 'import' ORDER BY e.position
+                WHERE l.name = ? AND l.source = 'import' AND l.profile_id = \(Store.activeProfile) ORDER BY e.position
                 """, arguments: [name]).map { Entries.text(kind: $0["kind"], value: $0["value"]) }
         }
     }
 
     func forceImport(_ name: String) throws {
         try queue.write { db in
-            try db.execute(sql: "UPDATE import_sources SET force = 1 WHERE list_id = (SELECT id FROM lists WHERE name = ? AND source = 'import')", arguments: [name])
+            try db.execute(sql: "UPDATE import_sources SET force = 1 WHERE list_id = (SELECT id FROM lists WHERE name = ? AND source = 'import' AND profile_id = \(Store.activeProfile))", arguments: [name])
             guard db.changesCount > 0 else { throw StoreError("No import named \"\(name)\".") }
         }
     }
@@ -357,7 +367,7 @@ final class Store {
     @discardableResult
     func saveDownload(name: String, url: String, lines: [String], etag: String, lastModified: String, sha256: String, skipped: Int) throws -> Bool {
         try queue.write { db in
-            guard let id = try Int64.fetchOne(db, sql: "SELECT l.id FROM lists l JOIN import_sources i ON i.list_id = l.id WHERE l.name = ? AND i.url = ?", arguments: [name, url]) else { return false }
+            guard let id = try Int64.fetchOne(db, sql: "SELECT l.id FROM lists l JOIN import_sources i ON i.list_id = l.id WHERE l.name = ? AND i.url = ? AND l.profile_id = \(Store.activeProfile)", arguments: [name, url]) else { return false }
             try db.execute(sql: "DELETE FROM entries WHERE list_id = ?", arguments: [id])
             let (rows, _) = try Entries.rows(lines)
             for (i, e) in rows.enumerated() {
@@ -374,18 +384,18 @@ final class Store {
 
     /// Stores a rule-set (the binary file the service checked) for a list, as it is. nil removes it.
     func setRuleSet(name: String, data: Data?) throws {
-        try queue.write { try $0.execute(sql: "UPDATE lists SET ruleset = ?, updated_at = ? WHERE name = ?", arguments: [data, Store.stamp(), name]) }
+        try queue.write { try $0.execute(sql: "UPDATE lists SET ruleset = ?, updated_at = ? WHERE name = ? AND profile_id = \(Store.activeProfile)", arguments: [data, Store.stamp(), name]) }
     }
 
     func ruleSetData(_ name: String) throws -> Data? {
-        try queue.read { try Data.fetchOne($0, sql: "SELECT ruleset FROM lists WHERE name = ?", arguments: [name]) }
+        try queue.read { try Data.fetchOne($0, sql: "SELECT ruleset FROM lists WHERE name = ? AND profile_id = \(Store.activeProfile)", arguments: [name]) }
     }
 
     /// Like `saveDownload`, for an import that is a rule-set: its bytes replace what the list had, entries and all.
     @discardableResult
     func saveRuleSetDownload(name: String, url: String, data: Data, etag: String, lastModified: String, sha256: String) throws -> Bool {
         try queue.write { db in
-            guard let id = try Int64.fetchOne(db, sql: "SELECT l.id FROM lists l JOIN import_sources i ON i.list_id = l.id WHERE l.name = ? AND i.url = ?", arguments: [name, url]) else { return false }
+            guard let id = try Int64.fetchOne(db, sql: "SELECT l.id FROM lists l JOIN import_sources i ON i.list_id = l.id WHERE l.name = ? AND i.url = ? AND l.profile_id = \(Store.activeProfile)", arguments: [name, url]) else { return false }
             try db.execute(sql: "DELETE FROM entries WHERE list_id = ?", arguments: [id])
             try db.execute(sql: "UPDATE lists SET ruleset = ?, updated_at = ? WHERE id = ?", arguments: [data, Store.stamp(), id])
             let now = Store.stamp()
@@ -403,7 +413,7 @@ final class Store {
             try db.execute(sql: """
                 UPDATE import_sources SET checked_at = ?, last_error = ?, force = 0, etag = CASE WHEN ? = '' THEN etag ELSE ? END,
                 last_modified = CASE WHEN ? = '' THEN last_modified ELSE ? END
-                WHERE url = ? AND list_id = (SELECT id FROM lists WHERE name = ?)
+                WHERE url = ? AND list_id = (SELECT id FROM lists WHERE name = ? AND profile_id = \(Store.activeProfile))
                 """, arguments: [Store.stamp(), String(error.prefix(300)), etag, etag, lastModified, lastModified, url, name])
         }
     }

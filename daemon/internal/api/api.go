@@ -7,6 +7,7 @@
 //	{"cmd": "status"}                                       → status
 //	{"cmd": "apply", "apply": {...}}                        the desired state (see Snapshot)
 //	{"cmd": "answer", "id": "t3", "username": "…", "password": "…"}   answers a running tunnel's challenge
+//	{"cmd": "stats", "since_bucket": 5900000}  → the traffic log: bytes the engine carried in 5-minute buckets (direct and through a server) and the fastest second, from `since_bucket` on
 //	{"cmd": "server_country", "ids": ["t1"]}  → which country each tunnel's server is in (by the address its name resolves to)
 //	{"cmd": "test", "ids": ["t1"], "method": "connect|tcp|icmp", "url": "https://…", "timeout_ms": 5000}  → tests (a request through each loaded tunnel, or a connect or ping to its server)
 //	{"cmd": "route_test", "text": "example.com"}              → route (where a connection to that name or address would go)
@@ -62,9 +63,12 @@ type Backend interface {
 	// service's own, never the socket's.
 	ExitIP() (ExitIP, error)
 	// ServerCountries says which country each tunnel's server is in (by the address its name resolves to, against the
-	// embedded database). An ID is absent when the server's name couldn't be looked up, and "" when it resolved to
-	// something that says nothing (a CDN, a private address, an unknown one). Never more than MaxLocateIDs ids.
+	// embedded database). An ID is absent when the server's name couldn't be looked up, "XC" when it is behind
+	// Cloudflare (no country), and "" when it resolved to something that says nothing (a private address, an unknown one). Never more than MaxLocateIDs ids.
 	ServerCountries(ids []string) map[string]string
+	// Traffic is the log of what the engine carried, in 5-minute buckets from `sinceBucket` on; false while recording is off (the
+	// snapshot's stats flag). The log is in memory only and starts empty with the service.
+	Traffic(sinceBucket int64) (Traffic, bool)
 }
 
 type Request struct {
@@ -84,6 +88,8 @@ type Request struct {
 	WantLines bool           `json:"want_lines,omitempty"`
 	Lines     []string       `json:"lines,omitempty"`
 	IDs       []string       `json:"ids,omitempty"`
+	// SinceBucket is the first bucket stats should return.
+	SinceBucket int64 `json:"since_bucket,omitempty"`
 	// Method, URL and TimeoutMS are the options of "test" (see TestOptions).
 	Method    string `json:"method,omitempty"`
 	URL       string `json:"url,omitempty"`
@@ -107,6 +113,8 @@ type Response struct {
 	Exit    *ExitIP               `json:"exit,omitempty"`
 	// Countries answers server_country: tunnel ID to two-letter code (see Backend.ServerCountries).
 	Countries map[string]string `json:"countries,omitempty"`
+	// Traffic answers stats; absent while the engine is stopped or not counting.
+	Traffic *Traffic `json:"traffic,omitempty"`
 }
 
 const (
@@ -208,6 +216,10 @@ func Respond(b Backend, req Request) Response {
 			return Response{Error: "server_country takes at most " + strconv.Itoa(MaxLocateIDs) + " ids"}
 		}
 		r.Countries = b.ServerCountries(req.IDs)
+	case "stats":
+		if t, ok := b.Traffic(req.SinceBucket); ok {
+			r.Traffic = &t
+		}
 	case "logs":
 		r.Logs = b.Logs()
 	case "restart":

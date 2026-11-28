@@ -62,6 +62,8 @@ type Snapshot struct {
 	// BlockSTUN refuses STUN (WebRTC's way of learning a public address), so a browser can't show the real address
 	// while its traffic goes through a tunnel. It applies whether or not the lists do.
 	BlockSTUN bool `json:"block_stun,omitempty"`
+	// Stats makes the engine count the bytes it carries (command stats). Turning it on while connected restarts the engine once.
+	Stats bool `json:"stats,omitempty"`
 	// BlockIPv6 refuses IPv6 (the tun carries IPv4 only, so IPv6 would go around it); apps' AAAA lookups are answered empty.
 	BlockIPv6 bool `json:"block_ipv6,omitempty"`
 	// TLSFingerprint makes vless, vmess and trojan tunnels' TLS handshake look like this browser's (core.TLSFingerprints);
@@ -238,7 +240,7 @@ type ListCount struct {
 
 // APIRevision is bumped when the app needs something of the service that an older one would silently ignore (a new
 // snapshot field, say). The app compares it with the one it needs and says the service must be restarted.
-const APIRevision = 16 // 16: server_country (the country of each server, offline); 15: route_test and exit_ip, block IPv6; 14: block STUN and a default TLS fingerprint; 13: test methods (tcp, icmp, connect with a URL and a timeout); 12: rules and rule-set lists (check_rules, check_ruleset); 11: keyword, regexp, port, app and process list entries; 10: automatic bootstrap resolver; 9: block QUIC; 8: .srs lists (parse_entries data); 7: key password for an encrypted OpenVPN key; 6: final route; 5: bootstrap resolver; 4: kill switch (3: OpenVPN tunnels are tested by address)
+const APIRevision = 18 // 18: stats is the traffic log by 5-minute bucket (since_bucket), not running counters; 17: stats and connected_since; 16: server_country (the country of each server, offline); 15: route_test and exit_ip, block IPv6; 14: block STUN and a default TLS fingerprint; 13: test methods (tcp, icmp, connect with a URL and a timeout); 12: rules and rule-set lists (check_rules, check_ruleset); 11: keyword, regexp, port, app and process list entries; 10: automatic bootstrap resolver; 9: block QUIC; 8: .srs lists (parse_entries data); 7: key password for an encrypted OpenVPN key; 6: final route; 5: bootstrap resolver; 4: kill switch (3: OpenVPN tunnels are tested by address)
 
 // Status is what the control socket returns for `status`.
 type Status struct {
@@ -255,8 +257,11 @@ type Status struct {
 	Tunnels   map[string]TunnelStatus `json:"tunnels"` // by tunnel ID
 	Lists     []ListCount             `json:"lists"`
 	AppliedAt time.Time               `json:"applied_at,omitzero"`
-	Warnings  []string                `json:"warnings,omitempty"`
-	Error     string                  `json:"error,omitempty"` // the last engine start failed
+	// ConnectedSince is when the VPN switch was turned on, in milliseconds since 1970 (absent while it is off); a restart of the
+	// engine, for a change of rules, doesn't reset it.
+	ConnectedSince int64    `json:"connected_since,omitempty"`
+	Warnings       []string `json:"warnings,omitempty"`
+	Error          string   `json:"error,omitempty"` // the last engine start failed
 	// Unavailable is why tunnels can't run in this build, or "".
 	Unavailable string `json:"unavailable,omitempty"`
 	// KillSwitch is the kill switch's state: armed means traffic that isn't the engine's is blocked.
@@ -371,6 +376,24 @@ type RouteResult struct {
 	Action rules.Action `json:"action"`
 	Tunnel string       `json:"tunnel,omitempty"`
 	Notes  []string     `json:"notes,omitempty"`
+}
+
+// TrafficBucket is what the engine carried in one 5-minute slot (command stats): bytes in each direction, split into what went
+// straight out and what a server carried, and the fastest second in the slot. Bucket is seconds since 1970 divided by 300.
+type TrafficBucket struct {
+	Bucket     int64 `json:"bucket"`
+	DirectDown int64 `json:"direct_down"`
+	DirectUp   int64 `json:"direct_up"`
+	ProxyDown  int64 `json:"proxy_down"`
+	ProxyUp    int64 `json:"proxy_up"`
+	PeakDown   int64 `json:"peak_down"`
+	PeakUp     int64 `json:"peak_up"`
+}
+
+// Traffic answers stats: the buckets from the one asked for on, oldest first. The last is still filling, so the app asks again
+// from the last one it has. Nothing about where the traffic went is kept.
+type Traffic struct {
+	Buckets []TrafficBucket `json:"buckets"`
 }
 
 // MaxLocateIDs bounds one server_country request: each name is looked up, a few at a time, within the socket's timeout.

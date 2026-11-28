@@ -46,6 +46,7 @@ struct Snapshot: Encodable {
     var blockStun: Bool?
     var blockIPv6: Bool?
     var tlsFingerprint: String?
+    var stats: Bool?
     var retry: [String]?
     var loadAll: Bool?
     var bootstrap: String?
@@ -55,7 +56,7 @@ struct Snapshot: Encodable {
     var lists: [WireList]
 
     enum CodingKeys: String, CodingKey {
-        case vpn, listsOn = "lists_on", selected, final, blockQuic = "block_quic", blockStun = "block_stun", blockIPv6 = "block_ipv6", tlsFingerprint = "tls_fingerprint", retry, loadAll = "load_all", bootstrap, killSwitch = "kill_switch", killSwitchLAN = "kill_switch_lan", tunnels, lists
+        case vpn, listsOn = "lists_on", selected, final, blockQuic = "block_quic", blockStun = "block_stun", blockIPv6 = "block_ipv6", tlsFingerprint = "tls_fingerprint", stats, retry, loadAll = "load_all", bootstrap, killSwitch = "kill_switch", killSwitchLAN = "kill_switch_lan", tunnels, lists
     }
 }
 
@@ -89,9 +90,12 @@ struct ServiceStatus: Decodable, Equatable {
     var unavailable: String?
     /// Whether the firewall rules that block a leak are loaded (nil from a service without a kill switch).
     var killSwitch: WireKillSwitch?
+    /// When the VPN switch was turned on, in milliseconds since 1970 (nil while it is off).
+    var connectedSince: Int64?
 
     enum CodingKeys: String, CodingKey {
         case version, apiRev = "api_rev", bootID = "boot_id", running, connected, tunnels, lists, warnings, error, unavailable, killSwitch = "kill_switch"
+        case connectedSince = "connected_since"
     }
 
     /// Go encodes an empty slice or map as null when it was never set; that is "none", not a different format.
@@ -108,6 +112,7 @@ struct ServiceStatus: Decodable, Equatable {
         error = try c.decodeIfPresent(String.self, forKey: .error)
         unavailable = try c.decodeIfPresent(String.self, forKey: .unavailable)
         killSwitch = try c.decodeIfPresent(WireKillSwitch.self, forKey: .killSwitch)
+        connectedSince = try c.decodeIfPresent(Int64.self, forKey: .connectedSince)
     }
 }
 
@@ -210,12 +215,13 @@ private struct Request: Encodable {
     var wantLines: Bool?
     var lines: [String]?
     var ids: [String]?
+    var sinceBucket: Int?
     /// Options of "test": "connect", "tcp" or "icmp"; an https address for connect; the time one test may take.
     var method: String?
     var url: String?
     var timeoutMS: Int?
 
-    enum CodingKeys: String, CodingKey { case cmd, apply, id, username, password, text, data, rules, format, wantLines = "want_lines", lines, ids, method, url, timeoutMS = "timeout_ms" }
+    enum CodingKeys: String, CodingKey { case cmd, apply, id, username, password, text, data, rules, format, wantLines = "want_lines", lines, ids, sinceBucket = "since_bucket", method, url, timeoutMS = "timeout_ms" }
 }
 
 private struct Response: Decodable {
@@ -234,6 +240,33 @@ private struct Response: Decodable {
     var exit: WireExit?
     /// server_country: tunnel ID to two-letter code ("" when the address says nothing; absent when it couldn't be looked up).
     var countries: [String: String]?
+    var traffic: WireTraffic?
+}
+
+/// The traffic log (command stats): what the engine carried in each 5-minute bucket, direct and through a server, and the fastest
+/// second in it. The bucket is seconds since 1970 divided by 300.
+struct WireBucket: Decodable, Equatable {
+    var bucket: Int
+    var directDown: Int
+    var directUp: Int
+    var proxyDown: Int
+    var proxyUp: Int
+    var peakDown: Int
+    var peakUp: Int
+
+    enum CodingKeys: String, CodingKey {
+        case bucket, directDown = "direct_down", directUp = "direct_up", proxyDown = "proxy_down", proxyUp = "proxy_up"
+        case peakDown = "peak_down", peakUp = "peak_up"
+    }
+}
+
+struct WireTraffic: Decodable, Equatable {
+    var buckets: [WireBucket]
+
+    init(from d: Decoder) throws {
+        buckets = try d.container(keyedBy: CodingKeys.self).decodeIfPresent([WireBucket].self, forKey: .buckets) ?? []
+    }
+    enum CodingKeys: String, CodingKey { case buckets }
 }
 
 enum DaemonError: LocalizedError, Equatable {
@@ -256,7 +289,7 @@ enum DaemonError: LocalizedError, Equatable {
 /// Client for the service's control socket: one JSON request, one JSON response per connection.
 enum Daemon {
     /// The service revision this app needs (Go: api.APIRevision).
-    static let requiredAPIRev = 16
+    static let requiredAPIRev = 18
 
     #if DEBUG
     /// Debug builds: SPLITROUTE_SOCKET points the app at a fake service.
@@ -332,6 +365,11 @@ enum Daemon {
     static let maxLocate = 40
     static func serverCountries(_ ids: [String]) async throws -> [String: String] {
         try await send(Request(cmd: "server_country", ids: ids)).countries ?? [:]
+    }
+
+    /// The service's traffic log from a bucket on, or nil while recording is off (the snapshot's `stats`).
+    static func traffic(since bucket: Int) async throws -> [WireBucket]? {
+        try await send(Request(cmd: "stats", sinceBucket: bucket)).traffic?.buckets
     }
 
     /// Whether the engine can run a rule built from fields; throws the service's message about the first value that is wrong.

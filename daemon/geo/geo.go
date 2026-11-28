@@ -38,13 +38,20 @@ func Open() (*DB, error) {
 
 func (d *DB) Close() { _ = d.r.Close() }
 
-// Country is the two-letter code of the country `ip` is in. It is "" for what says nothing about where a server is:
-// an address that isn't public (a poisoned or private answer), a CDN's (the edge is not the server), and one the
-// database doesn't know.
+// CDN is what Country answers for an address behind Cloudflare: not a country (XC is in the range ISO leaves for private use,
+// so it can't be one), so the app shows a cloud and not a flag.
+const CDN = "XC"
+
+// Country is the two-letter code of the country `ip` is in. It is CDN for a Cloudflare address (the edge is not the server),
+// and "" for what says nothing about where a server is: an address that isn't public (a poisoned or private answer) and
+// one the database doesn't know.
 func (d *DB) Country(ip netip.Addr) string {
 	ip = ip.Unmap()
-	if !public(ip) || cdn(ip) {
+	if !public(ip) {
 		return ""
+	}
+	if cdn(ip) {
+		return CDN
 	}
 	var rec struct {
 		Country struct {

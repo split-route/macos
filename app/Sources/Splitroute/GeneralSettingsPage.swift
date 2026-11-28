@@ -14,11 +14,9 @@ struct GeneralSettingsPage: View {
     @AppStorage(Prefs.disconnectOnSleep) private var disconnectOnSleep = false
     @AppStorage(Prefs.showDisconnectMessage) private var showMessage = false
     @AppStorage(Prefs.sortByPing) private var sortByPing = true
-    @AppStorage(Prefs.smartInterval) private var smartInterval = 3600
+    @AppStorage(Prefs.smartInterval) private var smartInterval = 1800
     @AppStorage(Prefs.smartHealth) private var smartHealth = 30
-    @AppStorage(Prefs.smartTolerance) private var smartTolerance = 50
-    @AppStorage(Prefs.smartGroupOnly) private var smartGroupOnly = true
-    @AppStorage(Prefs.smartPool) private var smartPool = 48
+    @AppStorage(Prefs.smartTolerance) private var smartTolerance = 100
     @AppStorage(Prefs.smartOnNetwork) private var smartOnNetwork = true
     @AppStorage(Prefs.smartAfterTest) private var smartAfterTest = true
     @AppStorage(Prefs.subsUpdateOnOpen) private var subsOnOpen = false
@@ -49,7 +47,7 @@ struct GeneralSettingsPage: View {
             FormRow("Block traffic if the connection drops",
                     detail: "Blocks the network if the server drops, instead of using your normal connection.",
                     error: model.error("killswitch")) {
-                toggle("Block traffic if the connection drops", isOn: Binding(get: { model.killSwitchOn }, set: { on in Task { await model.setKillSwitch(on: on) } }))
+                toggle("Block traffic if the connection drops", isOn: Binding(get: { model.killSwitchOn }, set: { on in if !on && !model.confirmKillSwitchOff() { return }; Task { await model.setKillSwitch(on: on) } }))
                     .disabled(model.busy)
             }
             Hairline()
@@ -106,15 +104,6 @@ struct GeneralSettingsPage: View {
                 SelectMenu(title: "\(smartTolerance) ms", options: Prefs.smartTolerances, label: { "\($0) ms" }, selected: smartTolerance) { smartTolerance = $0 }
             }
             Hairline()
-            FormRow("Choose from", detail: "A group is a subscription. Servers you added by hand are one group.") {
-                SelectMenu(title: smartGroupOnly ? "Active server's group" : "All servers", options: [true, false],
-                           label: { $0 ? "Active server's group" : "All servers" }, selected: smartGroupOnly) { smartGroupOnly = $0 }
-            }
-            Hairline()
-            FormRow("Servers per check", detail: "More takes longer and uses more data.") {
-                SelectMenu(title: "\(smartPool)", options: Prefs.smartPools, label: { "\($0)" }, selected: smartPool) { smartPool = $0 }
-            }
-            Hairline()
             FormRow("Check when the network changes", detail: "Another Wi-Fi or cable can change which server is best.") {
                 settingsSwitch("Check when the network changes", isOn: $smartOnNetwork)
             }
@@ -123,7 +112,7 @@ struct GeneralSettingsPage: View {
                 settingsSwitch("Switch after a manual test", isOn: $smartAfterTest)
             }
             Hairline()
-            Text("Uses the test address and timeout from Advanced. OpenVPN servers are never chosen or left. A list that names a server stays blocked while that server is down.")
+            Text("Uses the test address and timeout from Advanced. OpenVPN servers are never chosen or left. A rule that names a server stays blocked while that server is down.")
                 .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(Space.l)
         }
@@ -162,8 +151,8 @@ struct GeneralSettingsPage: View {
     }
 
     @ViewBuilder private var routingLists: some View {
-        SettingsSection("Routing list updates") {
-            FormRow("Auto update", detail: "Refresh ready-made lists on a schedule. Imported lists use their own.") {
+        SettingsSection("Routing rule updates") {
+            FormRow("Auto update", detail: "Refresh ready-made rules on a schedule. Imported rules use their own.") {
                 settingsSwitch("Auto update", isOn: $listsAuto)
             }
             Hairline()

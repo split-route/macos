@@ -9,13 +9,20 @@ enum Prefs {
     // Connection
     static let alwaysOn = "alwaysOn"
     static let disconnectOnSleep = "disconnectOnSleep"
+    static let confirmDisconnect = "confirmDisconnect" // ask before the connection is turned off (default on)
+    static let confirmRouting = "confirmRouting" // ask before routing is turned off (default on)
+    static let confirmKillSwitch = "confirmKillSwitch" // ask before the kill switch is turned off (default on)
+    static let confirmProfile = "confirmProfile" // ask before another routing profile is made active (default on)
+    static let speedUnit = "speedUnit" // "mbps" (the default) or "mbs": how a speed is written
+    // Statistics (AppModel+Stats.swift)
+    static let recordStats = "recordStats" // count the bytes the engine carries and keep them for 3 months (default on)
     // Smart Select (AppModel+SmartSelect.swift). The key keeps its old name: it was "Switch servers automatically".
     static let smartSelect = "autoSwitch" // keep the active server the best one (default off)
     static let smartInterval = "smartInterval" // seconds between full latency checks; 0 never
     static let smartHealth = "smartHealth" // seconds between requests through the active server; 0 never
     static let smartTolerance = "smartTolerance" // ms a server must be faster by before it replaces the active one
-    static let smartGroupOnly = "smartGroupOnly" // choose only among the active server's group
-    static let smartPool = "smartPool" // most servers measured in one check
+    static let smartScope = "smartScope" // "all" (the default), "group" (the active server's group) or "list:<id>" (a custom list)
+    static let smartLists = "smartLists" // the custom lists (SmartList, JSON)
     static let smartOnNetwork = "smartOnNetwork" // check again when the Mac changes network
     static let smartAfterTest = "smartAfterTest" // move to the fastest server after a manual test
     static let showDisconnectMessage = "showDisconnectMessage"
@@ -51,7 +58,6 @@ enum Prefs {
     static let smartIntervals = [0, 900, 1800, 3600, 10800, 28800] // seconds
     static let smartHealths = [0, 15, 30, 60, 300]
     static let smartTolerances = [0, 25, 50, 100, 200]
-    static let smartPools = [8, 16, 24, 48, 100]
     static let subsIntervals = [1, 3, 6, 12, 24, 48, 168] // hours
     static let listsIntervals = [6, 12, 24, 48, 168]
 

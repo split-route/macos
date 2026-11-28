@@ -46,14 +46,14 @@ struct ReadyListsTab: View {
 
     var body: some View {
         SubPage(tabs: tabs) {
-            SheetSearch(text: $query, prompt: "Search lists…")
+            SheetSearch(text: $query, prompt: "Search rules…")
                 // Don't start in the search field (the sheet would focus it); click to search.
                 .onAppear { DispatchQueue.main.async { NSApp.keyWindow?.makeFirstResponder(nil) } }
             VStack(alignment: .leading, spacing: Space.m) {
                 if model.available.isEmpty {
-                    SheetNote("Can't reach the list server to see which lists it has.")
+                    SheetNote("Can't reach the server to see which ready-made rules it has.")
                 } else if missing.isEmpty {
-                    SheetNote(query.isEmpty ? "Every ready-made list is added." : "No lists match.")
+                    SheetNote(query.isEmpty ? "Every ready-made rule is added." : "No rules match.")
                 } else {
                     Panel {
                         ForEach(Array(missing.enumerated()), id: \.element.id) { n, i in
@@ -70,7 +70,7 @@ struct ReadyListsTab: View {
                     }
                     .environment(\.searchQuery, query) // the rows mark what was searched for
                 }
-                SheetNote("No Action keeps a list without applying it. Direct skips every server. Block drops the traffic. Active Server sends it through the server you're connected with. Changes apply right away.")
+                SheetNote("No Action keeps a rule without applying it. Direct skips every server. Block drops the traffic. Active Server sends it through the server you're connected with. Changes apply right away.")
             }
         } footer: {
             SheetBar(error: model.error("lists")) {
@@ -104,7 +104,7 @@ struct FileImportTab: View {
     private var problem: String? {
         if (text == nil && binary == nil) || trimmedName.isEmpty { return "" }
         if trimmedName.count > 64 { return "Use at most 64 characters for the name." }
-        if takenNames.contains(trimmedName) { return "Another list already has this name." }
+        if takenNames.contains(trimmedName) { return "Another rule already has this name." }
         if description.count > Config.maxDescription { return "Use at most \(Config.maxDescription) characters for the description." }
         return nil
     }
@@ -127,7 +127,7 @@ struct FileImportTab: View {
                     ActionRow(action: $action)
                 }
                 .disabled(done != nil)
-                SheetNote("A sing-box rule-set (.srs, or its JSON source) is used exactly as it is: everything sing-box can run in one works, up to 16 MB. A plain list (one domain, address or range per line, hosts files, Surge/Clash domain sets, up to 5 MB) becomes the fields of a rule you can edit; lines that aren't entries are skipped. For a list that changes, use From URL so it stays up to date.")
+                SheetNote("A sing-box rule-set (.srs, or its JSON source) is used exactly as it is: everything sing-box can run in one works, up to 16 MB. A plain text file (one domain, address or range per line, hosts files, Surge/Clash domain sets, up to 5 MB) becomes the fields of a rule you can edit; lines that aren't entries are skipped. For one that changes, use From URL so it stays up to date.")
             }
         } footer: {
             SheetBar(error: error ?? problem, success: done) {
@@ -168,7 +168,7 @@ struct FileImportTab: View {
         } else if data.count <= Self.maxText, let s = String(data: data, encoding: .utf8) {
             text = s
         } else if data.count > Self.maxText {
-            error = "A plain list can be up to 5 MB. Put it online and use From URL instead."
+            error = "A plain text file can be up to 5 MB. Put it online and use From URL instead."
             return
         } else {
             error = "This isn't a text file (UTF-8) or a sing-box rule-set (.srs)."
@@ -262,7 +262,7 @@ struct CustomListEditor: View {
     private var nameProblem: String? {
         if trimmedName.isEmpty { return "Enter a name." }
         if trimmedName.count > 64 { return "Use at most 64 characters." }
-        if takenNames.contains(trimmedName) { return "Another list already has this name." }
+        if takenNames.contains(trimmedName) { return "Another rule already has this name." }
         if description.count > Config.maxDescription { return "Use at most \(Config.maxDescription) characters for the description." }
         return nil
     }
@@ -280,16 +280,16 @@ struct CustomListEditor: View {
                     ActionRow(action: $action)
                 }
                 if ruleSet {
-                    SheetNote("This list is a sing-box rule-set, kept exactly as it was imported: sing-box runs every rule in it. To change its rules, import a new file or address. The name, description and action can be changed above.")
+                    SheetNote("This rule is a sing-box rule-set, kept exactly as it was imported: sing-box runs every entry in it. To change its entries, import a new file or address. The name, description and action can be changed above.")
                 } else {
                     builder
                 }
             }
         } footer: {
             SheetBar(error: error ?? (name.isEmpty ? nil : nameProblem), leading: original == nil ? nil : AnyView(
-                Button("Delete List") { confirmingDelete = true }
+                Button("Delete Rule") { confirmingDelete = true }
                     .buttonStyle(.plain).font(TypeScale.bodyStrong).foregroundStyle(Palette.danger.color)
-                    .accessibilityHint("Removes this list and its rules"))) {
+                    .accessibilityHint("Removes this rule and its fields"))) {
                 if model.busy { ProgressView().controlSize(.small) }
                 SheetButton(title: "Cancel") { close() }
                 SheetButton(title: original == nil ? "Add" : "Save", primary: true, disabled: nameProblem != nil || model.busy) { Task { await save() } }
@@ -327,7 +327,7 @@ struct CustomListEditor: View {
             VStack(alignment: .leading, spacing: Space.l) {
                 applicationsPanel
                 ForEach(Self.programFields, id: \.key) { field($0.key, $0.title, $0.hint, $0.example) }
-                SheetNote("The engine looks up which program each connection comes from, which costs a little per connection. It only does so while a list names programs.")
+                SheetNote("The engine looks up which program each connection comes from, which costs a little per connection. It only does so while a rule names programs.")
             }
             VStack(alignment: .leading, spacing: Space.l) {
                 Panel {
@@ -487,7 +487,7 @@ struct ImportEditor: View {
     private var problem: String? {
         if trimmedName.isEmpty || trimmedURL.isEmpty { return "" }
         if trimmedName.count > 64 { return "Use at most 64 characters for the name." }
-        if takenNames.contains(trimmedName) { return "Another list already has this name." }
+        if takenNames.contains(trimmedName) { return "Another rule already has this name." }
         if description.count > Config.maxDescription { return "Use at most \(Config.maxDescription) characters for the description." }
         guard let u = URLComponents(string: trimmedURL), u.scheme?.lowercased() == "https", u.host?.isEmpty == false else {
             return "Enter an https URL."
@@ -510,7 +510,7 @@ struct ImportEditor: View {
                     Hairline()
                     ActionRow(action: $action)
                 }
-                SheetNote("Plain lists (one entry per line), hosts files, Surge/Clash domain sets and sing-box rule-sets (.srs). The list is added at once and downloads in the background, then again every day; a failed download keeps the last good copy. Every user of this Mac can see the URL, so don't use one that contains a token or password.")
+                SheetNote("Plain text (one entry per line), hosts files, Surge/Clash domain sets and sing-box rule-sets (.srs). The rule is added at once and downloads in the background, then again every day; a failed download keeps the last good copy. Every user of this Mac can see the URL, so don't use one that contains a token or password.")
             }
         } footer: {
             SheetBar(error: error ?? problem) {
@@ -546,7 +546,7 @@ struct EditImportView: View {
     private var problem: String? {
         if trimmedURL.isEmpty || trimmedName.isEmpty { return "" }
         if trimmedName.count > 64 { return "Use at most 64 characters for the name." }
-        if takenNames.contains(trimmedName) { return "Another list already has this name." }
+        if takenNames.contains(trimmedName) { return "Another rule already has this name." }
         if description.count > Config.maxDescription { return "Use at most \(Config.maxDescription) characters for the description." }
         guard let u = URLComponents(string: trimmedURL), u.scheme?.lowercased() == "https", u.host?.isEmpty == false else { return "Enter an https URL." }
         if u.user != nil || u.password != nil { return "Remove the user name and password from the URL." }
@@ -563,7 +563,7 @@ struct EditImportView: View {
                     Hairline()
                     FieldRow(title: "Description", text: $description, prompt: "Optional")
                 }
-                SheetNote("A new address replaces the list's entries when it is downloaded. Every user of this Mac can see the URL, so don't use one that contains a token or password.")
+                SheetNote("A new address replaces the rule's entries when it is downloaded. Every user of this Mac can see the URL, so don't use one that contains a token or password.")
             }
         } footer: {
             SheetBar(error: error ?? problem) {

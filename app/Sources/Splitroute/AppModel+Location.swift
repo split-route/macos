@@ -21,10 +21,11 @@ extension AppModel {
         }
     }
 
-    /// The servers that are due: never looked up, or standalone (no subscription) and older than a day.
+    /// The servers that are due: never looked up, or older than a day when standalone (no subscription) or when the country
+    /// is unknown (that may be a name that didn't resolve then).
     nonisolated static func dueForLocation(_ ts: [StoreTunnel], now: Date = Date()) -> [Int64] {
         let cutoff = Int(now.timeIntervalSince1970 - locateEvery)
-        return ts.filter { $0.countryAt == 0 || ($0.subscriptionID == nil && $0.countryAt < cutoff) }.map(\.id)
+        return ts.filter { $0.countryAt == 0 || (($0.subscriptionID == nil || $0.country.isEmpty) && $0.countryAt < cutoff) }.map(\.id)
     }
 
     /// Called from the poll: looks up what is due, once at a time.

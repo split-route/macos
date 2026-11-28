@@ -27,6 +27,7 @@ type Engine interface {
 	Start() error
 	Reload(core.Config) (restarted bool, err error)
 	Status() core.Status
+	Stats() (core.Stats, bool)
 	Events() <-chan core.Event
 	AnswerChallenge(tunnelID string, r core.ChallengeResponse) error
 	Test(ctx context.Context, tunnelID, link string) (time.Duration, error)
@@ -97,6 +98,8 @@ type host struct {
 	blockQUIC bool            // refuse QUIC no list matched
 	blockSTUN bool            // refuse STUN
 	blockIPv6 bool            // refuse IPv6
+	stats     bool            // count the bytes the engine carries (core.Config.Stats); a tracker is only attached as the engine starts
+	vpnSince  time.Time       // when the VPN switch was turned on; zero while it is off
 	tlsPrint  string          // core.Config.TLSFingerprint
 	final     api.FinalSpec   // where traffic no list matches goes; the tunnel is named, like a list's
 	bootstrap string          // core.DNS.Bootstrap: how proxy tunnels' servers are found by name
@@ -150,6 +153,10 @@ func (h *host) setVPN(on bool) {
 		return
 	}
 	h.vpnOn = on
+	h.vpnSince = time.Time{}
+	if on {
+		h.vpnSince = time.Now()
+	}
 	if !on {
 		for _, w := range h.wanted {
 			w.options = nil
@@ -203,6 +210,42 @@ func (h *host) setBlockSTUN(on bool) {
 	}
 	h.blockSTUN = on
 	h.scheduleLocked()
+}
+
+// setStats turns the byte counters on or off. On while the engine runs, the engine restarts once; off, it keeps running.
+func (h *host) setStats(on bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.stats == on {
+		return
+	}
+	h.stats = on
+	h.scheduleLocked()
+}
+
+// recording is whether the snapshot asked for the byte counters.
+func (h *host) recording() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.stats
+}
+
+// engineStats is what the running engine has carried, or false when it is stopped or not counting.
+func (h *host) engineStats() (core.Stats, bool) {
+	h.mu.Lock()
+	eng := h.eng
+	h.mu.Unlock()
+	if eng == nil {
+		return core.Stats{}, false
+	}
+	return eng.Stats()
+}
+
+// connectedSince is when the VPN switch was turned on, or the zero time while it is off. It survives engine restarts.
+func (h *host) connectedSince() time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.vpnSince
 }
 
 // listsCopy is the lists the host applies, as the last snapshot set them.
@@ -516,7 +559,7 @@ func (h *host) buildLocked() core.Config {
 	if bootstrap == "" {
 		bootstrap = defaultBootstrap
 	}
-	cfg := core.Config{WorkDir: h.workDir, Default: h.selected, BlockQUIC: h.blockQUIC, BlockSTUN: h.blockSTUN, BlockIPv6: h.blockIPv6, TLSFingerprint: h.tlsPrint, Inbound: h.inbound, DNS: core.DNS{Bootstrap: bootstrap}, Log: core.Log{Level: "info"}}
+	cfg := core.Config{WorkDir: h.workDir, Default: h.selected, BlockQUIC: h.blockQUIC, BlockSTUN: h.blockSTUN, BlockIPv6: h.blockIPv6, Stats: h.stats, TLSFingerprint: h.tlsPrint, Inbound: h.inbound, DNS: core.DNS{Bootstrap: bootstrap}, Log: core.Log{Level: "info"}}
 	byName := map[string]string{}
 	for _, w := range h.wanted {
 		cfg.Tunnels = append(cfg.Tunnels, core.Tunnel{ID: w.id, Name: w.name, Protocol: w.protocol, Options: w.options})

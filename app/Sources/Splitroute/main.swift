@@ -63,11 +63,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .store(in: &bag)
         updateIcon()
         installMainMenu()
-        Hotkey.shared.onPress = { [weak self] in
-            guard let self else { return }
-            Task { await self.model.setVPN(!self.model.vpnOn) }
-        }
-        Hotkey.shared.register(Shortcut.stored)
         unfocusFieldsOnOutsideClick()
         // Opened by the user (Spotlight, Finder, `open`): show the window. At login
         // only the menu bar icon appears.
@@ -174,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             w.setContentSize(NSSize(width: 936, height: 630))
             w.center()
             w.setFrameAutosaveName("Settings4") // a new name, so the default size below applies once
-            w.contentMinSize = NSSize(width: 700, height: 480) // about System Settings' smallest; the default stays 936 x 630
+            w.contentMinSize = NSSize(width: 910, height: 545) // smaller and the Home cards break; the default stays 936 x 630
             if #available(macOS 26, *) {
                 // A window with a toolbar gets the inset traffic lights of macOS 26 (as on the floating sidebar), placed
                 // and hit-tested by AppKit. The toolbar is empty and invisible: it only changes where the lights sit.

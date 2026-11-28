@@ -15,7 +15,8 @@ struct SettingsView: View {
         }
         .font(TypeScale.body)
         .foregroundStyle(Palette.ink.color)
-        .frame(minWidth: 700, minHeight: 480)
+        .environment(\.pageScrollTarget, Binding(get: { model.settingsScrollTarget }, set: { model.settingsScrollTarget = $0 }))
+        .frame(minWidth: 910, minHeight: 545)
         .onAppear { if model.settingsVisible { model.traffic.start() } }
         .onChange(of: model.settingsVisible) { _, open in if open { model.traffic.start() } else { model.traffic.stop() } }
     }
@@ -27,6 +28,7 @@ struct SettingsView: View {
             case .home: HomePage(traffic: model.traffic, go: { page = $0 }).transition(.opacity)
             case .tunnels: TunnelsPage().transition(.opacity)
             case .lists: ListsPage().transition(.opacity)
+            case .statistics: StatisticsPage().transition(.opacity)
             case .general: GeneralSettingsPage().transition(.opacity)
             case .application: ApplicationSettingsPage().transition(.opacity)
             case .advanced: AdvancedSettingsPage().transition(.opacity)
@@ -167,6 +169,7 @@ private struct GlassSidebar: View {
     @Namespace private var ns
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.pageScrollTarget) private var scrollTarget
     @State private var commandHeld = false
     @State private var flagsMonitor: Any?
 
@@ -186,7 +189,8 @@ private struct GlassSidebar: View {
                 let on = selection == d
                 if d == Destination.settingsPages.first { SidebarSectionTitle("Settings") }
                 Button {
-                    if reduceMotion { selection = d } else { withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) { selection = d } }
+                    if selection == d { scrollTarget.wrappedValue = PageScrollTop.id } // the open page again: back to its top
+                    else if reduceMotion { selection = d } else { withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) { selection = d } }
                 } label: {
                     HStack(spacing: Space.m) {
                         DestinationIcon(d, selected: on, plain: on ? Color.white : Palette.inkSecondary.color)

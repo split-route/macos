@@ -25,6 +25,31 @@ extension AppModel {
         await edit("routing") { try self.update { var c = $0; c.disabled = !on; return c } }
     }
 
+    // MARK: Profiles
+
+    /// Each profile has its own lists and default route; the active one is what the service runs.
+    var profiles: [String] { config?.profiles ?? ["Default"] }
+    var activeProfile: String { config?.activeProfile ?? "Default" }
+
+    func switchProfile(_ name: String) async {
+        guard name != activeProfile, confirmProfileChange(to: name) else { return }
+        await edit("profile") { try self.store?.setActiveProfile(name) }
+    }
+
+    /// Adds an empty profile and switches to it. Returns the reason when it can't.
+    func createProfile(_ name: String) async -> String? {
+        await attempt { try self.store?.createProfile(name) }
+    }
+
+    func renameProfile(_ old: String, to new: String) async -> String? {
+        await attempt { try self.store?.renameProfile(old, to: new) }
+    }
+
+    /// Deletes a profile and its lists; the first of the others takes over when it was the active one.
+    func deleteProfile(_ name: String) async -> String? {
+        await attempt { try self.store?.deleteProfile(name) }
+    }
+
     // MARK: Per-list edits
 
     /// `tunnel` names the tunnel for the tunnel action; nil means the default tunnel.

@@ -22,8 +22,11 @@ enum Flags {
     /// shows a flag. Names are never read for a place: a name is whatever the person or the provider typed.
     static func prefix(name: String, country: String) -> String? {
         guard country.count == 2, existing(in: name) == nil else { return nil }
-        return emoji(code: country)
+        return country == cdn ? "☁️" : emoji(code: country)
     }
+
+    /// What the service answers for a server behind Cloudflare (Go: geo.CDN): not a country, so a cloud stands for it.
+    static let cdn = "XC"
 
     /// The two-letter code of a flag emoji, to put a country beside it ("DE").
     static func code(ofEmoji e: String) -> String? {

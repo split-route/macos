@@ -61,11 +61,11 @@ struct HomePage: View {
                     statusCard
                     HStack(spacing: Space.m) {
                         Tile(title: "Routing", value: model.routingOn ? "On" : "Off", symbol: "arrow.triangle.branch", dot: model.routingOn ? Palette.success.color : Palette.inkSecondary.color.opacity(0.5),
-                             isOn: Binding(get: { model.routingOn }, set: { on in Task { await model.setRoutingOn(on) } }), pending: model.pending.contains("routing"), dimmed: !connected, tint: model.routingOn ? Palette.success.color : nil)
+                             isOn: Binding(get: { model.routingOn }, set: { on in if !on && !model.confirmRoutingOff() { return }; Task { await model.setRoutingOn(on) } }), pending: model.pending.contains("routing"), dimmed: !connected, tint: model.routingOn ? Palette.success.color : nil)
                         Tile(title: "Default Route", value: finalText, symbol: "arrow.triangle.branch", dot: finalDot,
                              open: { go(.lists) }, dimmed: !connected, tint: finalDot)
                         Tile(title: "Kill switch", value: killSwitch.text, symbol: "hand.raised", dot: killSwitch.dot,
-                             isOn: Binding(get: { model.killSwitchOn }, set: { on in Task { await model.setKillSwitch(on: on) } }), pending: model.pending.contains("killswitch"), dimmed: !connected, tint: model.killSwitchOn ? killSwitch.dot : nil)
+                             isOn: Binding(get: { model.killSwitchOn }, set: { on in if !on && !model.confirmKillSwitchOff() { return }; Task { await model.setKillSwitch(on: on) } }), pending: model.pending.contains("killswitch"), dimmed: !connected, tint: model.killSwitchOn ? killSwitch.dot : nil)
                     }
                     HStack(spacing: Space.m) {
                         Tile(title: "Server", value: serverText, symbol: "shield", dot: nil,
@@ -87,6 +87,17 @@ struct HomePage: View {
         return model.selectedTunnel.map { "Will connect through \($0.name)" } ?? "Select a server first"
     }
 
+    private var vpnBinding: Binding<Bool> {
+        Binding(get: { model.vpnOn }, set: { on in
+            if !on && !model.confirmDisconnect() { return }
+            Task {
+                await model.setVPN(on)
+                // The selected server needs a password: the sheet for it is on the Servers page.
+                if on, let t = model.selectedTunnel, t.state == .needsAuth, model.needsCredentialPrompt(t) { go(.tunnels) }
+            }
+        })
+    }
+
     private var statusCard: some View {
         Panel {
             HStack(spacing: Space.l) {
@@ -100,20 +111,15 @@ struct HomePage: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(connected ? "Connected" : "Disconnected").font(TypeScale.title).foregroundStyle(Palette.ink.color)
                         .contentTransition(.opacity).animation(.easeOut(duration: 0.2), value: connected)
-                    Text(subtitle).font(TypeScale.body)
+                    ConnectionLine(fallback: subtitle).font(TypeScale.body)
                         .foregroundStyle(Palette.inkSecondary.color).lineLimit(2)
                 }
                 Spacer()
-                PendingToggle("Connection", isOn: Binding(get: { model.vpnOn }, set: { on in
-                    Task {
-                        await model.setVPN(on)
-                        // The selected server needs a password: the sheet for it is on the Servers page.
-                        if on, let t = model.selectedTunnel, t.state == .needsAuth, model.needsCredentialPrompt(t) { go(.tunnels) }
-                    }
-                }), pending: model.pending.contains("vpn"))
-                .disabled(model.tunnels.isEmpty)
+                PendingToggle("Connection", isOn: vpnBinding, pending: model.pending.contains("vpn"))
+                    .disabled(model.tunnels.isEmpty)
             }
             .padding(.horizontal, Space.l).padding(.vertical, Space.xl)
+            .tapToToggle(vpnBinding, pending: model.pending.contains("vpn"), enabled: !model.tunnels.isEmpty)
             .background(alignment: .top) {
                 // The same wash the cards below have: the accent while connected, nothing while not.
                 LinearGradient(colors: [Accent.color.opacity(connected ? 0.20 : 0), .clear], startPoint: .top, endPoint: .bottom)
@@ -184,6 +190,7 @@ private struct Tile: View {
         .opacity(dimmed ? 0.45 : 1)
         .animation(.easeOut(duration: 0.25), value: dimmed)
         .contentShape(RoundedRectangle(cornerRadius: Radius.panel))
+        .tapToToggle(isOn, pending: pending, enabled: !dimmed) // the whole card is the switch
         .accessibilityElement(children: isOn == nil ? .combine : .contain)
     }
 }
@@ -195,11 +202,35 @@ private struct SpeedChart: View {
     let live: Bool
     let height: CGFloat
 
-    /// The top of the scale: the biggest speed seen, rounded up, never below 10 KB/s so a quiet line stays flat.
-    private var top: Double {
-        let peak = samples.map { max($0.down, $0.up) }.max() ?? 0
-        let steps: [Double] = [10e3, 50e3, 100e3, 500e3, 1e6, 5e6, 10e6, 50e6, 100e6, 500e6, 1e9]
-        return steps.first { $0 >= peak * 1.1 } ?? peak * 1.1
+    /// The top of the scale: the biggest speed seen plus a margin, rounded up to a round number.
+    private var top: Double { TrafficMonitor.niceTop(samples.map { max($0.down, $0.up) }.max() ?? 0) }
+
+    /// How far below zero the chart goes: a third of the way up, in the units of `level`, is a quarter of its height of room.
+    private static let floor = -1.0 / 3
+
+    /// A speed as its height on the chart, from 0 to 1: the square root of its share of the top, so a quiet line keeps room above
+    /// the baseline beside a big peak.
+    private func level(_ speed: Double) -> Double { (min(max(speed / top, 0), 1)).squareRoot() }
+
+    /// What is drawn: the samples smoothed, so a one-second spike is a hill.
+    private var drawn: [TrafficMonitor.Sample] { TrafficMonitor.smoothed(samples) }
+
+    /// A point of the chart: the height of each line there.
+    private struct Level: Identifiable {
+        let time: Date
+        let down: Double
+        let up: Double
+        var id: Date { time }
+    }
+
+    /// The heights to draw. A line that begins inside the chart (the connection, or the window, is new) starts at the bottom three
+    /// seconds before its first sample and rises smoothly to the baseline, instead of beginning in mid-air.
+    private var plotted: [Level] {
+        var out = drawn.map { Level(time: $0.time, down: level($0.down), up: level($0.up)) }
+        if let first = drawn.first, first.time.timeIntervalSince(start) > 2 {
+            out.insert(Level(time: first.time.addingTimeInterval(-3), down: Self.floor, up: Self.floor), at: 0)
+        }
+        return out
     }
 
     private var start: Date { (samples.last?.time ?? Date()).addingTimeInterval(-Double(TrafficMonitor.window)) }
@@ -217,12 +248,13 @@ private struct SpeedChart: View {
         Panel {
             VStack(alignment: .leading, spacing: Space.m) {
                 Chart {
-                    ForEach(live ? samples : []) { s in
-                        // A wash under each line, fading to nothing, so the speed reads as a shape and not only a stroke.
-                        AreaMark(x: .value("Time", s.time), y: .value("Speed", s.down), series: .value("Direction", "Download area"), stacking: .unstacked)
+                    ForEach(live ? plotted : []) { s in
+                        // Zero sits a quarter of the way up: below it is empty room that only the wash reaches, so a quiet line
+                        // is a visible shape and not a stroke on the floor. A wash under each line, fading to nothing.
+                        AreaMark(x: .value("Time", s.time), yStart: .value("Floor", Self.floor), yEnd: .value("Speed", s.down), series: .value("Direction", "Download area"))
                             .interpolationMethod(.catmullRom)
                             .foregroundStyle(LinearGradient(colors: [Palette.success.color.opacity(0.42), Palette.success.color.opacity(0.03)], startPoint: .top, endPoint: .bottom))
-                        AreaMark(x: .value("Time", s.time), y: .value("Speed", s.up), series: .value("Direction", "Upload area"), stacking: .unstacked)
+                        AreaMark(x: .value("Time", s.time), yStart: .value("Floor", Self.floor), yEnd: .value("Speed", s.up), series: .value("Direction", "Upload area"))
                             .interpolationMethod(.catmullRom)
                             .foregroundStyle(LinearGradient(colors: [Palette.warning.color.opacity(0.32), Palette.warning.color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
                         LineMark(x: .value("Time", s.time), y: .value("Speed", s.down), series: .value("Direction", "Download"))
@@ -235,11 +267,14 @@ private struct SpeedChart: View {
                 }
                 .chartXSelection(value: $pointer)
                 .chartXScale(domain: start...(samples.last?.time ?? Date()))
-                .chartYScale(domain: 0...top)
+                .chartYScale(domain: Self.floor...1)
+                // After the scales, so the window sliding along is animated too: one second, linear, so the line scrolls steadily as each sample comes in.
+                .animation(.linear(duration: 1), value: samples)
                 .chartXAxis(.hidden)
                 .chartYAxis {
-                    AxisMarks(values: [0, top / 3, top * 2 / 3, top]) { v in
-                        AxisGridLine(stroke: StrokeStyle(lineWidth: 1, dash: v.index == 0 ? [] : [4, 4])).foregroundStyle(Glass.divider)
+                    // Zero is a solid line; above it, evenly spaced on the square-root scale, a ninth and four ninths of the top, and the top.
+                    AxisMarks(values: [0, 1.0 / 3, 2.0 / 3, 1]) { v in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 1, dash: v.as(Double.self) == 0 ? [] : [4, 4])).foregroundStyle(Glass.divider)
                     }
                 }
                 .chartOverlay { proxy in
@@ -256,6 +291,7 @@ private struct SpeedChart: View {
                 .overlay(alignment: .topTrailing) {
                     Text(speedText(top)).font(TypeScale.secondary).monospacedDigit()
                         .foregroundStyle(Palette.inkSecondary.color).padding(.trailing, 2)
+                        .contentTransition(.numericText()).animation(.easeOut(duration: 0.4), value: top)
                 }
                 .frame(height: height)
                 .accessibilityLabel("Speed over the last minute")
@@ -282,6 +318,7 @@ private struct SpeedChart: View {
         HStack(spacing: 6) {
             Image(systemName: symbol).foregroundStyle(color)
             Text(text).font(TypeScale.bodyStrong).monospacedDigit().foregroundStyle(color)
+                .contentTransition(.numericText()).animation(.easeOut(duration: 0.3), value: text)
         }
     }
 }

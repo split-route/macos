@@ -4,6 +4,7 @@ import SwiftUI
 
 public struct SolidButtonStyle: ButtonStyle {
     @Environment(\.isFocused) private var focused
+    @Environment(\.isEnabled) private var enabled
     public init() {}
     @ViewBuilder
     public func makeBody(configuration: Configuration) -> some View {
@@ -14,15 +15,18 @@ public struct SolidButtonStyle: ButtonStyle {
         if #available(macOS 26, *) {
             label.glassEffect(.regular.tint(Accent.color).interactive(), in: Capsule())
                 .overlay(Capsule().strokeBorder(Color.white.opacity(focused ? 0.9 : 0), lineWidth: 2)) // keyboard focus
+                .opacity(enabled ? 1 : 0.45) // a button that can't be pressed looks it
         } else {
             label.background(AccentSurface(RoundedRectangle(cornerRadius: Radius.row + 2, style: .continuous)).opacity(configuration.isPressed ? 0.8 : 1))
                 .overlay(RoundedRectangle(cornerRadius: Radius.row + 2, style: .continuous).strokeBorder(Color.white.opacity(focused ? 0.9 : 0), lineWidth: 2))
+                .opacity(enabled ? 1 : 0.45)
         }
     }
 }
 
 public struct OutlineButtonStyle: ButtonStyle {
     @Environment(\.isFocused) private var focused
+    @Environment(\.isEnabled) private var enabled
     public init() {}
     @ViewBuilder
     public func makeBody(configuration: Configuration) -> some View {
@@ -33,10 +37,12 @@ public struct OutlineButtonStyle: ButtonStyle {
         if #available(macOS 26, *) {
             label.glassEffect(.regular.interactive(), in: Capsule())
                 .overlay(Capsule().strokeBorder(Accent.color.opacity(focused ? 0.9 : 0), lineWidth: 2)) // keyboard focus
+                .opacity(enabled ? 1 : 0.45)
         } else {
             label
                 .background(Glass.control.opacity(configuration.isPressed ? 0.6 : 1), in: RoundedRectangle(cornerRadius: Radius.row + 2, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: Radius.row + 2, style: .continuous).stroke(focused ? Accent.color : Glass.stroke, lineWidth: focused ? 2 : 1))
+                .opacity(enabled ? 1 : 0.45)
         }
     }
 }
@@ -161,6 +167,17 @@ extension View {
             glassEffect(.regular, in: shape)
         } else {
             background(shape.fill(Glass.control)).overlay(shape.stroke(Glass.stroke, lineWidth: 1))
+        }
+    }
+
+    /// A panel's shape in Liquid Glass (a material before macOS 26): what scrolls under it is blurred.
+    @ViewBuilder
+    public func blurGlass(cornerRadius: CGFloat = Radius.panel) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if #available(macOS 26, *) {
+            glassEffect(.regular, in: shape)
+        } else {
+            background(.regularMaterial, in: shape).overlay(shape.stroke(Glass.stroke, lineWidth: 1))
         }
     }
 
@@ -472,7 +489,8 @@ public struct EmptyState: View {
 public struct LatencyPill: View {
     let ms: Int
     public init(ms: Int) { self.ms = ms }
-    private var tone: Color { ms < 250 ? Palette.success.color : (ms < 400 ? Palette.warning.color : Palette.danger.color) }
+    /// Green under 300 ms, yellow up to 1000, red above.
+    private var tone: Color { ms < 300 ? Palette.success.color : (ms <= 1000 ? Palette.warning.color : Palette.danger.color) }
     public var body: some View {
         Text("\(ms) ms").font(TypeScale.secondary.weight(.semibold)).monospacedDigit().foregroundStyle(tone)
             .padding(.horizontal, 9).padding(.vertical, 3)
@@ -494,6 +512,17 @@ public struct FailurePill: View {
 }
 
 /// A switch that shows work in progress: a small spinner beside it, and no second tap, until the change has been applied.
+public extension View {
+    /// Makes the whole card a switch: a click anywhere on it that no control inside takes (a menu, a button, the switch itself)
+    /// turns `isOn` over. Nothing happens while the change is being applied (`pending`) or when the card is not `enabled`.
+    func tapToToggle(_ isOn: Binding<Bool>?, pending: Bool = false, enabled: Bool = true) -> some View {
+        contentShape(Rectangle()).onTapGesture {
+            guard let isOn, enabled, !pending else { return }
+            isOn.wrappedValue.toggle()
+        }
+    }
+}
+
 public struct PendingToggle: View {
     let title: String
     @Binding var isOn: Bool

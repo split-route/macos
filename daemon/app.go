@@ -33,7 +33,8 @@ type app struct {
 	host     *host
 	boot     *bootstrapPicker // which resolver finds proxy servers' names
 	ks       *killSwitch
-	bootID   string // new for every run: the app sends its snapshot when this changes
+	traffic  *trafficLog // what the engine carried, by time (see trafficlog.go)
+	bootID   string      // new for every run: the app sends its snapshot when this changes
 
 	// Tests replace these; nil runs the real command.
 	exec   func(name string, args []string, stdin string) error
@@ -59,6 +60,7 @@ func newApp(stateDir string, f engineFactory) *app {
 	a.ks = newKillSwitch(stateDir)
 	a.host = newHost(filepath.Join(stateDir, "engine"), f)
 	a.boot = newBootstrapPicker()
+	a.traffic = newTrafficLog()
 	return a
 }
 
@@ -84,6 +86,9 @@ func (a *app) Status() api.Status {
 	running, connected, warns, herr := a.host.engineStatus()
 	s.Running, s.Connected, s.Error = running, connected, herr
 	s.Tunnels = a.host.tunnelStatuses()
+	if t := a.host.connectedSince(); !t.IsZero() {
+		s.ConnectedSince = t.UnixMilli()
+	}
 	s.KillSwitch.Armed, s.KillSwitch.Error = a.ks.status()
 	a.mu.Lock()
 	s.AppliedAt, s.Lists = a.appliedAt, append([]api.ListCount{}, a.counts...) // never null: the app decodes an array
@@ -92,13 +97,22 @@ func (a *app) Status() api.Status {
 	return s
 }
 
+// Traffic is the log of what the engine carried, from `sinceBucket` on; false while recording is off.
+func (a *app) Traffic(sinceBucket int64) (api.Traffic, bool) {
+	if !a.host.recording() {
+		return api.Traffic{}, false
+	}
+	return api.Traffic{Buckets: a.traffic.since(sinceBucket)}, true
+}
+
 func (a *app) Logs() []string { return a.host.logLines() }
 
 // run keeps the service up until ctx ends or a restart is asked for. It has
 // nothing to apply at start: the app sends the snapshot once it sees a new boot ID.
 func (a *app) run(ctx context.Context) error {
 	defer a.host.close() // the engine's tun goes away with the service
-	a.ks.restore()       // first: after a reboot the network stays closed until the app sends its snapshot
+	go a.recordTraffic(ctx)
+	a.ks.restore() // first: after a reboot the network stays closed until the app sends its snapshot
 	a.cleanupLegacy()
 	// Rule sets from an earlier run: the next Apply writes the ones it needs.
 	if err := os.RemoveAll(ruleset.Dir(a.host.workDir)); err != nil {

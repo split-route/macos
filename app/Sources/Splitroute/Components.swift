@@ -112,6 +112,15 @@ struct SelectMenu<Value: Hashable>: View {
     var maxTitleWidth: CGFloat? = 200
     /// Smaller text and chevron, for the menu bar panel.
     var compact = false
+    /// Opens the same list from another control (a round toolbar button, say) instead of the title and chevron.
+    var customLabel: AnyView?
+    /// false: the selected option has no checkmark at its end (its dot says it); the title keeps no dot when `titleDot` is false.
+    var checkmark = true
+    var titleDot = true
+    /// A symbol in the dot's place for some options (a plus for "New…").
+    var symbol: ((Value) -> String?)?
+    /// Icon buttons at the end of an option's row (rename, delete); the second argument closes the list.
+    var accessory: ((Value, @escaping () -> Void) -> AnyView?)?
     let onSelect: (Value) -> Void
 
     @State private var open = false
@@ -122,22 +131,26 @@ struct SelectMenu<Value: Hashable>: View {
 
     var body: some View {
         Button { open.toggle() } label: {
-            HStack(spacing: 6) {
-                if let dot, let selected { Circle().fill(dot(selected)).frame(width: compact ? 7 : 8, height: compact ? 7 : 8) }
-                titleText
-                Image(systemName: "chevron.down")
-                    .font(.system(size: compact ? 9 : 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(open ? 180 : 0))
-                    .animation(.easeOut(duration: 0.15), value: open)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(open ? 0.1 : 0)))
-            .contentShape(Rectangle())
+            if let customLabel { customLabel } else { titleLabel }
         }
         .buttonStyle(.plain)
         .popover(isPresented: $open, arrowEdge: .bottom) { list }
+    }
+
+    private var titleLabel: some View {
+        HStack(spacing: 6) {
+            if titleDot, let dot, let selected { Circle().fill(dot(selected)).frame(width: compact ? 7 : 8, height: compact ? 7 : 8) }
+            titleText
+            Image(systemName: "chevron.down")
+                .font(.system(size: compact ? 9 : 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(open ? 180 : 0))
+                .animation(.easeOut(duration: 0.15), value: open)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(open ? 0.1 : 0)))
+        .contentShape(Rectangle())
     }
 
     /// One line that hugs its text, cut with … only when it would be wider than `maxTitleWidth`. (A frame with a maximum
@@ -181,8 +194,8 @@ struct SelectMenu<Value: Hashable>: View {
                         .padding(.horizontal, 12).padding(.top, i == 0 ? 2 : 10).padding(.bottom, 2)
                         .accessibilityAddTraits(.isHeader)
                 }
-                MenuRow(text: label(v), dot: dot?(v), checked: v == selected, highlighted: highlighted == i,
-                        hover: { if $0 { highlighted = i } }) { pick(v) }
+                MenuRow(text: label(v), dot: dot?(v), symbol: symbol?(v), checked: checkmark && v == selected, highlighted: highlighted == i,
+                        accessory: accessory?(v) { open = false }, hover: { if $0 { highlighted = i } }) { pick(v) }
                     .id(v)
             }
         }
@@ -249,25 +262,31 @@ struct SelectMenu<Value: Hashable>: View {
 private struct MenuRow: View {
     let text: String
     var dot: Color?
+    var symbol: String?
     let checked: Bool
     let highlighted: Bool
+    var accessory: AnyView?
     let hover: (Bool) -> Void
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                if let dot { Circle().fill(dot).frame(width: 9, height: 9) }
-                Text(text).font(.system(size: 14))
-                Spacer(minLength: 8)
-                if checked { Image(systemName: "checkmark").font(.caption.weight(.semibold)).foregroundStyle(Accent.color) }
+        HStack(spacing: 4) {
+            Button(action: action) {
+                HStack(spacing: 10) {
+                    if let symbol { Image(systemName: symbol).font(.system(size: 10, weight: .bold)).frame(width: 9, height: 9) }
+                    else if let dot { Circle().fill(dot).frame(width: 9, height: 9) }
+                    Text(text).font(.system(size: 14))
+                    Spacer(minLength: 8)
+                    if checked { Image(systemName: "checkmark").font(.caption.weight(.semibold)).foregroundStyle(Accent.color) }
+                }
+                .padding(.leading, 12).padding(.trailing, accessory == nil ? 12 : 4)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(highlighted ? 0.1 : 0)))
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            if let accessory { accessory.padding(.trailing, 8) }
         }
-        .buttonStyle(.plain)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(highlighted ? 0.1 : 0)))
         .onHover(perform: hover)
     }
 }

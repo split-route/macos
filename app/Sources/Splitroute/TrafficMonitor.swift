@@ -3,8 +3,9 @@ import Foundation
 
 /// Download and upload speed through the engine, from the byte counters of its tun interface. Everything the
 /// engine carries goes through the tun (direct lists and all), so this is the Mac's traffic while it is connected.
-/// No service call: the counters are public (getifaddrs), and the app reads them once a second while the window is open
-/// (on any page, so the chart is whole when you come back to Home).
+/// No service call: the counters are public (getifaddrs). The app reads them once a second while the window is open (on any
+/// page, so the chart is whole when you come back to Home), and on the poll, every few seconds, while it is closed, so the
+/// chart already holds the last minute when the window opens.
 @MainActor
 final class TrafficMonitor: ObservableObject {
     struct Sample: Identifiable, Equatable {
@@ -14,9 +15,37 @@ final class TrafficMonitor: ObservableObject {
         var id: Date { time }
     }
 
+    /// The samples smoothed three times with the weights 1-4-6-4-1 over sixteen (about a Gaussian a few seconds wide), so a one-second spike
+    /// is a rounded hill and not a needle. The ends repeat their own value instead of dropping off. Only the drawing uses it: the
+    /// figures shown are the real samples.
+    nonisolated static func smoothed(_ s: [Sample]) -> [Sample] {
+        guard s.count > 2 else { return s }
+        func pass(_ v: [Double]) -> [Double] {
+            let w: [Double] = [1, 4, 6, 4, 1]
+            return v.indices.map { i in
+                var sum = 0.0
+                for (k, weight) in w.enumerated() { sum += weight * v[min(max(i + k - 2, 0), v.count - 1)] }
+                return sum / 16
+            }
+        }
+        let down = pass(pass(pass(s.map(\.down)))), up = pass(pass(pass(s.map(\.up))))
+        return s.indices.map { Sample(time: s[$0].time, down: down[$0], up: up[$0]) }
+    }
+
+    /// The top of a speed chart: `peak` plus a margin, rounded up to 1, 1.5, 2, 3, 5 or 7.5 times a power of ten, and never below
+    /// 10 KB/s. Finer steps than "5 or 10" keep a modest peak from squeezing everything into the bottom of the chart.
+    nonisolated static func niceTop(_ peak: Double) -> Double {
+        let v = max(peak * 1.15, 10_000)
+        let e = pow(10, floor(log10(v)))
+        let m = v / e
+        return (([1, 1.5, 2, 3, 5, 7.5, 10].first { $0 >= m }) ?? 10) * e
+    }
+
     /// The engine's tun address (core/build.go); the same coupling as `ksTunNet` in the daemon's kill switch.
     static let tunAddress = "172.19.0.1"
     static let window = 60 // seconds the chart shows
+    /// Samples older than this when the window opens are not joined to the new line: more than two polls.
+    static let staleAfter: TimeInterval = 12
 
     @Published private(set) var samples: [Sample] = []
     @Published private(set) var running = false
@@ -26,13 +55,25 @@ final class TrafficMonitor: ObservableObject {
 
     func start() {
         guard timer == nil else { return }
-        // Samples from a moment ago stay (the chart continues); after a longer gap they would join to the new line.
-        if let l = samples.last, Date().timeIntervalSince(l.time) > 3 { samples = [] }
-        last = nil
+        // Samples from a moment ago stay (the chart continues, and the background reads keep the counters' baseline); after a longer
+        // gap they would join to the new line.
+        if let l = samples.last, Date().timeIntervalSince(l.time) > Self.staleAfter { samples = []; last = nil }
         tick()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
+    }
+
+    /// A reading from the poll while the window is closed (every few seconds: a sample is the average over the gap). Nothing is read
+    /// while there is no tun, and what was kept is forgotten, so a new connection's chart starts fresh.
+    func sampleInBackground() {
+        guard timer == nil else { return } // the window is open: the one-second timer reads
+        guard Self.counters(address: Self.tunAddress) != nil else {
+            if !samples.isEmpty { samples = []; last = nil }
+            running = false
+            return
+        }
+        tick()
     }
 
     func stop() {
@@ -58,13 +99,12 @@ final class TrafficMonitor: ObservableObject {
             running = false
             last = nil
         }
-        samples = Self.appended(samples, Sample(time: now, down: down, up: up), keep: Self.window + 1)
+        samples = Self.appended(samples, Sample(time: now, down: down, up: up), window: TimeInterval(Self.window))
     }
 
-    /// The newest `keep` samples.
-    nonisolated static func appended(_ s: [Sample], _ new: Sample, keep: Int) -> [Sample] {
-        let all = s + [new]
-        return all.count > keep ? Array(all.suffix(keep)) : all
+    /// The samples of the last `window` seconds, with `new` added.
+    nonisolated static func appended(_ s: [Sample], _ new: Sample, window: TimeInterval) -> [Sample] {
+        (s + [new]).filter { new.time.timeIntervalSince($0.time) <= window }
     }
 
     /// Bytes received and sent on the interface that has `address`. In if_data, input is what comes back from the
@@ -94,7 +134,25 @@ final class TrafficMonitor: ObservableObject {
     }
 }
 
-/// "1.48 KB/s", "802 B/s".
-func speedText(_ bytesPerSecond: Double) -> String {
-    ByteCountFormatter.string(fromByteCount: Int64(bytesPerSecond), countStyle: .file) + "/s"
+/// How a speed is written (Settings > Application): in bits ("12.4 Mbps", what a speed test and a plan say) or in bytes
+/// ("1.55 MB/s", what the Finder says). Sizes are bytes either way.
+enum SpeedUnit: String, CaseIterable, Identifiable {
+    case mbps, mbs
+    var id: String { rawValue }
+    var title: String { self == .mbps ? "Mbps" : "MB/s" }
+    static var current: SpeedUnit { SpeedUnit(rawValue: UserDefaults.standard.string(forKey: Prefs.speedUnit) ?? "") ?? .mbps }
+}
+
+/// "12.4 Mbps" or "1.55 MB/s", by the setting; 0 is "0 bps" or "0 B/s".
+func speedText(_ bytesPerSecond: Double, unit: SpeedUnit = .current) -> String {
+    switch unit {
+    case .mbs:
+        return ByteCountFormatter.string(fromByteCount: Int64(bytesPerSecond), countStyle: .file) + "/s"
+    case .mbps:
+        let bits = max(bytesPerSecond, 0) * 8
+        let scales: [(Double, String)] = [(1e9, "Gbps"), (1e6, "Mbps"), (1e3, "Kbps")]
+        guard let (scale, name) = scales.first(where: { bits >= $0.0 }) else { return "\(Int(bits)) bps" }
+        let v = bits / scale
+        return String(format: v < 10 ? "%.2f %@" : v < 100 ? "%.1f %@" : "%.0f %@", v, name)
+    }
 }

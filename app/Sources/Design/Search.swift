@@ -71,6 +71,9 @@ public struct SettingsSection<Content: View>: View {
                 .onPreferenceChange(RowTextsKey.self) { texts = $0 }
             }
         }
+        // A button elsewhere can scroll to it (`pageScrollTarget`). The id covers 64 pt above the section (the padding is taken
+        // back below, so nothing moves): scrolled to the top of the page, the title ends up clear of the floating bar.
+        .padding(.top, 64).id(title).padding(.top, -64)
         .preference(key: ShownSectionsKey.self, value: shown ? 1 : 0)
     }
 }

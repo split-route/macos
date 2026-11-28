@@ -26,6 +26,7 @@ type fakeEngine struct {
 	status    core.Status
 	events    chan core.Event
 	closed    bool
+	stats     core.Stats // what Stats reports, when the config Start or Reload last got asks for it
 	answered  []string
 	testLinks map[string]string        // tunnel ID → the address its test requested
 	testErrs  map[string]error         // tunnel ID → the error its request fails with
@@ -48,6 +49,16 @@ func (e *fakeEngine) Status() core.Status {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.status
+}
+
+// Stats reports what the test set, only while the latest config asks for counting (like the real engine).
+func (e *fakeEngine) Stats() (core.Stats, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.cfgs) == 0 || !e.cfgs[len(e.cfgs)-1].Stats {
+		return core.Stats{}, false
+	}
+	return e.stats, true
 }
 func (e *fakeEngine) Test(ctx context.Context, id, link string) (time.Duration, error) {
 	e.mu.Lock()

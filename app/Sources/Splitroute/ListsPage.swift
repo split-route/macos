@@ -53,8 +53,8 @@ struct ListsPage: View {
     private func subPage(_ r: Route) -> some View {
         let title: String
         switch r {
-        case .add: title = "Add list"
-        case .edit(let t): title = t.list.map { "Edit \($0.name)" } ?? "New list"
+        case .add: title = "Add rule"
+        case .edit(let t): title = t.list.map { "Edit \($0.name)" } ?? "New rule"
         case .editImport(let l): title = "Edit \(l.name)"
         }
         return Group {
@@ -80,14 +80,14 @@ struct ListsPage: View {
             ZStack {
                 if showBar {
                     ToolbarGroup {
-                        ToolbarSearch(text: query, prompt: "Search lists…")
+                        ToolbarSearch(text: query, prompt: "Search rules…")
                         Button { testingRoute = true } label: {
                             Image(systemName: "scope").font(.system(size: 14, weight: .medium)).foregroundStyle(Palette.ink.color)
                                 .frame(width: 38, height: 38).contentShape(Circle())
                         }
                         .buttonStyle(.plain).toolbarCircleGlass()
                         .help("Test where a domain or address goes").accessibilityLabel("Test a route")
-                        ToolbarAddButton("Add list") { route = .add(.ready) }
+                        ToolbarAddButton("Add rule") { route = .add(.ready) }
                     }
                     .transition(.opacity)
                 }
@@ -100,14 +100,14 @@ struct ListsPage: View {
                 routingSwitch
                 Panel {
                     EmptyState(symbol: "arrow.triangle.branch", title: "Choose where traffic goes",
-                               message: "A list is a set of sites or address ranges. Send each one direct, block it, or route it through a server.",
-                               action: "Add a list") { route = .add(.ready) }
+                               message: "A rule is a set of sites or address ranges. Send each one direct, block it, or route it through a server.",
+                               action: "Add a rule") { route = .add(.ready) }
                 }
             } else {
                 VStack(alignment: .leading, spacing: Space.m) {
                     routingSwitch
                     if shown.isEmpty {
-                        Text("No lists match.").font(TypeScale.body).foregroundStyle(Palette.inkSecondary.color)
+                        Text("No rules match.").font(TypeScale.body).foregroundStyle(Palette.inkSecondary.color)
                             .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, Space.xl)
                     }
                     Panel {
@@ -122,8 +122,10 @@ struct ListsPage: View {
                     .allowsHitTesting(model.routingOn)
                 }
             }
+            // Room for the default route bar over the bottom of the page, so the last list can scroll clear of it.
+            if model.ready { Color.clear.frame(height: 90) }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        .overlay(alignment: .bottom) {
             if model.ready { finalBar }
         }
         .sheet(isPresented: $testingRoute) { RouteTestSheet().glassSheet() }
@@ -157,7 +159,7 @@ struct ListsPage: View {
                 infoMenu(l)
             }
             if model.vpnOn, l.action == .tunnel, let n = l.tunnel, !model.serverIsUp(n) {
-                NoteLine(.error, "\(n) isn't connected, so this list is blocked until it is.")
+                NoteLine(.error, "\(n) isn't connected, so this rule is blocked until it is.")
             }
             if let e = model.error("list:\(l.name)") { NoteLine(.error, e) }
         }
@@ -178,27 +180,30 @@ struct ListsPage: View {
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(model.routingOn ? "Routing On" : "Routing Off").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
-                        Text(model.routingOn ? "Each list sends its traffic direct, blocks it or routes it through a server."
-                                              : "The lists do nothing. Only the default route is applied.")
+                        Text(model.routingOn ? "Each rule sends its traffic direct, blocks it or routes it through a server."
+                                              : "The rules do nothing. Only the default route is applied.")
                             .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: Space.m)
-                    PendingToggle("Routing", isOn: Binding(get: { model.routingOn }, set: { on in Task { await model.setRoutingOn(on) } }),
+                    ProfileMenu() // the lists and the default route below belong to this profile
+                    PendingToggle("Routing", isOn: Binding(get: { model.routingOn }, set: { on in if !on && !model.confirmRoutingOff() { return }; Task { await model.setRoutingOn(on) } }),
                                   pending: model.pending.contains("routing"))
                 }
                 if let e = model.error("routing") { NoteLine(.error, e) }
+                if let e = model.error("profile") { NoteLine(.error, e) }
             }
             .padding(Space.l)
+            .tapToToggle(Binding(get: { model.routingOn }, set: { on in if !on && !model.confirmRoutingOff() { return }; Task { await model.setRoutingOn(on) } }), pending: model.pending.contains("routing"))
         }
     }
 
     /// Where traffic that matches no list goes. It stays at the bottom while the lists scroll.
     private var finalBar: some View {
         VStack(alignment: .leading, spacing: Space.s) {
-            Panel {
-                FormRow("Default Route", detail: "Traffic that matches no list") { DefaultRouteMenu() }
-            }
+            // Glass over the lists: they scroll under it and blur.
+            FormRow("Default Route", detail: "Traffic that matches no rule") { DefaultRouteMenu() }
+                .blurGlass()
             if model.vpnOn, case .tunnel(let n) = DefaultRouteMenu.current(model.config), !model.serverIsUp(n) {
                 NoteLine(.error, "\(n) isn't connected, so the default route is blocked until it is.")
             }
@@ -216,13 +221,13 @@ struct ListsPage: View {
                 Divider()
             }
             if l.custom {
-                Button("Edit List…") { route = .edit(CustomTarget(list: l)) }
+                Button("Edit Rule…") { route = .edit(CustomTarget(list: l)) }
                 Divider()
                 Button("Delete…", role: .destructive) {
                     if !l.rules.isEmpty || l.ruleSet { confirmRemove = l } else { Task { await model.removeList(l.name) } }
                 }
             } else if l.importSource != nil {
-                Button("Edit List…") { route = .editImport(l) }
+                Button("Edit Rule…") { route = .editImport(l) }
                 Button("Update Now") { Task { await model.refreshImport(l.name) } }
                 Divider()
                 Button("Delete", role: .destructive) { Task { await model.removeList(l.name) } }
@@ -280,7 +285,7 @@ struct ListsPage: View {
         let names = model.tunnelNamesLocalFirst
         let named = l.tunnel.map { n in names.contains(n) ? names : names + [n] } ?? names // a missing tunnel stays an option
         let options: [RouteDestination] = [.none, .direct, .block, .selected] + named.map(RouteDestination.tunnel)
-        return SelectMenu(title: current.label, options: options, label: \.label, selected: current, dot: \.dot, group: \.group) { d in
+        return SelectMenu(title: current.label, options: options, label: \.label, selected: current, dot: \.dot, group: { $0.group(model) }) { d in
             guard d != current else { return }
             Task {
                 switch d {
@@ -333,9 +338,9 @@ enum RouteDestination: Hashable {
         }
     }
 
-    /// The named servers sit under a "Servers" title.
-    var group: String? {
-        if case .tunnel = self { return "Servers" }
+    /// The title a named server sits under: its subscription's name, or "Servers".
+    @MainActor func group(_ model: AppModel) -> String? {
+        if case .tunnel(let n) = self { return model.groupTitle(of: n) }
         return nil
     }
 
@@ -370,7 +375,7 @@ struct DefaultRouteMenu: View {
         let names = model.tunnelNamesLocalFirst
         let named = model.config?.finalTunnel.map { n in names.contains(n) ? names : names + [n] } ?? names
         SelectMenu(title: current.label, options: [.direct, .block, .selected] + named.map(RouteDestination.tunnel),
-                   label: \.label, selected: current, dot: \.dot, group: \.group, maxTitleWidth: maxTitleWidth, compact: compact) { d in
+                   label: \.label, selected: current, dot: \.dot, group: { $0.group(model) }, maxTitleWidth: maxTitleWidth, compact: compact) { d in
             guard d != current else { return }
             Task {
                 switch d {
