@@ -23,9 +23,11 @@ struct StoreTunnel: Equatable, Identifiable {
     var warning = ""
     /// OpenVPN only: "host" or "host:port" used in place of the profile's remote lines. Empty: the profile's.
     var serverOverride = ""
-    /// A favorite: listed first. And a short note the person wrote.
-    var pinned = false
+    /// A short note the person wrote.
     var note = ""
+    /// Where the server is (two-letter code, "" unknown) and when the service last answered (seconds since 1970; 0 never).
+    var country = ""
+    var countryAt = 0
 
     /// The core's tunnel ID: the app's row ID, never reused.
     var coreID: String { "t\(id)" }

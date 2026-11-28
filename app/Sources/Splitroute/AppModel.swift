@@ -62,9 +62,10 @@ final class AppModel: ObservableObject {
     /// The first refresh after launch is the "update on open" one.
     var listsOpenHandled = false
     var subsOpenHandled = false
+    var updateOpenHandled = false
+    var locating = false
     /// When each subscription was last tried by the schedule, so a failing one isn't hammered.
     var subsAttempt: [Int64: Date] = [:]
-    var testedAt: Date?
     var sleepSuspended = false
     var updateAttempt: Date?
     var exitKey: String?
@@ -301,8 +302,8 @@ final class AppModel: ObservableObject {
             var tn = Tunnel(name: t.name, protocolName: t.kind, group: t.subscriptionID.flatMap { groups[$0] }, warning: t.warning.nilIfEmpty, transport: transport(of: t),
                             remotes: t.remotes.isEmpty ? nil : t.remotes, serverOverride: t.serverOverride, needsAuth: t.needsAuth, keyEncrypted: t.keyEncrypted,
                             autoConnect: t.autoConnect, state: ws?.state ?? .disconnected)
-            tn.pinned = t.pinned
             tn.note = t.note
+            tn.country = t.country
             if let ws { (tn.error, tn.need, tn.localIP, tn.remoteIP, tn.since) = (ws.error?.nilIfEmpty, ws.need?.nilIfEmpty, ws.localIP?.nilIfEmpty, ws.remoteIP?.nilIfEmpty, ws.since) }
             if let why = link.problems[t.coreID] { tn.state = .failed; tn.error = why }
             if t.id == vpn.selected { selected = t.name }

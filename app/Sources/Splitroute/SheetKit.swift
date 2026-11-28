@@ -204,6 +204,32 @@ extension EnvironmentValues {
     }
 }
 
+private struct SubPageTitleKey: EnvironmentKey { static let defaultValue = "" }
+
+extension EnvironmentValues {
+    /// The title of the open sub-page of Routing ("Add list", "Edit name"): its scaffold shows it.
+    var subPageTitle: String {
+        get { self[SubPageTitleKey.self] }
+        set { self[SubPageTitleKey.self] = newValue }
+    }
+}
+
+/// A sub-page of Routing built like every page: the big title (with its back button) that becomes the floating bar when the
+/// page scrolls, `tabs` and the content, and the page's buttons pinned below.
+struct SubPage<Content: View, Footer: View>: View {
+    @Environment(\.subPageTitle) private var title
+    @Environment(\.closePage) private var close
+    var tabs: AnyView?
+    @ViewBuilder let content: Content
+    @ViewBuilder let footer: Footer
+
+    var body: some View {
+        PageScaffold(title, back: close, trailing: { EmptyView() }, content: {
+            if let tabs { tabs }
+            content
+        }, footer: { footer })
+    }
+}
 
 /// The glass behind a dialog: the window's own backdrop, darkened in the dark look and frosted in the light one, so a
 /// dialog is light when the app is light.

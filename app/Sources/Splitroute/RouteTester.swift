@@ -2,9 +2,10 @@ import Design
 import SwiftUI
 
 /// "Where would this go?": type a name or an address and see which list decides and what it does, by the lists the service has
-/// now. Matched by name only (a name isn't resolved), as a TCP connection; the service says so in a note.
-struct RouteTester: View {
-    @EnvironmentObject private var model: AppModel
+/// now. Matched by name only (a name isn't resolved), as a TCP connection; the service says so in a note. A dialog opened
+/// from the Routing page's top bar.
+struct RouteTestSheet: View {
+    @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var result: WireRoute?
     @State private var error: String?
@@ -12,23 +13,25 @@ struct RouteTester: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        Panel {
+        VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: Space.m) {
-                HStack(spacing: Space.s) {
-                    Image(systemName: "scope").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.inkSecondary.color).accessibilityHidden(true)
-                    TextField("Test a domain or address", text: $query, prompt: Text("example.com or 203.0.113.5").foregroundColor(.secondary))
-                        .labelsHidden().textFieldStyle(.plain).multilineTextAlignment(.leading).focused($focused)
-                        .onSubmit { run() }
-                        .onChange(of: query) { _, _ in result = nil; error = nil }
-                    if working { ProgressView().controlSize(.small) }
-                    Button("Test") { run() }.buttonStyle(OutlineButtonStyle())
-                        .disabled(working || query.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-                if let error { NoteLine(.error, error) }
+                Text("Test a route").font(TypeScale.bodyStrong)
+                TextField("Test a domain or address", text: $query, prompt: Text("example.com or 203.0.113.5").foregroundColor(.secondary))
+                    .labelsHidden().textFieldStyle(.plain).multilineTextAlignment(.leading).fieldBox().focused($focused)
+                    .onSubmit { run() }
+                    .onChange(of: query) { _, _ in result = nil; error = nil }
                 if let r = result { answer(r) }
             }
-            .padding(Space.l)
+            .padding(Space.xl)
+            SheetButtons(error: error) {
+                if working { ProgressView().controlSize(.small) }
+                Button("Close", role: .cancel) { dismiss() }.buttonStyle(OutlineButtonStyle()).keyboardShortcut(.cancelAction)
+                Button("Test") { run() }.buttonStyle(SolidButtonStyle()).keyboardShortcut(.defaultAction)
+                    .disabled(working || query.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
         }
+        .frame(width: 480)
+        .onAppear { focused = true }
     }
 
     @ViewBuilder private func answer(_ r: WireRoute) -> some View {
@@ -59,7 +62,7 @@ struct RouteTester: View {
         switch r.kind {
         case "list": return "Matched by the list “\(r.list ?? "")”."
         case "local": return "A local network address always stays direct."
-        case "ipv6": return "IPv6 is blocked (Settings > Network). Turn that off to send it where the default route says."
+        case "ipv6": return "IPv6 is blocked (Settings > Advanced). Turn that off to send it where the default route says."
         default: return "No list matches, so the default route decides."
         }
     }

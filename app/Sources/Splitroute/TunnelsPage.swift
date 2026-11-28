@@ -71,8 +71,7 @@ struct TunnelsPage: View {
                 return x != y ? x < y : a.offset < b.offset
             }.map(\.element)
         }
-        // Favorites first, each part keeping its order.
-        return out.filter(\.pinned) + out.filter { !$0.pinned }
+        return out
     }
 
     var body: some View {
@@ -82,8 +81,8 @@ struct TunnelsPage: View {
             ZStack {
                 if showBar {
                     ToolbarGroup {
-                        latencyMenu
                         ToolbarSearch(text: query, prompt: "Search servers…")
+                        latencyMenu
                         ToolbarAddButton("Add servers") { importing = true }.disabled(unavailable)
                     }
                     .transition(.opacity)
@@ -377,11 +376,12 @@ struct TunnelsPage: View {
             .pickerStyle(.inline)
             if latency != .all && model.testResults.isEmpty { Text("Run a connectivity test first.") }
         } label: {
-            Image(systemName: "timer").font(.system(size: 15, weight: .medium))
+            Image(systemName: "line.3.horizontal.decrease").font(.system(size: 14, weight: .medium))
                 .foregroundStyle(latency == .all ? Palette.ink.color : Accent.color)
-                .frame(width: 38, height: 38).glassSurface(Circle())
+                .frame(width: 38, height: 38).contentShape(Circle())
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+        .toolbarCircleGlass()
         .help("Filter by latency").accessibilityLabel("Filter by latency")
     }
 
@@ -408,8 +408,7 @@ struct TunnelsPage: View {
                         .frame(width: 26)
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 5) {
-                                if t.pinned { Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(Accent.color).accessibilityLabel("Pinned") }
-                                Text((Flags.prefix(for: [t.name, t.group]).map { $0 + " " } ?? "") + t.name).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color).lineLimit(1).help(t.name)
+                                Text(Highlight.attributed((Flags.prefix(name: t.name, country: t.country).map { $0 + " " } ?? "") + t.name, query.wrappedValue)).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color).lineLimit(1).help(t.name)
                             }
                             Text(detail(t)).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                                 .monospacedDigit().lineLimit(2)
@@ -435,12 +434,14 @@ struct TunnelsPage: View {
                 .accessibilityValue(testWords(t) ?? label(t, selected: selected) ?? "")
                 .accessibilityHint("Use this server for all traffic that no list names")
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
-                RowButton(symbol: "gauge.with.dots.needle.67percent", help: "Test \(t.name)") { Task { await model.testConnectivity(only: t) } }
-                    .disabled(model.testing)
+                Button { Task { await model.testConnectivity(only: t) } } label: {
+                    Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 13, weight: .semibold)).roundGlass(28)
+                }
+                .buttonStyle(.plain).disabled(model.testing)
+                .help("Test \(t.name)").accessibilityLabel("Test \(t.name)")
                 Menu {
                     if t.protocolName == "openvpn" { Button("Edit…") { promptFor = t } }
                     Button("Show Log…") { logsFor = t }
-                    Button(t.pinned ? "Unpin" : "Pin to Top") { model.setPinned(t, !t.pinned) }
                     Button(t.note.isEmpty ? "Add Note…" : "Edit Note…") { noting = t }
                     Button("Rename…") { renaming = t }
                     Divider()
@@ -448,7 +449,7 @@ struct TunnelsPage: View {
                 } label: {
                     Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold)).roundGlass(28)
                 }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.button).buttonStyle(.plain) // the label draws its own glass; the borderless style flattened it
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .accessibilityLabel("More for \(t.name)")

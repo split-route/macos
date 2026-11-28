@@ -41,11 +41,11 @@ struct MenuPopover: View {
                 }
                 .padding(.horizontal, Space.l).padding(.vertical, Space.m)
             }
+            // Found, downloaded or not: the click opens General, where the row has Download, or Install once it is staged.
             if let v = model.stagedUpdate {
-                // Only once it is downloaded and checked: installing is the next step.
-                MenuItem("Install newer version (\(v))", dot: Palette.success.color) { model.confirmingInstall = true; openApp(.general) }
+                MenuItem("Install newer version (\(v))", dot: Palette.success.color) { openApp(.application) }
             } else if let r = model.newerRelease {
-                MenuItem("Newer version is available (\(r.version))", dot: Palette.success.color) { openApp(.general) }
+                MenuItem("Newer version is available (\(r.version))", dot: Palette.success.color) { openApp(.application) }
             }
             MenuItem("Open Splitroute") { openApp(.home) }
             MenuItem("Quit", action: quit)
@@ -118,7 +118,7 @@ struct MenuPopover: View {
     /// A server's name in the list: a flag it points to, and how fast it answered the last test.
     private func serverLabel(_ name: String) -> String {
         let t = model.tunnels.first { $0.name == name }
-        let flag = Flags.prefix(for: [name, t?.group]).map { $0 + " " } ?? ""
+        let flag = Flags.prefix(name: name, country: t?.country ?? "").map { $0 + " " } ?? ""
         switch model.testResults[name] {
         case .ms(let ms)?: return "\(flag)\(name)  ·  \(ms) ms"
         case .failed(let why, _)?: return "\(flag)\(name)  ·  \(why)"

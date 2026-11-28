@@ -22,6 +22,7 @@ struct ListsPage: View {
     }
 
     @State private var route: Route?
+    @State private var testingRoute = false
     private var query: Binding<String> { Binding(get: { model.searches["lists"] ?? "" }, set: { model.searches["lists"] = $0 }) }
     @State private var confirmRemove: RouteList?
 
@@ -56,26 +57,20 @@ struct ListsPage: View {
         case .edit(let t): title = t.list.map { "Edit \($0.name)" } ?? "New list"
         case .editImport(let l): title = "Edit \(l.name)"
         }
-        return ZStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 0) {
-                // The list scrolls inside this page, so the title stays put: no floating bar here.
-                PageHeader(title, back: { route = nil }) { EmptyView() }
-                    .padding(.horizontal, Space.xl).padding(.top, Space.m).padding(.bottom, Space.s)
-            Group {
-                switch r {
-                case .add(let tab):
-                    AddListPage(tab: tab)
-                case .edit(let t):
-                    CustomListEditor(original: t.list?.name, name: t.list?.name ?? "", action: t.list?.action ?? .direct,
-                                     description: t.list?.description ?? "", rules: t.list?.rules ?? RuleSpec(), ruleSet: t.list?.ruleSet ?? false,
-                                     takenNames: Set(lists.map(\.name)).subtracting([t.list?.name ?? ""]))
-                case .editImport(let l):
-                    EditImportView(list: l, takenNames: Set(lists.map(\.name)).subtracting([l.name]))
-                }
-            }
-            .environment(\.closePage, { route = nil })
+        return Group {
+            switch r {
+            case .add(let tab):
+                AddListPage(tab: tab)
+            case .edit(let t):
+                CustomListEditor(original: t.list?.name, name: t.list?.name ?? "", action: t.list?.action ?? .direct,
+                                 description: t.list?.description ?? "", rules: t.list?.rules ?? RuleSpec(), ruleSet: t.list?.ruleSet ?? false,
+                                 takenNames: Set(lists.map(\.name)).subtracting([t.list?.name ?? ""]))
+            case .editImport(let l):
+                EditImportView(list: l, takenNames: Set(lists.map(\.name)).subtracting([l.name]))
             }
         }
+        .environment(\.closePage, { route = nil })
+        .environment(\.subPageTitle, title)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -86,6 +81,12 @@ struct ListsPage: View {
                 if showBar {
                     ToolbarGroup {
                         ToolbarSearch(text: query, prompt: "Search lists…")
+                        Button { testingRoute = true } label: {
+                            Image(systemName: "scope").font(.system(size: 14, weight: .medium)).foregroundStyle(Palette.ink.color)
+                                .frame(width: 38, height: 38).contentShape(Circle())
+                        }
+                        .buttonStyle(.plain).toolbarCircleGlass()
+                        .help("Test where a domain or address goes").accessibilityLabel("Test a route")
                         ToolbarAddButton("Add list") { route = .add(.ready) }
                     }
                     .transition(.opacity)
@@ -97,7 +98,6 @@ struct ListsPage: View {
                 ServiceUnavailable()
             } else if lists.isEmpty {
                 routingSwitch
-                RouteTester()
                 Panel {
                     EmptyState(symbol: "arrow.triangle.branch", title: "Choose where traffic goes",
                                message: "A list is a set of sites or address ranges. Send each one direct, block it, or route it through a server.",
@@ -106,7 +106,6 @@ struct ListsPage: View {
             } else {
                 VStack(alignment: .leading, spacing: Space.m) {
                     routingSwitch
-                    RouteTester()
                     if shown.isEmpty {
                         Text("No lists match.").font(TypeScale.body).foregroundStyle(Palette.inkSecondary.color)
                             .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, Space.xl)
@@ -127,6 +126,7 @@ struct ListsPage: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if model.ready { finalBar }
         }
+        .sheet(isPresented: $testingRoute) { RouteTestSheet().glassSheet() }
         .confirmationDialog("Delete \(confirmRemove?.name ?? "")?", isPresented: Binding(
             get: { confirmRemove != nil }, set: { if !$0 { confirmRemove = nil } }
         ), presenting: confirmRemove) { l in
@@ -144,9 +144,9 @@ struct ListsPage: View {
             HStack(spacing: Space.l) {
                 // Without a description the title is centered in the row, not pinned to its top.
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color).lineLimit(1).help(title)
+                    Text(Highlight.attributed(title, query.wrappedValue)).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color).lineLimit(1).help(title)
                     if !line.isEmpty {
-                        Text(line).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                        Text(Highlight.attributed(line, query.wrappedValue)).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                             .monospacedDigit().lineLimit(2)
                     }
                 }

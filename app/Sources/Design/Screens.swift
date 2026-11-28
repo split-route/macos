@@ -4,11 +4,11 @@ public enum Destination: String, CaseIterable, Sendable {
     // The raw values are stored in the user's defaults: keep them when a title changes.
     // The raw values are stored in the user's defaults (key "settingsPage"): keep them when a title changes, and when one has to
     // change, map the old value in `migrateStoredPage`.
-    case home = "Home", tunnels = "Tunnels", lists = "Lists", general = "General", network = "Network", advanced = "Advanced", updates = "Updates"
+    case home = "Home", tunnels = "Tunnels", lists = "Lists", general = "General", application = "Application", advanced = "Advanced"
 
     /// The sidebar's top group and its Settings group; the pages of the second are listed under a "Settings" title.
     /// The raw values these pages had before they were renamed: a saved page with an old value is moved to its new one.
-    private static let renamed = ["Settings": "General", "Connection": "Network"]
+    private static let renamed = ["Settings": "General", "Connection": "General", "Network": "General", "Updates": "General"]
 
     /// Moves a saved page from a name it had to the one it has now (otherwise the app would open on Home once).
     public static func migrateStoredPage(_ defaults: UserDefaults = .standard, key: String = "settingsPage") {
@@ -16,7 +16,7 @@ public enum Destination: String, CaseIterable, Sendable {
     }
 
     public static let mainPages: [Destination] = [.home, .tunnels, .lists]
-    public static let settingsPages: [Destination] = [.general, .network, .advanced, .updates]
+    public static let settingsPages: [Destination] = [.general, .application, .advanced]
 
     public var title: String {
         switch self {
@@ -24,9 +24,18 @@ public enum Destination: String, CaseIterable, Sendable {
         case .tunnels: return "Servers"
         case .lists: return "Routing"
         case .general: return "General"
-        case .network: return "Network"
+        case .application: return "Application"
         case .advanced: return "Advanced"
-        case .updates: return "Updates"
+        }
+    }
+
+    /// A few muted words under a settings page's name in the sidebar.
+    public var subtitle: String? {
+        switch self {
+        case .general: return "Connection, updates"
+        case .application: return "Theme, startup, version"
+        case .advanced: return "Network, engine, tests"
+        default: return nil
         }
     }
 
@@ -36,9 +45,8 @@ public enum Destination: String, CaseIterable, Sendable {
         case .tunnels: return "shield"
         case .lists: return "arrow.triangle.branch"
         case .general: return "gearshape"
-        case .network: return "network"
+        case .application: return "macwindow"
         case .advanced: return "slider.horizontal.3"
-        case .updates: return "arrow.triangle.2.circlepath"
         }
     }
 }
@@ -53,9 +61,8 @@ public extension Destination {
         case .tunnels: return Tone(light: 0x2FB85A, dark: 0x34C05F)
         case .lists: return Tone(light: 0x9B4FD8, dark: 0xA55CE0)
         case .general: return Tone(light: 0x7C7C84, dark: 0x8A8A92)
-        case .network: return Tone(light: 0x1F9FD8, dark: 0x2BA8E0)
+        case .application: return Tone(light: 0x1F9FD8, dark: 0x2BA8E0)
         case .advanced: return Tone(light: 0x5B5FC7, dark: 0x6A6EDB)
-        case .updates: return Tone(light: 0xE88A0C, dark: 0xF2961A)
         }
     }
 }
@@ -140,8 +147,14 @@ public struct Sidebar: View {
                         DestinationIcon(d, selected: on, plain: on ? Color.white : Palette.inkSecondary.color)
                             .shadow(color: on ? Accent.lightTone.color.opacity(0.7) : .clear, radius: 4)
                         // The weight changes with the selection: animating that makes the letters swell and shrink, so the text snaps.
-                        Text(d.title).font(on ? TypeScale.sidebarStrong : TypeScale.sidebar)
-                            .transaction { $0.animation = nil }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(d.title).font(on ? TypeScale.sidebarStrong : TypeScale.sidebar)
+                                .transaction { $0.animation = nil }
+                            if let s = d.subtitle {
+                                Text(s).font(.system(size: 11)).foregroundStyle(on ? Color.white.opacity(0.75) : Palette.inkSecondary.color.opacity(0.7))
+                                    .lineLimit(1)
+                            }
+                        }
                         Spacer()
                     }
                     .foregroundStyle(on ? Color.white : Palette.inkSecondary.color)
@@ -449,7 +462,7 @@ public struct AppWindow: View {
                 case .home: TunnelsScreen(tunnels: tunnels)
                 case .tunnels: TunnelsScreen(tunnels: tunnels)
                 case .lists: ListsScreen(lists: $lists, tunnels: tunnels, focusFirst: focusFirstList)
-                case .general, .network, .advanced, .updates: SettingsScreen()
+                case .general, .application, .advanced: SettingsScreen()
                 }
             }
             .padding(Space.xl)

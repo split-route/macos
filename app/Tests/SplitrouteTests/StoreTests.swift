@@ -133,23 +133,23 @@ final class StoreTests: XCTestCase {
         XCTAssertThrowsError(try s.renameList("News", to: "ir-cidr"), "a taken name")
     }
 
-    /// Refusing QUIC is on by default and survives a round trip.
-    func testBlockQUICDefaultsOnAndRoundTrips() throws {
+    /// Refusing QUIC is off by default and survives a round trip.
+    func testBlockQUICDefaultsOffAndRoundTrips() throws {
         let s = try newStore()
-        XCTAssertTrue(try s.config().blockQUIC)
-        try s.update { var c = $0; c.blockQUIC = false; return c }
         XCTAssertFalse(try s.config().blockQUIC)
         try s.update { var c = $0; c.blockQUIC = true; return c }
         XCTAssertTrue(try s.config().blockQUIC)
+        try s.update { var c = $0; c.blockQUIC = false; return c }
+        XCTAssertFalse(try s.config().blockQUIC)
     }
 
-    /// STUN is blocked by default; the fingerprint is "each server's own". Both survive a write, and an unknown name is refused.
+    /// STUN is not blocked by default; the fingerprint is "each server's own". Both survive a write, and an unknown name is refused.
     func testBlockSTUNAndTLSFingerprintDefaultsAndRoundTrip() throws {
         let s = try newStore()
-        XCTAssertTrue(try s.config().blockSTUN)
-        XCTAssertEqual(try s.config().tlsFingerprint, "")
-        try s.update { var c = $0; c.blockSTUN = false; c.tlsFingerprint = "safari"; return c }
         XCTAssertFalse(try s.config().blockSTUN)
+        XCTAssertEqual(try s.config().tlsFingerprint, "")
+        try s.update { var c = $0; c.blockSTUN = true; c.tlsFingerprint = "safari"; return c }
+        XCTAssertTrue(try s.config().blockSTUN)
         XCTAssertEqual(try s.config().tlsFingerprint, "safari")
         XCTAssertThrowsError(try s.update { var c = $0; c.tlsFingerprint = "netscape"; return c })
         XCTAssertEqual(try s.config().tlsFingerprint, "safari", "a refused write changes nothing")
@@ -163,12 +163,11 @@ final class StoreTests: XCTestCase {
         XCTAssertFalse(try s.config().blockIPv6)
     }
 
-    /// A pin and a note belong to the person: they survive the subscription's update, which rewrites other columns.
-    func testPinsAndNotesSurviveASubscriptionSync() throws {
+    /// A note belongs to the person: it survives the subscription's update, which rewrites other columns.
+    func testNotesSurviveASubscriptionSync() throws {
         let s = try newStore()
         let (sub, added) = try s.addTunnels([tunnel("A"), tunnel("B")], subscription: "Provider")
         let a = added[0]
-        try s.setPinned(a.id, true)
         try s.setNote(a.id, "  fast\tat night \n")
         var sy = Store.Sync()
         var changed = a
@@ -176,11 +175,52 @@ final class StoreTests: XCTestCase {
         sy.update = [changed]
         _ = try s.sync(subscription: sub!.id, sy) { _ in }
         let after = try XCTUnwrap(s.tunnels().first { $0.id == a.id })
-        XCTAssertTrue(after.pinned)
         XCTAssertEqual(after.note, "fast at night")
         XCTAssertEqual(after.sha, changed.sha, "the sync did change the row")
-        XCTAssertFalse(try XCTUnwrap(s.tunnels().first { $0.id == added[1].id }).pinned)
+        XCTAssertEqual(try XCTUnwrap(s.tunnels().first { $0.id == added[1].id }).note, "", "another server is untouched")
         XCTAssertThrowsError(try s.setNote(a.id, String(repeating: "x", count: 201)))
+    }
+
+    /// A country is the service's answer, stored per server: "" is an answer (a CDN), a server it couldn't look up keeps
+    /// its old one, and a subscription update that changes the address forgets it (it may be wrong now).
+    func testCountriesAreStoredAndForgottenWhenTheAddressChanges() throws {
+        let s = try newStore()
+        let (sub, added) = try s.addTunnels([tunnel("A"), tunnel("B"), tunnel("C")], subscription: "Provider")
+        XCTAssertEqual(try s.tunnels().map(\.country), ["", "", ""])
+        XCTAssertEqual(try s.tunnels().map(\.countryAt), [0, 0, 0], "never looked up")
+        try s.setCountries([added[0].id: "DE", added[1].id: ""], at: 1000)
+        try s.setCountries([added[2].id: "xx"], at: 2000) // not a code: ignored
+        var rows = try s.tunnels()
+        XCTAssertEqual(rows.map(\.country), ["DE", "", ""])
+        XCTAssertEqual(rows.map(\.countryAt), [1000, 1000, 0], "a CDN's empty answer is still an answer")
+        try s.setCountries([:], at: 3000) // nothing found: nothing changes
+        XCTAssertEqual(try s.tunnels().map(\.countryAt), [1000, 1000, 0])
+
+        var same = added[0]; same.sha = String(repeating: "b", count: 64)           // options changed, address not
+        var moved = added[1]; moved.remotes = ["other.example:443"]; moved.country = "" // the address changed
+        _ = try s.sync(subscription: sub!.id, Store.Sync(update: [same, moved])) { _ in }
+        rows = try s.tunnels()
+        XCTAssertEqual(rows[0].country, "DE", "the address is the same: the country stands")
+        XCTAssertEqual(rows[1].countryAt, 0, "a new address is looked up again")
+        XCTAssertEqual(rows[1].remotes, ["other.example:443"])
+    }
+
+    /// What is due: a server never looked up, and a standalone one older than a day. A subscription's servers are looked up
+    /// when it updates, not on a clock.
+    func testWhichServersAreDueForALocationLookup() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        func t(_ id: Int64, sub: Int64?, at: Int) -> StoreTunnel {
+            var x = StoreTunnel(id: id, name: "n\(id)", kind: "vless", sha: "", remotes: [])
+            x.subscriptionID = sub; x.countryAt = at
+            return x
+        }
+        let day = Int(AppModel.locateEvery)
+        let due = AppModel.dueForLocation([
+            t(1, sub: nil, at: 0), t(2, sub: 7, at: 0),                       // never: due
+            t(3, sub: nil, at: 1_000_000 - day - 1), t(4, sub: nil, at: 1_000_000 - day + 60), // standalone: old, fresh
+            t(5, sub: 7, at: 1_000_000 - 5 * day),                           // old but in a subscription: not due
+        ], now: now)
+        XCTAssertEqual(due, [1, 2, 3])
     }
 
     /// A proxy server that is not the active one is loaded but idle (the service says disconnected); it still carries a

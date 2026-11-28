@@ -16,16 +16,12 @@ struct AddListPage: View {
     private var taken: Set<String> { Set((model.config?.lists ?? []).map(\.name)) }
 
     var body: some View {
-        VStack(spacing: 0) {
-            SheetTabs(options: AddTab.allCases, selection: $tab)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, Space.xl).padding(.bottom, Space.s)
-            switch tab {
-            case .ready: ReadyListsTab()
-            case .url: ImportEditor(takenNames: taken)
-            case .file: FileImportTab(takenNames: taken)
-            case .custom: CustomListEditor(original: nil, name: "", action: .direct, description: "", rules: RuleSpec(), ruleSet: false, takenNames: taken)
-            }
+        let tabs = AnyView(SheetTabs(options: AddTab.allCases, selection: $tab).frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, Space.s))
+        switch tab {
+        case .ready: ReadyListsTab(tabs: tabs)
+        case .url: ImportEditor(takenNames: taken, tabs: tabs)
+        case .file: FileImportTab(takenNames: taken, tabs: tabs)
+        case .custom: CustomListEditor(original: nil, name: "", action: .direct, description: "", rules: RuleSpec(), ruleSet: false, takenNames: taken, tabs: tabs)
         }
     }
 }
@@ -46,38 +42,37 @@ struct ReadyListsTab: View {
             .filter { q.isEmpty || "\($0.title) \($0.description) \($0.name)".localizedCaseInsensitiveContains(q) }
     }
 
+    var tabs: AnyView?
+
     var body: some View {
-        VStack(spacing: 0) {
+        SubPage(tabs: tabs) {
             SheetSearch(text: $query, prompt: "Search lists…")
-                .padding(.horizontal, Space.xl).padding(.vertical, Space.s)
                 // Don't start in the search field (the sheet would focus it); click to search.
                 .onAppear { DispatchQueue.main.async { NSApp.keyWindow?.makeFirstResponder(nil) } }
-            ScrollView {
-                VStack(alignment: .leading, spacing: Space.m) {
-                    if model.available.isEmpty {
-                        SheetNote("Can't reach the list server to see which lists it has.")
-                    } else if missing.isEmpty {
-                        SheetNote(query.isEmpty ? "Every ready-made list is added." : "No lists match.")
-                    } else {
-                        Panel {
-                            ForEach(Array(missing.enumerated()), id: \.element.id) { n, i in
-                                if n > 0 { Hairline() }
-                                let action = actions[i.name] ?? i.action
-                                FormRow(i.title, detail: i.description) {
-                                    SelectMenu(title: action.menuLabel, options: Action.allCases, label: \.menuLabel, selected: action, dot: \.dot) {
-                                        actions[i.name] = $0 // pick the tunnel on the Routing page
-                                    }
-                                    Button("Add") { Task { await model.enableRelease(i.name, action) } }
-                                        .buttonStyle(OutlineButtonStyle()).disabled(model.busy)
+            VStack(alignment: .leading, spacing: Space.m) {
+                if model.available.isEmpty {
+                    SheetNote("Can't reach the list server to see which lists it has.")
+                } else if missing.isEmpty {
+                    SheetNote(query.isEmpty ? "Every ready-made list is added." : "No lists match.")
+                } else {
+                    Panel {
+                        ForEach(Array(missing.enumerated()), id: \.element.id) { n, i in
+                            if n > 0 { Hairline() }
+                            let action = actions[i.name] ?? i.action
+                            FormRow(i.title, detail: i.description) {
+                                SelectMenu(title: action.menuLabel, options: Action.allCases, label: \.menuLabel, selected: action, dot: \.dot) {
+                                    actions[i.name] = $0 // pick the tunnel on the Routing page
                                 }
+                                Button("Add") { Task { await model.enableRelease(i.name, action) } }
+                                    .buttonStyle(OutlineButtonStyle()).disabled(model.busy)
                             }
                         }
                     }
-                    SheetNote("No Action keeps a list without applying it. Direct skips every server. Block drops the traffic. Active Server sends it through the server you're connected with. Changes apply right away.")
+                    .environment(\.searchQuery, query) // the rows mark what was searched for
                 }
-                .padding(.horizontal, Space.xl).padding(.vertical, Space.s)
+                SheetNote("No Action keeps a list without applying it. Direct skips every server. Block drops the traffic. Active Server sends it through the server you're connected with. Changes apply right away.")
             }
-            .scrollIndicators(.never)
+        } footer: {
             SheetBar(error: model.error("lists")) {
                 SheetButton(title: "Done", primary: true) { close() }
             }
@@ -114,28 +109,27 @@ struct FileImportTab: View {
         return nil
     }
 
+    var tabs: AnyView?
+
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Space.m) {
-                    Panel {
-                        FormRow(file?.lastPathComponent ?? "No file chosen",
-                                detail: binary != nil ? "sing-box rule-set, kept as it is" : text.map { plural($0.split(whereSeparator: \.isNewline).count, "line") }) {
-                            Button("Choose File…") { choosing = true }.buttonStyle(OutlineButtonStyle())
-                        }
-                        Hairline()
-                        FieldRow(title: "Name", text: $name)
-                        Hairline()
-                        FieldRow(title: "Description", text: $description, prompt: "Optional")
-                        Hairline()
-                        ActionRow(action: $action)
+        SubPage(tabs: tabs) {
+            VStack(alignment: .leading, spacing: Space.m) {
+                Panel {
+                    FormRow(file?.lastPathComponent ?? "No file chosen",
+                            detail: binary != nil ? "sing-box rule-set, kept as it is" : text.map { plural($0.split(whereSeparator: \.isNewline).count, "line") }) {
+                        Button("Choose File…") { choosing = true }.buttonStyle(OutlineButtonStyle())
                     }
-                    .disabled(done != nil)
-                    SheetNote("A sing-box rule-set (.srs, or its JSON source) is used exactly as it is: everything sing-box can run in one works, up to 16 MB. A plain list (one domain, address or range per line, hosts files, Surge/Clash domain sets, up to 5 MB) becomes the fields of a rule you can edit; lines that aren't entries are skipped. For a list that changes, use From URL so it stays up to date.")
+                    Hairline()
+                    FieldRow(title: "Name", text: $name)
+                    Hairline()
+                    FieldRow(title: "Description", text: $description, prompt: "Optional")
+                    Hairline()
+                    ActionRow(action: $action)
                 }
-                .padding(.horizontal, Space.xl).padding(.vertical, Space.s)
+                .disabled(done != nil)
+                SheetNote("A sing-box rule-set (.srs, or its JSON source) is used exactly as it is: everything sing-box can run in one works, up to 16 MB. A plain list (one domain, address or range per line, hosts files, Surge/Clash domain sets, up to 5 MB) becomes the fields of a rule you can edit; lines that aren't entries are skipped. For a list that changes, use From URL so it stays up to date.")
             }
-            .scrollIndicators(.never)
+        } footer: {
             SheetBar(error: error ?? problem, success: done) {
                 if done != nil {
                     SheetButton(title: "Done", primary: true) { close() }
@@ -273,26 +267,25 @@ struct CustomListEditor: View {
         return nil
     }
 
+    var tabs: AnyView?
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Space.m) {
-                    Panel {
-                        FieldRow(title: "Name", text: $name)
-                        Hairline()
-                        FieldRow(title: "Description", text: $description, prompt: "Optional")
-                        Hairline()
-                        ActionRow(action: $action)
-                    }
-                    if ruleSet {
-                        SheetNote("This list is a sing-box rule-set, kept exactly as it was imported: sing-box runs every rule in it. To change its rules, import a new file or address. The name, description and action can be changed above.")
-                    } else {
-                        builder
-                    }
+        SubPage(tabs: tabs) {
+            VStack(alignment: .leading, spacing: Space.m) {
+                Panel {
+                    FieldRow(title: "Name", text: $name)
+                    Hairline()
+                    FieldRow(title: "Description", text: $description, prompt: "Optional")
+                    Hairline()
+                    ActionRow(action: $action)
                 }
-                .padding(.horizontal, Space.xl).padding(.vertical, Space.s)
+                if ruleSet {
+                    SheetNote("This list is a sing-box rule-set, kept exactly as it was imported: sing-box runs every rule in it. To change its rules, import a new file or address. The name, description and action can be changed above.")
+                } else {
+                    builder
+                }
             }
-            .scrollIndicators(.never)
+        } footer: {
             SheetBar(error: error ?? (name.isEmpty ? nil : nameProblem), leading: original == nil ? nil : AnyView(
                 Button("Delete List") { confirmingDelete = true }
                     .buttonStyle(.plain).font(TypeScale.bodyStrong).foregroundStyle(Palette.danger.color)
@@ -329,16 +322,14 @@ struct CustomListEditor: View {
                 }
             }
             ForEach(Self.groups, id: \.title) { g in
-                section(g.title, fields: g.fields)
+                section(g.fields)
             }
             VStack(alignment: .leading, spacing: Space.l) {
-                Text("Program").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
                 applicationsPanel
                 ForEach(Self.programFields, id: \.key) { field($0.key, $0.title, $0.hint, $0.example) }
                 SheetNote("The engine looks up which program each connection comes from, which costs a little per connection. It only does so while a list names programs.")
             }
             VStack(alignment: .leading, spacing: Space.l) {
-                Text("Network").font(TypeScale.heading).foregroundStyle(Palette.ink.color)
                 Panel {
                     FormRow("Network", detail: "The transport: tcp, udp or icmp") {
                         HStack(spacing: Space.m) {
@@ -355,9 +346,9 @@ struct CustomListEditor: View {
         }
     }
 
-    private func section(_ title: String, fields: [FieldInfo]) -> some View {
+    /// A group's fields, with no heading of its own: each field names itself.
+    private func section(_ fields: [FieldInfo]) -> some View {
         VStack(alignment: .leading, spacing: Space.l) {
-            Text(title).font(TypeScale.heading).foregroundStyle(Palette.ink.color)
             ForEach(fields, id: \.key) { field($0.key, $0.title, $0.hint, $0.example) }
         }
     }
@@ -505,24 +496,23 @@ struct ImportEditor: View {
         return nil
     }
 
+    var tabs: AnyView?
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Space.m) {
-                    Panel {
-                        FieldRow(title: "Name", text: $name)
-                        Hairline()
-                        FieldRow(title: "URL", text: $url, prompt: "https://example.com/hosts.txt")
-                        Hairline()
-                        FieldRow(title: "Description", text: $description, prompt: "Optional")
-                        Hairline()
-                        ActionRow(action: $action)
-                    }
-                    SheetNote("Plain lists (one entry per line), hosts files, Surge/Clash domain sets and sing-box rule-sets (.srs). The list is added at once and downloads in the background, then again every day; a failed download keeps the last good copy. Every user of this Mac can see the URL, so don't use one that contains a token or password.")
+        SubPage(tabs: tabs) {
+            VStack(alignment: .leading, spacing: Space.m) {
+                Panel {
+                    FieldRow(title: "Name", text: $name)
+                    Hairline()
+                    FieldRow(title: "URL", text: $url, prompt: "https://example.com/hosts.txt")
+                    Hairline()
+                    FieldRow(title: "Description", text: $description, prompt: "Optional")
+                    Hairline()
+                    ActionRow(action: $action)
                 }
-                .padding(.horizontal, Space.xl).padding(.vertical, Space.s)
+                SheetNote("Plain lists (one entry per line), hosts files, Surge/Clash domain sets and sing-box rule-sets (.srs). The list is added at once and downloads in the background, then again every day; a failed download keeps the last good copy. Every user of this Mac can see the URL, so don't use one that contains a token or password.")
             }
-            .scrollIndicators(.never)
+        } footer: {
             SheetBar(error: error ?? problem) {
                 if model.busy { ProgressView().controlSize(.small) }
                 SheetButton(title: "Cancel") { close() }
@@ -564,7 +554,7 @@ struct EditImportView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        SubPage {
             VStack(alignment: .leading, spacing: Space.m) {
                 Panel {
                     FieldRow(title: "Name", text: $name)
@@ -575,8 +565,7 @@ struct EditImportView: View {
                 }
                 SheetNote("A new address replaces the list's entries when it is downloaded. Every user of this Mac can see the URL, so don't use one that contains a token or password.")
             }
-            .padding(.horizontal, Space.xl).padding(.top, Space.l)
-            Spacer(minLength: 0)
+        } footer: {
             SheetBar(error: error ?? problem) {
                 if model.busy { ProgressView().controlSize(.small) }
                 SheetButton(title: "Cancel") { close() }

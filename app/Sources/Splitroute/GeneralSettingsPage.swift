@@ -1,4 +1,3 @@
-import AppKit
 import Design
 import SwiftUI
 
@@ -7,26 +6,31 @@ func settingsSwitch(_ title: String, isOn: Binding<Bool>) -> some View {
     Toggle(title, isOn: isOn).labelsHidden().toggleStyle(.switch).tint(Accent.color)
 }
 
-/// Settings > Network (the page keeps its stored name, "Connection"): the kill switch, always on, and how servers are tested.
-struct NetworkSettingsPage: View {
+/// Settings > General: what most people use: the kill switch, connecting, server switching, and when subscriptions and
+/// routing lists update. The most important setting of a group comes first.
+struct GeneralSettingsPage: View {
     @EnvironmentObject private var model: AppModel
     @AppStorage(Prefs.alwaysOn) private var alwaysOn = false
     @AppStorage(Prefs.disconnectOnSleep) private var disconnectOnSleep = false
     @AppStorage(Prefs.showDisconnectMessage) private var showMessage = false
     @AppStorage(Prefs.sortByPing) private var sortByPing = true
-    @AppStorage(Prefs.testMethod) private var testMethod = TestMethod.connect.rawValue
-    @AppStorage(Prefs.testTimeout) private var testTimeout = 5
-    @AppStorage(Prefs.testInterval) private var testInterval = 600
-    @AppStorage(Prefs.testURL) private var testURL = Prefs.defaultTestURL
-    @AppStorage(Prefs.testCustomURL) private var testCustomURL = ""
-    @State private var editingURL = false
+    @AppStorage(Prefs.autoSwitch) private var autoSwitch = false
+    @AppStorage(Prefs.subsUpdateOnOpen) private var subsOnOpen = false
+    @AppStorage(Prefs.subsAutoUpdate) private var subsAuto = true
+    @AppStorage(Prefs.subsIntervalHours) private var subsHours = 24
+    @AppStorage(Prefs.listsAutoUpdate) private var listsAuto = true
+    @AppStorage(Prefs.listsUpdateOnOpen) private var listsOnOpen = false
+    @AppStorage(Prefs.listsIntervalHours) private var listsHours = 24
+    @AppStorage(Prefs.subsLastAttempt) private var subsLast = 0.0
+    @AppStorage(Prefs.listsLastAttempt) private var listsLast = 0.0
+
 
     var body: some View {
-        PageScaffold("Network") {
-            EmptyView()
-        } content: {
+        SettingsPage("General") {
             if model.status == nil { ServiceUnavailable() }
-            if model.status != nil { killSwitch; ipv6Section; failoverSection; alwaysOnSection; testSection }
+            if model.status != nil { killSwitch; alwaysOnSection; failoverSection }
+            subscriptions
+            routingLists
         }
     }
 
@@ -35,49 +39,59 @@ struct NetworkSettingsPage: View {
     // MARK: Kill switch
 
     @ViewBuilder private var killSwitch: some View {
-        SectionTitle("Kill switch")
-        Panel {
+        SettingsSection("Kill switch") {
             FormRow("Block traffic if the connection drops",
-                    detail: "While connected, only your servers' own connections can leave this Mac. If the server fails, the network stops instead of using your normal connection.",
+                    detail: "Blocks the network if the server drops, instead of using your normal connection.",
                     error: model.error("killswitch")) {
                 toggle("Block traffic if the connection drops", isOn: Binding(get: { model.killSwitchOn }, set: { on in Task { await model.setKillSwitch(on: on) } }))
                     .disabled(model.busy)
             }
             Hairline()
-            FormRow("Allow the local network", detail: "Printers, file shares and your router stay reachable while traffic is blocked.") {
+            FormRow("Allow the local network", detail: "Keep printers and your router reachable.") {
                 toggle("Allow the local network", isOn: Binding(get: { model.killSwitchLAN }, set: { on in Task { await model.setKillSwitch(lan: on) } }))
                     .disabled(model.busy || !model.killSwitchOn)
             }
             Hairline()
-            NoteLine(.warning, "Programs running as root can still reach the network. The kill switch also stays on after a restart: the network is blocked until the connection is up, so keep the app set to open at login. Uninstalling the service turns it off.")
+            NoteLine(.warning, "Stays on after a restart until you connect. Programs running as root can bypass it.")
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(Space.l)
         }
     }
 
-    // MARK: IPv6
+    // MARK: Always on
 
-    @ViewBuilder private var ipv6Section: some View {
-        SectionTitle("IPv6")
-        Panel {
-            FormRow("Block IPv6",
-                    detail: "The tunnel carries IPv4 only, so on a network with IPv6 a site can be reached around it and show your real address. With this on, IPv6 is refused and apps use IPv4. Turn it off only on a network that has nothing else, and then IPv6 does not go through the connection.",
-                    error: model.error("blockIPv6")) {
-                toggle("Block IPv6", isOn: Binding(get: { model.config?.blockIPv6 ?? true }, set: { on in Task { await model.setBlockIPv6(on) } }))
+    @ViewBuilder private var alwaysOnSection: some View {
+        SettingsSection("Connection") {
+            FormRow("Always on",
+                    detail: "Connect when the app opens or the Mac wakes. A server that failed is not retried.") {
+                settingsSwitch("Always on", isOn: Binding(get: { alwaysOn }, set: { on in alwaysOn = on; Task { await model.setAlwaysOn(on) } }))
+            }
+            Hairline()
+            FormRow("Disconnect on sleep",
+                    detail: model.killSwitchOn
+                        ? "Unavailable while the kill switch is on."
+                        : "Disconnect when the Mac sleeps.") {
+                settingsSwitch("Disconnect on sleep", isOn: $disconnectOnSleep).disabled(model.killSwitchOn)
+            }
+            Hairline()
+            FormRow("Show disconnect message", detail: "Notify when it disconnects for sleep.") {
+                settingsSwitch("Show disconnect message", isOn: Binding(get: { showMessage }, set: { showMessage = $0; model.setShowDisconnectMessage($0) }))
+                    .disabled(!disconnectOnSleep || model.killSwitchOn)
             }
         }
     }
 
     // MARK: Failover
 
-    @AppStorage(Prefs.autoSwitch) private var autoSwitch = false
-
     @ViewBuilder private var failoverSection: some View {
-        SectionTitle("Failover")
-        Panel {
+        SettingsSection("Servers") {
             FormRow("Switch servers automatically",
-                    detail: "While connected, Splitroute checks the active server every 30 seconds. If it stops answering three times in a row, the quickest other server takes over (the same subscription first, never an OpenVPN server). A list or default route that names a server isn't changed: it stays blocked while that server is down. Off by default.") {
+                    detail: "Use the quickest other server if the active one stops answering. A list that names a server stays blocked while it is down.") {
                 settingsSwitch("Switch servers automatically", isOn: Binding(get: { autoSwitch }, set: { autoSwitch = $0; model.setAutoSwitch($0) }))
+            }
+            Hairline()
+            FormRow("Sort by ping", detail: "Fastest first after a test.") {
+                settingsSwitch("Sort by ping", isOn: $sortByPing)
             }
             if let note = model.lastFailover {
                 Hairline()
@@ -87,137 +101,58 @@ struct NetworkSettingsPage: View {
         }
     }
 
-    // MARK: Always on
+    private static func hours(_ h: Int) -> String { h == 1 ? "1 hour" : h < 48 ? "\(h) hours" : "\(h / 24) days" }
 
-    @ViewBuilder private var alwaysOnSection: some View {
-        SectionTitle("Always on")
-        Panel {
-            FormRow("Always on",
-                    detail: "Connects when Splitroute opens and when the Mac wakes, if the connection is off. It works only while Splitroute is running, and a server that failed is not retried by itself. Turning the connection off keeps it off until the next launch or wake.") {
-                settingsSwitch("Always on", isOn: Binding(get: { alwaysOn }, set: { on in alwaysOn = on; Task { await model.setAlwaysOn(on) } }))
+    @ViewBuilder private var subscriptions: some View {
+        SettingsSection("Subscription updates") {
+            FormRow("Auto update",
+                    detail: "Update while the app runs. Nothing updates after you quit.") {
+                settingsSwitch("Auto update", isOn: $subsAuto)
             }
             Hairline()
-            FormRow("Disconnect on sleep",
-                    detail: model.killSwitchOn
-                        ? "Off while the kill switch is on: disconnecting would block the whole network when the Mac wakes."
-                        : "Disconnects when the Mac goes to sleep and connects again when it wakes.") {
-                settingsSwitch("Disconnect on sleep", isOn: $disconnectOnSleep).disabled(model.killSwitchOn)
+            FormRow("Interval") {
+                SelectMenu(title: Self.hours(subsHours), options: Prefs.subsIntervals, label: Self.hours, selected: subsHours) { subsHours = $0 }
+            }
+            .disabled(!subsAuto)
+            Hairline()
+            FormRow("Update on open", detail: "Update all when the app opens.") {
+                settingsSwitch("Update on open", isOn: $subsOnOpen)
             }
             Hairline()
-            FormRow("Show disconnect message", detail: "Posts a notification when it disconnects for sleep.") {
-                settingsSwitch("Show disconnect message", isOn: Binding(get: { showMessage }, set: { showMessage = $0; model.setShowDisconnectMessage($0) }))
-                    .disabled(!disconnectOnSleep || model.killSwitchOn)
-            }
+            ValueRow("Last update attempt", Self.time(subsLast))
+            Hairline()
+            ValueRow("Next update attempt", subsAuto ? Self.next(subsLast, hours: subsHours) : "Off")
         }
     }
 
-    // MARK: Test
-
-    private var method: TestMethod { TestMethod(rawValue: testMethod) ?? .connect }
-
-    @ViewBuilder private var testSection: some View {
-        SectionTitle("Test")
-        Panel {
-            FormRow("Test method", detail: method.detail) {
-                SelectMenu(title: method.title, options: TestMethod.allCases, label: { $0.title }, selected: method) { testMethod = $0.rawValue }
+    @ViewBuilder private var routingLists: some View {
+        SettingsSection("Routing list updates") {
+            FormRow("Auto update", detail: "Refresh ready-made lists on a schedule. Imported lists use their own.") {
+                settingsSwitch("Auto update", isOn: $listsAuto)
             }
             Hairline()
-            FormRow("Timeout", detail: "Give up on a server that hasn't answered after this long.") {
-                SelectMenu(title: "\(testTimeout) s", options: [1, 2, 3, 5, 10, 15, 30], label: { "\($0) s" }, selected: testTimeout) { testTimeout = $0 }
+            FormRow("Interval") {
+                SelectMenu(title: Self.hours(listsHours), options: Prefs.listsIntervals, label: Self.hours, selected: listsHours) { listsHours = $0 }
+            }
+            .disabled(!listsAuto)
+            Hairline()
+            FormRow("Update on open", detail: "Download again when the app opens.") {
+                settingsSwitch("Update on open", isOn: $listsOnOpen)
             }
             Hairline()
-            FormRow("Keep results for", detail: "Results older than this are cleared, and the servers go back to their own order.") {
-                SelectMenu(title: Self.seconds(testInterval), options: [60, 300, 600, 1800, 3600], label: Self.seconds, selected: testInterval) { testInterval = $0 }
-            }
-            if method == .connect {
-                Hairline()
-                FormRow("Test URL", detail: testURL) {
-                    HStack(spacing: Space.s) {
-                        SelectMenu(title: urlChoice, options: Self.urlChoices, label: { $0 }, selected: urlChoice) { c in
-                            if let p = Prefs.testURLPresets.first(where: { $0.name == c }) { testURL = p.url } else { editingURL = true }
-                        }
-                        if urlChoice == Self.customChoice {
-                            Button { editingURL = true } label: {
-                                Image(systemName: "pencil").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink.color)
-                                    .modifier(RoundGlass(size: 28))
-                            }
-                            .buttonStyle(.plain).help("Edit the test URL").accessibilityLabel("Edit the test URL")
-                        }
-                    }
-                }
-                .sheet(isPresented: $editingURL) {
-                    TestURLSheet(current: urlChoice == Self.customChoice ? testURL : testCustomURL) { url in
-                        testCustomURL = url
-                        testURL = url
-                    }
-                    .glassSheet()
-                }
-            }
+            ValueRow("Last update attempt", Self.time(listsLast))
             Hairline()
-            FormRow("Sort by ping", detail: "After a test, the fastest server comes first and the ones that didn't answer last. Only the display changes.") {
-                settingsSwitch("Sort by ping", isOn: $sortByPing)
-            }
+            ValueRow("Next update attempt", listsAuto ? Self.next(listsLast, hours: listsHours) : "Off")
         }
     }
 
-    private static let customChoice = "Custom"
-    private static let urlChoices = Prefs.testURLPresets.map(\.name) + [customChoice]
-    /// The preset the saved address belongs to, or Custom.
-    private var urlChoice: String { Prefs.testURLPresets.first { $0.url == testURL }?.name ?? Self.customChoice }
-
-    private static func seconds(_ s: Int) -> String { s < 60 ? "\(s) s" : s % 60 == 0 && s < 3600 ? "\(s / 60) min" : s % 3600 == 0 ? "\(s / 3600) h" : "\(s) s" }
-}
-
-/// How a server is measured. TCP and ICMP time the server's own address, outside the tunnel; CONNECT times a request
-/// through it.
-enum TestMethod: String, CaseIterable {
-    case tcp, icmp, connect
-
-    var title: String { self == .connect ? "CONNECT" : rawValue.uppercased() }
-
-    var detail: String {
-        switch self {
-        case .tcp: "Time to open a connection to the server's port. Servers that use UDP (WireGuard, Hysteria2, TUIC, OpenVPN over UDP) can't be measured."
-        case .icmp: "Time for the server to answer a ping. Not available while the kill switch is on, and some servers don't answer pings."
-        case .connect: "Test URL request via proxy server."
-        }
-    }
-}
-
-/// Asks for the custom test address and saves it only when it is a valid https address.
-struct TestURLSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    let current: String
-    let save: (String) -> Void
-    @State private var text = ""
-    @State private var error: String?
-
-    var body: some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: Space.s) {
-                Text("Test URL").font(TypeScale.bodyStrong)
-                TextField("Test URL", text: $text, prompt: Text("https://example.com/generate_204").foregroundColor(.secondary))
-                    .labelsHidden().textFieldStyle(.plain).multilineTextAlignment(.leading).fieldBox().onSubmit(commit)
-                Text("An https address that answers with a small body. It is requested through each server.")
-                    .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
-            }
-            .padding(Space.xl)
-            SheetButtons(error: error) {
-                Button("Cancel", role: .cancel) { dismiss() }.buttonStyle(OutlineButtonStyle()).keyboardShortcut(.cancelAction)
-                Button("Save", action: commit).buttonStyle(SolidButtonStyle()).keyboardShortcut(.defaultAction)
-                    .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-        }
-        .frame(width: 440)
-        .onAppear { text = current }
+    private static func time(_ t: Double) -> String {
+        t > 0 ? Date(timeIntervalSince1970: t).formatted(date: .abbreviated, time: .shortened) : "Never"
     }
 
-    private func commit() {
-        guard let ok = Prefs.validTestURL(text) else {
-            error = "Enter an https address, like https://example.com/generate_204."
-            return
-        }
-        save(ok)
-        dismiss()
+    /// The last attempt plus the interval, or "Soon" when there was none or that time has passed.
+    private static func next(_ last: Double, hours: Int) -> String {
+        let t = last + Double(hours) * 3600
+        return last > 0 && t > Date().timeIntervalSince1970 ? time(t) : "Soon"
     }
 }

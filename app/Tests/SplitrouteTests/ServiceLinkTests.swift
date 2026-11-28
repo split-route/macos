@@ -49,6 +49,7 @@ final class ServiceLinkTests: XCTestCase {
         try s.setVPN(on: true)
         try s.update { c in
             var c = try c.creating("Office", .direct)
+            c.blockQUIC = true; c.blockSTUN = true // off by default; the golden pins both on the wire
             var office = RuleSpec(); office.domainSuffix = ["example.com"]; office.ipCIDR = ["8.8.8.0/24"]
             c = try c.settingRules("Office", office)
             c = try c.enablingRelease("malware", .block)

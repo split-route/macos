@@ -5,6 +5,9 @@ import SwiftUI
 /// The first page: is the engine on, through which server, what the kill switch and the default route are doing, and
 /// how fast traffic moves. Information only; the Servers page has the switch.
 struct HomePage: View {
+    /// The chart takes what the cards above leave of the window, never less than 190 pt. 420 is those cards, the title and
+    /// the page's margins, a little over, so a window at its default size doesn't scroll.
+    @Environment(\.pageViewportHeight) private var viewport
     @EnvironmentObject private var model: AppModel
     @ObservedObject var traffic: TrafficMonitor
     /// Opens another page: the Server and Default Route cards link to theirs.
@@ -32,7 +35,7 @@ struct HomePage: View {
 
     private var serverText: String {
         guard let t = model.selectedTunnel else { return "None selected" }
-        return (Flags.prefix(for: [t.name, t.group]).map { $0 + " " } ?? "") + t.name
+        return (Flags.prefix(name: t.name, country: t.country).map { $0 + " " } ?? "") + t.name
     }
 
     /// The address the world sees through the server, with its country's flag; a dash until it is known.
@@ -68,10 +71,10 @@ struct HomePage: View {
                         Tile(title: "Server", value: serverText, symbol: "shield", dot: nil,
                              open: { go(.tunnels) }, dimmed: !connected, tint: Accent.color)
                         Tile(title: "IP address", value: ipText, symbol: "globe", dot: nil,
-                             dimmed: !connected, tint: Palette.success.color)
+                             dimmed: !connected, tint: Accent.color)
                             .help(model.exitInfo.map { $0.country } ?? "")
                     }
-                    SpeedChart(samples: traffic.samples, live: connected)
+                    SpeedChart(samples: traffic.samples, live: connected, height: max(190, viewport - 420))
                 }
             }
         }
@@ -110,7 +113,7 @@ struct HomePage: View {
                 }), pending: model.pending.contains("vpn"))
                 .disabled(model.tunnels.isEmpty)
             }
-            .padding(Space.l)
+            .padding(.horizontal, Space.l).padding(.vertical, Space.xl)
             .background(alignment: .top) {
                 // The same wash the cards below have: the accent while connected, nothing while not.
                 LinearGradient(colors: [Accent.color.opacity(connected ? 0.20 : 0), .clear], startPoint: .top, endPoint: .bottom)
@@ -190,6 +193,7 @@ private struct SpeedChart: View {
     let samples: [TrafficMonitor.Sample]
     /// Connected: the lines are drawn. Not: the chart stays, faded and empty.
     let live: Bool
+    let height: CGFloat
 
     /// The top of the scale: the biggest speed seen, rounded up, never below 10 KB/s so a quiet line stays flat.
     private var top: Double {
@@ -253,7 +257,7 @@ private struct SpeedChart: View {
                     Text(speedText(top)).font(TypeScale.secondary).monospacedDigit()
                         .foregroundStyle(Palette.inkSecondary.color).padding(.trailing, 2)
                 }
-                .frame(height: 190)
+                .frame(height: height)
                 .accessibilityLabel("Speed over the last minute")
                 .accessibilityValue(live ? "Download \(speedText(samples.last?.down ?? 0)), upload \(speedText(samples.last?.up ?? 0))" : "Not connected")
                 .animation(nil, value: pointer)

@@ -2,21 +2,19 @@ import XCTest
 @testable import Splitroute
 
 final class FlagsTests: XCTestCase {
-    func testCountryNamesAndCodes() {
-        let cases: [(String, String?)] = [
-            ("Farhad Germany", "DE"), ("DE-1 fast", "DE"), ("Frankfurt DE", "DE"), ("US West", "US"), ("United States 2", "US"),
-            ("UK London", "GB"), ("South Korea", "KR"), ("Netherlands", "NL"), ("holland 3", "NL"),
-            // names that must not get a flag
-            ("CDM tls WS CDN vless", nil), ("ws trojan CDM IP4", nil), ("irov", nil), ("Iranian CDN", nil), ("httpupgrade vless HC CDM IP4", nil),
-        ]
-        for (name, want) in cases { XCTAssertEqual(Flags.code(in: name), want, name) }
+    /// The flag is the stored country's; the name is never read for a place.
+    func testFlagComesFromTheCountryNotTheName() {
+        XCTAssertEqual(Flags.prefix(name: "irov", country: "DE"), "🇩🇪")
+        XCTAssertNil(Flags.prefix(name: "Farhad Germany", country: ""), "a name that says Germany is not a country")
+        XCTAssertNil(Flags.prefix(name: "DE-1 fast", country: ""))
+        XCTAssertNil(Flags.prefix(name: "x", country: "D"), "not a two-letter code")
     }
 
-    func testExistingEmojiWinsAndIsNotRepeated() {
+    func testAFlagAlreadyInTheNameIsNotRepeated() {
         XCTAssertEqual(Flags.existing(in: "🇩🇪 Berlin"), "🇩🇪")
-        XCTAssertNil(Flags.prefix(for: ["🇩🇪 Berlin"]), "the name already shows it")
-        XCTAssertEqual(Flags.prefix(for: ["Berlin", "Farhad Germany"]), "🇩🇪", "the group's name counts when the server's has none")
-        XCTAssertNil(Flags.prefix(for: ["irov", nil]))
+        XCTAssertNil(Flags.prefix(name: "🇩🇪 Berlin", country: "DE"))
+        XCTAssertNil(Flags.prefix(name: "🇩🇪 Berlin", country: "NL"), "the person's own flag is left as it is")
+        XCTAssertNil(Flags.prefix(name: "Berlin 🇩🇪 fast", country: "DE"), "a flag anywhere in the name counts")
     }
 
     func testEmojiFromCode() {
