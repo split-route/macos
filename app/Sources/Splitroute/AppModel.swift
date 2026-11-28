@@ -36,8 +36,9 @@ final class AppModel: ObservableObject {
     /// The address the internet sees through the active server, and its country; nil until looked up.
     @Published var exitInfo: ExitInfo?
     @Published var exitLookupFailed = false
-    /// What the last automatic server switch did, for the Network page.
-    @Published var lastFailover: String?
+    /// What Smart Select last did (or is doing), under its switch on the Servers page.
+    @Published var smartNote: String?
+    @Published var smartChecking = false
     @Published var updateCheckNote: String?
     /// Switches whose change is being applied by the service ("vpn", "killswitch", "routing"): a spinner shows beside each.
     @Published var pending: Set<String> = []
@@ -69,13 +70,16 @@ final class AppModel: ObservableObject {
     var sleepSuspended = false
     var updateAttempt: Date?
     var exitKey: String?
-    // Failover (AppModel+Failover.swift)
+    // Smart Select (AppModel+SmartSelect.swift)
     var lastProbe = Date.distantPast
-    var probeFailures = 0
-    var failoverBusy = false
-    var failoverPause: Date?
+    var smartFailures = 0
+    var smartPause: Date?
+    var smartLastPass = Date.distantPast
     var failedAt: [String: Date] = [:]
     var switchTimes: [Date] = []
+    var networkChangedAt: Date?
+    var networkSignature: String?
+    var networkMonitor: AnyObject?
     var exitTask: Task<Void, Never>?
     var alwaysOnHandled = false
     var automationStarted = false
@@ -128,7 +132,7 @@ final class AppModel: ObservableObject {
         if !refreshing { Task { await self.refreshDownloads() } }
         if connError == nil, config != nil { await runAutomation() }
         followExitIP()
-        await runFailover()
+        await runSmartSelect()
         await autoInstallIfNeeded()
     }
 

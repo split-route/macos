@@ -14,7 +14,13 @@ struct GeneralSettingsPage: View {
     @AppStorage(Prefs.disconnectOnSleep) private var disconnectOnSleep = false
     @AppStorage(Prefs.showDisconnectMessage) private var showMessage = false
     @AppStorage(Prefs.sortByPing) private var sortByPing = true
-    @AppStorage(Prefs.autoSwitch) private var autoSwitch = false
+    @AppStorage(Prefs.smartInterval) private var smartInterval = 3600
+    @AppStorage(Prefs.smartHealth) private var smartHealth = 30
+    @AppStorage(Prefs.smartTolerance) private var smartTolerance = 50
+    @AppStorage(Prefs.smartGroupOnly) private var smartGroupOnly = true
+    @AppStorage(Prefs.smartPool) private var smartPool = 48
+    @AppStorage(Prefs.smartOnNetwork) private var smartOnNetwork = true
+    @AppStorage(Prefs.smartAfterTest) private var smartAfterTest = true
     @AppStorage(Prefs.subsUpdateOnOpen) private var subsOnOpen = false
     @AppStorage(Prefs.subsAutoUpdate) private var subsAuto = true
     @AppStorage(Prefs.subsIntervalHours) private var subsHours = 24
@@ -28,7 +34,7 @@ struct GeneralSettingsPage: View {
     var body: some View {
         SettingsPage("General") {
             if model.status == nil { ServiceUnavailable() }
-            if model.status != nil { killSwitch; alwaysOnSection; failoverSection }
+            if model.status != nil { killSwitch; alwaysOnSection; smartSelectSection; serversSection }
             subscriptions
             routingLists
         }
@@ -81,22 +87,52 @@ struct GeneralSettingsPage: View {
         }
     }
 
-    // MARK: Failover
+    // MARK: Smart Select
 
-    @ViewBuilder private var failoverSection: some View {
-        SettingsSection("Servers") {
-            FormRow("Switch servers automatically",
-                    detail: "Use the quickest other server if the active one stops answering. A list that names a server stays blocked while it is down.") {
-                settingsSwitch("Switch servers automatically", isOn: Binding(get: { autoSwitch }, set: { autoSwitch = $0; model.setAutoSwitch($0) }))
+    private static func every(_ s: Int) -> String { s == 0 ? "Never" : s < 3600 ? "\(s / 60) min" : "\(s / 3600) h" }
+    private static func seconds(_ s: Int) -> String { s == 0 ? "Off" : s < 60 ? "\(s) s" : "\(s / 60) min" }
+
+    @ViewBuilder private var smartSelectSection: some View {
+        SettingsSection("Smart Select") {
+            FormRow("Check servers every", detail: "Compare the servers and use the best. Also runs when you turn it on.") {
+                SelectMenu(title: Self.every(smartInterval), options: Prefs.smartIntervals, label: Self.every, selected: smartInterval) { smartInterval = $0 }
             }
             Hairline()
+            FormRow("Check the active server", detail: "One request through it. Three misses in a row switch to the best server.") {
+                SelectMenu(title: Self.seconds(smartHealth), options: Prefs.smartHealths, label: Self.seconds, selected: smartHealth) { smartHealth = $0 }
+            }
+            Hairline()
+            FormRow("Switch only if faster by", detail: "Keeps similar servers from taking turns.") {
+                SelectMenu(title: "\(smartTolerance) ms", options: Prefs.smartTolerances, label: { "\($0) ms" }, selected: smartTolerance) { smartTolerance = $0 }
+            }
+            Hairline()
+            FormRow("Choose from", detail: "A group is a subscription. Servers you added by hand are one group.") {
+                SelectMenu(title: smartGroupOnly ? "Active server's group" : "All servers", options: [true, false],
+                           label: { $0 ? "Active server's group" : "All servers" }, selected: smartGroupOnly) { smartGroupOnly = $0 }
+            }
+            Hairline()
+            FormRow("Servers per check", detail: "More takes longer and uses more data.") {
+                SelectMenu(title: "\(smartPool)", options: Prefs.smartPools, label: { "\($0)" }, selected: smartPool) { smartPool = $0 }
+            }
+            Hairline()
+            FormRow("Check when the network changes", detail: "Another Wi-Fi or cable can change which server is best.") {
+                settingsSwitch("Check when the network changes", isOn: $smartOnNetwork)
+            }
+            Hairline()
+            FormRow("Switch after a manual test", detail: "After Test, move to the fastest server.") {
+                settingsSwitch("Switch after a manual test", isOn: $smartAfterTest)
+            }
+            Hairline()
+            Text("Uses the test address and timeout from Advanced. OpenVPN servers are never chosen or left. A list that names a server stays blocked while that server is down.")
+                .font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(Space.l)
+        }
+    }
+
+    @ViewBuilder private var serversSection: some View {
+        SettingsSection("Servers") {
             FormRow("Sort by ping", detail: "Fastest first after a test.") {
                 settingsSwitch("Sort by ping", isOn: $sortByPing)
-            }
-            if let note = model.lastFailover {
-                Hairline()
-                Text(note).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(Space.l)
             }
         }
     }
