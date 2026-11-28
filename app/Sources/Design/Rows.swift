@@ -25,6 +25,7 @@ public struct FormRow<Control: View>: View {
     let detail: String?
     let error: String?
     let control: Control
+    @Environment(\.searchQuery) private var query
 
     public init(_ title: String, detail: String? = nil, error: String? = nil, @ViewBuilder control: () -> Control) {
         self.title = title; self.detail = detail; self.error = error; self.control = control()
@@ -34,9 +35,9 @@ public struct FormRow<Control: View>: View {
         VStack(alignment: .leading, spacing: Space.s) {
             HStack(alignment: .center, spacing: Space.l) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color)
+                    Text(Highlight.attributed(title, query)).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink.color)
                     if let detail, !detail.isEmpty {
-                        Text(detail).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
+                        Text(Highlight.attributed(detail, query)).font(TypeScale.secondary).foregroundStyle(Palette.inkSecondary.color)
                             .monospacedDigit().fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -46,6 +47,7 @@ public struct FormRow<Control: View>: View {
             if let error { NoteLine(.error, error) }
         }
         .padding(.vertical, Space.m).padding(.horizontal, Space.l)
+        .preference(key: RowTextsKey.self, value: ["\(title) \(detail ?? "")"])
     }
 }
 
@@ -88,16 +90,39 @@ private struct ScrollOffsetKey: PreferenceKey {
 /// A page: header on top, content below, scrolling when it is long. Once it scrolls, a blue Liquid Glass bar floats at the
 /// top with the title (and the page's controls) on it. An inner page passes `back` and gets a round back button left of
 /// its title.
-public struct PageScaffold<Trailing: View, Content: View>: View {
+private struct PageViewportHeightKey: EnvironmentKey { static let defaultValue: CGFloat = 0 }
+
+public extension EnvironmentValues {
+    /// The height of the page's visible area (the window's content), for a page that wants to fill it.
+    var pageViewportHeight: CGFloat {
+        get { self[PageViewportHeightKey.self] }
+        set { self[PageViewportHeightKey.self] = newValue }
+    }
+}
+
+public struct PageScaffold<Trailing: View, Content: View, Footer: View>: View {
     let title: String
     let back: (() -> Void)?
     let trailing: Trailing
     let content: Content
+    /// Pinned under the scrolling page (the buttons of an editor); empty for most pages.
+    let footer: Footer
     @State private var scrolled = false
-    public init(_ title: String, back: (() -> Void)? = nil, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) {
-        self.title = title; self.back = back; self.trailing = trailing(); self.content = content()
+    public init(_ title: String, back: (() -> Void)? = nil, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content,
+                @ViewBuilder footer: () -> Footer) {
+        self.title = title; self.back = back; self.trailing = trailing(); self.content = content(); self.footer = footer()
     }
     public var body: some View {
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                scaffold
+                footer
+            }
+            .environment(\.pageViewportHeight, geo.size.height)
+        }
+    }
+
+    private var scaffold: some View {
         ZStack(alignment: .top) {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.xl) {
@@ -120,6 +145,12 @@ public struct PageScaffold<Trailing: View, Content: View>: View {
             .scrollIndicators(.never)
             FloatingBar(title, back: back, visible: scrolled) { trailing }
         }
+    }
+}
+
+public extension PageScaffold where Footer == EmptyView {
+    init(_ title: String, back: (() -> Void)? = nil, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) {
+        self.init(title, back: back, trailing: trailing, content: content, footer: { EmptyView() })
     }
 }
 

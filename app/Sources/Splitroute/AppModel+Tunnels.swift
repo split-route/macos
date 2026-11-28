@@ -23,12 +23,7 @@ extension AppModel {
         return s
     }
 
-    // MARK: Pins and notes
-
-    func setPinned(_ t: Tunnel, _ on: Bool) {
-        do { try store?.setPinned(try stored(t.name).id, on) } catch { errors["tunnel:\(t.name)"] = error.localizedDescription }
-        reloadLocal()
-    }
+    // MARK: Notes
 
     /// Returns the reason it was refused, or nil.
     func setNote(_ t: Tunnel, _ note: String) -> String? {
@@ -79,9 +74,10 @@ extension AppModel {
     func saveServerEdit(_ t: Tunnel, secrets: TunnelSecrets?, remember: Bool, serverOverride: String, connect: Bool) async -> String? {
         let spec = serverOverride.trimmingCharacters(in: .whitespacesAndNewlines)
         do { _ = try OvpnProfile.parseServer(spec) } catch { return error.localizedDescription }
+        var moved: Int64?
         do {
             let st = try stored(t.name)
-            if st.serverOverride != spec { try store?.setServerOverride(st.id, spec) }
+            if st.serverOverride != spec { try store?.setServerOverride(st.id, spec); moved = st.id }
         } catch { return error.localizedDescription }
         if connect {
             await connectTunnel(t, secrets: secrets, remember: remember)
@@ -94,6 +90,7 @@ extension AppModel {
             }
             await changed()
         }
+        if let moved { Task { await self.locateServers([moved]) } } // the server it points to changed (the service has the snapshot now)
         return nil
     }
 
@@ -221,7 +218,7 @@ extension AppModel {
         let all = one.map { o in every.filter { $0.name == o.name } } ?? every
         guard !all.isEmpty else { return }
         testing = true
-        defer { testing = false; testedAt = Date() }
+        defer { testing = false }
         if one == nil { testResults = [:] } else { testResults[one!.name] = nil } // one server: the others keep their numbers
         let method = TestMethod(rawValue: UserDefaults.standard.string(forKey: Prefs.testMethod) ?? "") ?? .connect
         let timeout = min(max(Prefs.int(Prefs.testTimeout, 5), Prefs.timeoutRange.lowerBound), Prefs.timeoutRange.upperBound)
@@ -287,6 +284,7 @@ extension AppModel {
 
     /// Returns the error, or nil when the tunnel was added.
     func importTunnel(name: String, text: String, secrets: TunnelSecrets?) async -> String? {
+        var newID: Int64?
         let e = await attempt {
             guard let store = self.store else { throw StoreError("The settings database isn't open.") }
             let check = try await Daemon.checkProfile(text)
@@ -306,7 +304,9 @@ extension AppModel {
                 throw error
             }
             if let secrets, !secrets.isEmpty { TunnelKeychain.save(added.name, secrets) }
+            newID = added.id
         }
+        if e == nil, let id = newID { Task { await self.locateServers([id]) } } // attempt() has sent the snapshot that holds it
         return e
     }
 
@@ -356,6 +356,8 @@ extension AppModel {
             }
             res.added = added.count
             await changed()
+            let ids = added.map(\.id)
+            Task { await self.locateServers(ids) } // after the import returns: a big subscription doesn't hold the sheet
             return .success(res)
         } catch {
             return .failure(error)
@@ -464,12 +466,19 @@ extension AppModel {
         errors["group:\(name)"] = nil
         groupResults[name] = nil
         defer { updatingGroups.remove(name) }
+        var synced = false
         do {
             groupResults[name] = Self.describe(try await syncSubscription(name))
+            synced = true
         } catch {
             errors["group:\(name)"] = error.localizedDescription
         }
         await changed()
+        // The names may resolve elsewhere now, so every server of the group is looked up again, not only the changed ones.
+        if synced, let sub = try? subscription(name), let all = try? store?.tunnels() {
+            let ids = all.filter { $0.subscriptionID == sub.id }.map(\.id)
+            Task { await self.locateServers(ids) }
+        }
     }
 
     private func syncSubscription(_ name: String) async throws -> UpdateResult {

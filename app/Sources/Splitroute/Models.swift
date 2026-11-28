@@ -110,9 +110,9 @@ struct Config: Codable, Equatable {
     var finalAction: Action = .tunnel
     var finalTunnel: String?
     /// Refuse QUIC no list matched (browsers then use TCP, where names can be read).
-    var blockQUIC = true
+    var blockQUIC = false
     /// Refuse STUN, so a browser can't show the real address (WebRTC) while its traffic goes through a server.
-    var blockSTUN = true
+    var blockSTUN = false
     /// Refuse IPv6: the tunnel carries IPv4 only, so IPv6 would go around it.
     var blockIPv6 = true
     /// The browser handshake servers that use TLS get when they chose none; "" is each server's own.
@@ -133,8 +133,8 @@ struct Config: Codable, Equatable {
         lists = try c.decodeIfPresent([RouteList].self, forKey: .lists) ?? []
         finalAction = try c.decodeIfPresent(Action.self, forKey: .finalAction) ?? .tunnel
         finalTunnel = try c.decodeIfPresent(String.self, forKey: .finalTunnel)
-        blockQUIC = try c.decodeIfPresent(Bool.self, forKey: .blockQUIC) ?? true
-        blockSTUN = try c.decodeIfPresent(Bool.self, forKey: .blockSTUN) ?? true
+        blockQUIC = try c.decodeIfPresent(Bool.self, forKey: .blockQUIC) ?? false
+        blockSTUN = try c.decodeIfPresent(Bool.self, forKey: .blockSTUN) ?? false
         blockIPv6 = try c.decodeIfPresent(Bool.self, forKey: .blockIPv6) ?? true
         tlsFingerprint = try c.decodeIfPresent(String.self, forKey: .tlsFingerprint) ?? ""
     }
@@ -203,9 +203,10 @@ struct Tunnel: Decodable, Identifiable, Equatable {
     var since: String?
     var bytesIn: UInt64?
     var bytesOut: UInt64?
-    /// Set by the person: a favorite (listed first) and a note.
-    var pinned = false
+    /// Set by the person: a short note.
     var note = ""
+    /// Where the server is (two-letter code), looked up by the service; empty when unknown or behind a CDN.
+    var country = ""
     var id: String { name }
 
     enum CodingKeys: String, CodingKey {

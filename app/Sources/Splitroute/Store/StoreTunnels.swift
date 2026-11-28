@@ -5,7 +5,7 @@ import GRDB
 // options) is a 0600 file (Secrets), checked against `sha` before it is sent to the service.
 
 extension Store {
-    private static let tunnelColumns = "id, name, kind, profile_sha256, remotes, needs_auth, key_encrypted, auto_connect, subscription_id, warning, server_override, pinned, note"
+    private static let tunnelColumns = "id, name, kind, profile_sha256, remotes, needs_auth, key_encrypted, auto_connect, subscription_id, warning, server_override, note, country, country_at"
 
     private static func tunnel(_ r: Row) -> StoreTunnel {
         let remotes: String = r["remotes"]
@@ -13,16 +13,23 @@ extension Store {
                            remotes: remotes.isEmpty ? [] : remotes.components(separatedBy: "\n"),
                            needsAuth: (r["needs_auth"] as Int) == 1, keyEncrypted: (r["key_encrypted"] as Int) == 1,
                            autoConnect: (r["auto_connect"] as Int) == 1, subscriptionID: r["subscription_id"], warning: r["warning"],
-                           serverOverride: r["server_override"], pinned: (r["pinned"] as Int) == 1, note: r["note"])
+                           serverOverride: r["server_override"], note: r["note"],
+                           country: r["country"], countryAt: r["country_at"])
     }
 
     func tunnels() throws -> [StoreTunnel] {
         try queue.read { db in try Row.fetchAll(db, sql: "SELECT \(Store.tunnelColumns) FROM tunnels ORDER BY position, id").map(Store.tunnel) }
     }
 
-    /// Pins a server (a favorite, listed first) or unpins it.
-    func setPinned(_ id: Int64, _ on: Bool) throws {
-        try queue.write { try $0.execute(sql: "UPDATE tunnels SET pinned = ? WHERE id = ?", arguments: [on ? 1 : 0, id]) }
+    /// Stores what the service said about where servers are (tunnel row ID to code, "" when the address says nothing), in
+    /// one transaction. A server the service couldn't look up isn't in `found`, so it keeps what it had.
+    func setCountries(_ found: [Int64: String], at time: Int = Int(Date().timeIntervalSince1970)) throws {
+        try queue.write { db in
+            for (id, code) in found {
+                guard code == "" || (code.utf8.count == 2 && code.utf8.allSatisfy { (65...90).contains($0) }) else { continue } // what the CHECK accepts
+                try db.execute(sql: "UPDATE tunnels SET country = ?, country_at = ? WHERE id = ?", arguments: [code, time, id])
+            }
+        }
     }
 
     /// A short note on a server; at most 200 characters, no control characters.
@@ -207,8 +214,14 @@ extension Store {
                 try db.execute(sql: "DELETE FROM tunnels WHERE id = ? AND subscription_id = ?", arguments: [tid, id])
             }
             for t in sy.update {
-                try db.execute(sql: "UPDATE tunnels SET profile_sha256 = ?, remotes = ?, warning = ?, updated_at = ? WHERE id = ? AND subscription_id = ?",
-                               arguments: [t.sha, t.remotes.joined(separator: "\n"), t.warning, now, t.id, id])
+                // A new address means the old country may be wrong: forget it until the service answers again. (The right-hand
+                // sides of an UPDATE see the old row, so `remotes` below is still the previous address list.)
+                let remotes = t.remotes.joined(separator: "\n")
+                try db.execute(sql: """
+                    UPDATE tunnels SET profile_sha256 = ?, remotes = ?, warning = ?, updated_at = ?,
+                        country = CASE WHEN remotes = ? THEN country ELSE '' END, country_at = CASE WHEN remotes = ? THEN country_at ELSE 0 END
+                    WHERE id = ? AND subscription_id = ?
+                    """, arguments: [t.sha, remotes, t.warning, now, remotes, remotes, t.id, id])
             }
             var added: [StoreTunnel] = []
             for var t in sy.add {

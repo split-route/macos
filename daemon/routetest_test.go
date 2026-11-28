@@ -103,6 +103,31 @@ func TestParseExit(t *testing.T) {
 	}
 }
 
+func TestExitIPShowsIPv4WhenIPv6IsBlocked(t *testing.T) {
+	a, f := testApp(t)
+	if err := a.Apply(api.Snapshot{VPN: true, Selected: "t1", BlockIPv6: true, Tunnels: []api.TunnelSpec{proxy("t1", "Alpha")}}); err != nil {
+		t.Fatal(err)
+	}
+	eng := applied2(t, a, f)
+	eng.mu.Lock()
+	eng.fetched = map[string][]byte{
+		exitV4URL:                   []byte(`{"ip":"203.0.113.9"}`),
+		exitURLs[0] + "203.0.113.9": []byte(`{"ip":"203.0.113.9","country":"DE"}`),
+		exitURLs[0]:                 []byte(`{"ip":"2001:db8::1","country":"DE"}`),
+	}
+	eng.mu.Unlock()
+	got, err := a.ExitIP()
+	if err != nil || got != (api.ExitIP{IP: "203.0.113.9", Country: "DE"}) {
+		t.Errorf("IPv6 blocked: want the IPv4 address and its country: %+v, %v", got, err)
+	}
+	eng.mu.Lock()
+	eng.fetched = map[string][]byte{exitV4URL: []byte(`{"ip":"2001:db8::1"}`), exitURLs[0]: []byte(`{"ip":"198.51.100.4","country":"NL"}`)}
+	eng.mu.Unlock()
+	if got, err = a.ExitIP(); err != nil || got.IP != "198.51.100.4" {
+		t.Errorf("an IPv6 answer from the IPv4 service falls back to the services: %+v, %v", got, err)
+	}
+}
+
 func TestExitIPAsksTheServicesInOrder(t *testing.T) {
 	a, f := testApp(t)
 	if _, err := a.ExitIP(); err == nil {

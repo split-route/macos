@@ -25,7 +25,6 @@ enum Prefs {
     // Connectivity test
     static let testMethod = "testMethod"
     static let testTimeout = "testTimeout"
-    static let testInterval = "testInterval"
     static let testURL = "testURL"
     static let testCustomURL = "testCustomURL" // the address behind the "Custom" choice
 
@@ -35,6 +34,10 @@ enum Prefs {
         ("Google", "https://www.gstatic.com/generate_204"),
         ("Cloudflare", "https://cp.cloudflare.com/generate_204"),
         ("Apple", "https://captive.apple.com/hotspot-detect.html"),
+        ("Google (www)", "https://www.google.com/generate_204"),
+        ("Ubuntu", "https://connectivity-check.ubuntu.com/"),
+        ("Fedora", "https://fedoraproject.org/static/hotspot.txt"),
+        ("GNOME", "https://nmcheck.gnome.org/check_network_status.txt"),
     ]
     static let timeoutRange = 1...30
     static let subsIntervals = [1, 3, 6, 12, 24, 48, 168] // hours

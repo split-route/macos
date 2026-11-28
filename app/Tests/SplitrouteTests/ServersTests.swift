@@ -28,7 +28,7 @@ final class ServersTests: XCTestCase {
 final class DestinationTests: XCTestCase {
     func testASavedPageWithAnOldNameMovesToTheNewOne() {
         let d = UserDefaults(suiteName: "destination-tests-\(UUID().uuidString)")!
-        for (old, new) in [("Settings", "General"), ("Connection", "Network"), ("Lists", "Lists"), ("Home", "Home")] {
+        for (old, new) in [("Settings", "General"), ("Connection", "General"), ("Network", "General"), ("Updates", "General"), ("Lists", "Lists"), ("Home", "Home")] {
             d.set(old, forKey: "settingsPage")
             Destination.migrateStoredPage(d)
             XCTAssertEqual(d.string(forKey: "settingsPage"), new)
@@ -41,7 +41,8 @@ final class DestinationTests: XCTestCase {
     func testEveryPageHasItsOwnRawValueAndTitle() {
         XCTAssertEqual(Destination.allCases.map(\.rawValue).count, Set(Destination.allCases.map(\.rawValue)).count)
         XCTAssertEqual(Destination.general.rawValue, "General")
-        XCTAssertEqual(Destination.network.rawValue, "Network")
-        XCTAssertEqual(Destination.network.title, "Network")
+        XCTAssertEqual(Destination.application.rawValue, "Application")
+        XCTAssertEqual(Destination.application.title, "Application")
+        XCTAssertEqual(Destination.settingsPages.count, Destination.settingsPages.compactMap(\.subtitle).count, "each settings page has a subtitle")
     }
 }

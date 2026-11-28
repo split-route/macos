@@ -1,0 +1,4 @@
+dbip-country-lite.mmdb.gz is the IP to Country Lite database by DB-IP.com (https://db-ip.com),
+licensed under Creative Commons Attribution 4.0 (https://creativecommons.org/licenses/by/4.0/).
+It is embedded in the service and read in memory; nothing is downloaded at runtime.
+Update it with scripts/update-geoip.sh before a release (DB-IP publishes a new file every month).

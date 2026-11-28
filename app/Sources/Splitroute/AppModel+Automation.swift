@@ -77,11 +77,8 @@ extension AppModel {
             alwaysOnHandled = true
             await connectIfAlwaysOn()
         }
-        if let t = testedAt, !testing, Date().timeIntervalSince(t) > TimeInterval(Prefs.int(Prefs.testInterval, 600)) {
-            testResults = [:] // old numbers stop meaning anything
-            testedAt = nil
-        }
         await updateDueSubscriptions()
+        await locateDueServers()
         await checkForUpdateIfDue()
     }
 
@@ -108,9 +105,15 @@ extension AppModel {
 
     // MARK: App updates
 
-    /// Once a day while the app runs, if the setting is on; a failed check waits an hour. Never says anything on failure.
+    /// Once at launch, then once a day while the app runs, if the setting is on; a failed check waits an hour. Never says
+    /// anything on failure.
     private func checkForUpdateIfDue() async {
         guard Prefs.bool(Prefs.autoCheckUpdates, true), !checkingUpdate else { return }
+        if !updateOpenHandled {
+            updateOpenHandled = true
+            await checkForUpdate(manual: false)
+            return
+        }
         let last = UserDefaults.standard.object(forKey: "updateCheckedAt") as? Date
         if let last, Date().timeIntervalSince(last) < 24 * 3600 { return }
         if let t = updateAttempt, Date().timeIntervalSince(t) < 3600 { return }

@@ -302,5 +302,21 @@ ALTER TABLE settings ADD COLUMN block_ipv6 INTEGER NOT NULL DEFAULT 1 CHECK (blo
 ALTER TABLE tunnels ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1));
 ALTER TABLE tunnels ADD COLUMN note TEXT NOT NULL DEFAULT '' CHECK (length(note) <= 200);
 """#,
+#"""
+-- Block QUIC and Block STUN are off by default: they are for people who know they need them (Settings > Advanced).
+-- The settings row is a single row, so this one UPDATE sets a fresh install and resets an existing one once.
+UPDATE settings SET block_quic = 0, block_stun = 0;
+"""#,
+#"""
+-- The country a server is in, from the address its name resolves to (the service looks it up in a database it carries).
+-- Empty: unknown, or behind a CDN. country_at is when the service last answered (seconds since 1970, 0: never), so a
+-- server is looked up once after it is added and again on a schedule, not on every launch.
+ALTER TABLE tunnels ADD COLUMN country TEXT NOT NULL DEFAULT '' CHECK (country = '' OR (length(country) = 2 AND country = upper(country)));
+ALTER TABLE tunnels ADD COLUMN country_at INTEGER NOT NULL DEFAULT 0 CHECK (country_at >= 0);
+"""#,
+#"""
+-- Pins (favorites first) are gone from the app; the column goes with them. Existing pins are dropped, not migrated.
+ALTER TABLE tunnels DROP COLUMN pinned;
+"""#,
     ]
 }

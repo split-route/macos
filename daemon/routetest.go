@@ -97,15 +97,56 @@ func (a *app) RouteTest(query string) (api.RouteResult, error) {
 // exitURLs are asked, in this order, for the address the internet sees. Fixed here: the socket never names one.
 var exitURLs = []string{"https://api.country.is/", "https://ipwho.is/"}
 
+// exitV4URL has only an A record, so the server reaches it over IPv4. It names no country, so the address is then
+// looked up at the services above (their address is part of the path, and only after it parsed as IPv4).
+const exitV4URL = "https://api4.ipify.org/?format=json"
+
 const exitMaxBody = 16 << 10
+
+// exitIPv4 asks for the IPv4 address the internet sees, then its country; a failed country lookup leaves it out.
+func exitIPv4(eng Engine) (api.ExitIP, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	body, err := eng.Fetch(ctx, exitV4URL, exitMaxBody)
+	cancel()
+	if err != nil {
+		return api.ExitIP{}, err
+	}
+	out, err := parseExit(body)
+	if err != nil {
+		return api.ExitIP{}, err
+	}
+	if ip, err := netip.ParseAddr(out.IP); err != nil || !ip.Is4() {
+		return api.ExitIP{}, errors.New("the answer isn't an IPv4 address")
+	}
+	for _, u := range exitURLs {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		body, err := eng.Fetch(ctx, u+out.IP, exitMaxBody)
+		cancel()
+		if err != nil {
+			continue
+		}
+		if e, err := parseExit(body); err == nil && e.IP == out.IP && e.Country != "" {
+			out.Country = e.Country
+			break
+		}
+	}
+	return out, nil
+}
 
 // ExitIP asks for the address the internet sees through the selected server, and its country.
 func (a *app) ExitIP() (api.ExitIP, error) {
 	a.host.mu.Lock()
 	eng := a.host.eng
+	v4 := a.host.blockIPv6
 	a.host.mu.Unlock()
 	if eng == nil {
 		return api.ExitIP{}, errors.New("The connection is off")
+	}
+	if v4 {
+		// With Block IPv6 on, show an IPv4 address: the server may reach a dual-stack service over IPv6 and report that.
+		if e, err := exitIPv4(eng); err == nil {
+			return e, nil
+		}
 	}
 	var last error
 	for _, u := range exitURLs {

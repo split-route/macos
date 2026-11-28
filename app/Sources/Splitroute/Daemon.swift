@@ -232,6 +232,8 @@ private struct Response: Decodable {
     var tests: [String: WireTest]?
     var route: WireRoute?
     var exit: WireExit?
+    /// server_country: tunnel ID to two-letter code ("" when the address says nothing; absent when it couldn't be looked up).
+    var countries: [String: String]?
 }
 
 enum DaemonError: LocalizedError, Equatable {
@@ -254,7 +256,7 @@ enum DaemonError: LocalizedError, Equatable {
 /// Client for the service's control socket: one JSON request, one JSON response per connection.
 enum Daemon {
     /// The service revision this app needs (Go: api.APIRevision).
-    static let requiredAPIRev = 15
+    static let requiredAPIRev = 16
 
     #if DEBUG
     /// Debug builds: SPLITROUTE_SOCKET points the app at a fake service.
@@ -323,6 +325,13 @@ enum Daemon {
     static func exitIP() async throws -> WireExit {
         guard let e = try await send(Request(cmd: "exit_ip")).exit else { throw outdated }
         return e
+    }
+
+    /// Which country each server is in, by the address its name resolves to, looked up by the service in its own database
+    /// (at most `maxLocate` at a time). The IDs are core IDs ("t5").
+    static let maxLocate = 40
+    static func serverCountries(_ ids: [String]) async throws -> [String: String] {
+        try await send(Request(cmd: "server_country", ids: ids)).countries ?? [:]
     }
 
     /// Whether the engine can run a rule built from fields; throws the service's message about the first value that is wrong.

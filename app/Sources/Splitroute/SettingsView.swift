@@ -15,7 +15,7 @@ struct SettingsView: View {
         }
         .font(TypeScale.body)
         .foregroundStyle(Palette.ink.color)
-        .frame(minWidth: 936, minHeight: 630)
+        .frame(minWidth: 700, minHeight: 480)
         .onAppear { if model.settingsVisible { model.traffic.start() } }
         .onChange(of: model.settingsVisible) { _, open in if open { model.traffic.start() } else { model.traffic.stop() } }
     }
@@ -28,9 +28,8 @@ struct SettingsView: View {
             case .tunnels: TunnelsPage().transition(.opacity)
             case .lists: ListsPage().transition(.opacity)
             case .general: GeneralSettingsPage().transition(.opacity)
-            case .network: NetworkSettingsPage().transition(.opacity)
+            case .application: ApplicationSettingsPage().transition(.opacity)
             case .advanced: AdvancedSettingsPage().transition(.opacity)
-            case .updates: UpdatesSettingsPage().transition(.opacity)
             }
         }
         .animation(.easeOut(duration: 0.18), value: page) // the page you leave fades out as the new one fades in
@@ -144,9 +143,9 @@ extension AppModel {
     /// the subscriptions were added. Menus use it so a long subscription never pushes your own servers out of sight.
     var tunnelNamesLocalFirst: [String] {
         let subs = (tunnelList?.subscriptions ?? []).map(\.name)
-        // Favorites first, then the servers added by hand, then each subscription's.
+        // The servers added by hand first, then each subscription's.
         let rank = { (t: Tunnel) -> Int in
-            t.pinned ? -1 : (t.group.flatMap { subs.firstIndex(of: $0) }.map { $0 + 1 } ?? (t.group == nil ? 0 : subs.count + 1))
+            (t.group.flatMap { subs.firstIndex(of: $0) }.map { $0 + 1 } ?? (t.group == nil ? 0 : subs.count + 1))
         }
         return tunnels.enumerated().sorted { a, b in
             let (x, y) = (rank(a.element), rank(b.element))
@@ -191,7 +190,13 @@ private struct GlassSidebar: View {
                 } label: {
                     HStack(spacing: Space.m) {
                         DestinationIcon(d, selected: on, plain: on ? Color.white : Palette.inkSecondary.color)
-                        Text(d.title).font(TypeScale.sidebar).foregroundStyle(on ? Color.white : Palette.inkSecondary.color)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(d.title).font(TypeScale.sidebar).foregroundStyle(on ? Color.white : Palette.inkSecondary.color)
+                            if let s = d.subtitle {
+                                Text(s).font(.system(size: 11)).foregroundStyle(on ? Color.white.opacity(0.75) : Palette.inkSecondary.color.opacity(0.7))
+                                    .lineLimit(1)
+                            }
+                        }
                         Spacer(minLength: 0)
                         // The shortcut shows only while Command is held, like a menu's.
                         Text("⌘\(index + 1)").font(TypeScale.secondary).foregroundStyle(on ? Color.white.opacity(0.8) : Palette.inkSecondary.color.opacity(0.7))

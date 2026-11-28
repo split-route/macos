@@ -83,6 +83,11 @@ public struct ToolbarGroup<Content: View>: View {
 }
 
 /// A round "+" for a page's top bar.
+public extension View {
+    /// The glass of a round toolbar button (the search and add buttons'), for a control that isn't a plain button, such as a menu.
+    func toolbarCircleGlass() -> some View { modifier(ToolbarGlass(shape: Circle(), interactive: true)) }
+}
+
 public struct ToolbarAddButton: View {
     let label: String
     let action: () -> Void
@@ -465,7 +470,7 @@ public struct EmptyState: View {
 public struct LatencyPill: View {
     let ms: Int
     public init(ms: Int) { self.ms = ms }
-    private var tone: Color { ms < 150 ? Palette.success.color : (ms < 400 ? Palette.warning.color : Palette.danger.color) }
+    private var tone: Color { ms < 250 ? Palette.success.color : (ms < 400 ? Palette.warning.color : Palette.danger.color) }
     public var body: some View {
         Text("\(ms) ms").font(TypeScale.secondary.weight(.semibold)).monospacedDigit().foregroundStyle(tone)
             .padding(.horizontal, 9).padding(.vertical, 3)
